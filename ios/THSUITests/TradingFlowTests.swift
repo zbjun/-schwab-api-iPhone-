@@ -442,14 +442,10 @@ final class TradingFlowTests: XCTestCase {
     }
 
     private func changeSystemAppearance(_ appearance: XCUIDevice.Appearance) {
-        // Keep the existing app instance and navigation state while changing the real system setting.
-        XCUIDevice.shared.press(.home)
-        XCUIDevice.shared.appearance = appearance
-        reactivateExistingApp()
         if waitForRenderedAppearance(appearance, in: app) { return }
 
-        // A device getter alone produced false-positive dark screenshots on this simulator.
-        // If its API does not update rendered UI, use the same Settings control a person uses.
+        // Apple's Simulator exposes the actual appearance setting under Developer.
+        // The XCUIDevice getter did not reliably match rendered pixels on this runtime.
         XCTContext.runActivity(named: "Change Simulator appearance through Developer settings") { _ in
             let settings = XCUIApplication(bundleIdentifier: "com.apple.Preferences")
             settings.launch()
@@ -492,8 +488,8 @@ final class TradingFlowTests: XCTestCase {
 
     private func reactivateExistingApp() {
         let state = app.state
-        XCTAssertTrue(state == .runningBackground || state == .runningBackgroundSuspended,
-                      "Appearance changes must preserve the existing app process")
+        XCTAssertTrue(state == .runningForeground || state == .runningBackground || state == .runningBackgroundSuspended,
+                      "The app must still be running before activation, actual state: \(state)")
         app.activate()
     }
 

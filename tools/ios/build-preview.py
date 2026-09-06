@@ -87,7 +87,12 @@ def main():
              "29-inline-cancel-orders", "30-inline-cancel-review", "31-inline-cancel-result", "01-accounts", "03-trade", "04-orders",
              "07-limit-order-review", "08-canceled-demo-order", "09-replacement-review", "10-invalid-quantity", "05-connection"]
     ordered = [pages[name] for name in order]
-    metadata = dict(version="0.4.2", run=args.run, commit=args.commit, pages=ordered)
+    build_url = (
+        f"https://github.com/zbjun/ths-ios-personal/actions/runs/{args.run}"
+        if args.run.isdigit()
+        else f"https://expo.dev/accounts/fried_chicken_cn/projects/ths-ios-personal/builds/{args.run}"
+    )
+    metadata = dict(version="0.4.2", run=args.run, build_url=build_url, commit=args.commit, pages=ordered)
     (output / "evidence.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     buttons = "\n".join(
         f'<button class="page-button" type="button" data-index="{index}" aria-pressed="false">'
@@ -96,7 +101,7 @@ def main():
     )
     document = TEMPLATE.replace("{{BUTTONS}}", buttons)
     document = document.replace("{{DATA}}", json.dumps(metadata, ensure_ascii=False).replace("<", "\\u003c"))
-    document = document.replace("{{RUN}}", args.run).replace("{{COMMIT}}", args.commit[:7])
+    document = document.replace("{{BUILD_URL}}", html.escape(build_url, quote=True)).replace("{{COMMIT}}", args.commit[:7])
     (output / "index.html").write_text(document, encoding="utf-8")
     print(json.dumps({"screenshots": len(ordered), "output": str(output / "index.html")}, ensure_ascii=False))
 
@@ -125,7 +130,7 @@ dialog{border:0;background:#172435ed;border-radius:14px;padding:48px 12px 12px;m
 <main><nav class="nav" aria-label="选择页面">{{BUTTONS}}</nav>
 <section class="viewer" aria-label="原生页面截图"><button class="screenshot-button" type="button" aria-label="放大当前截图"><img id="screen" alt=""></button><p class="hint">点击图片放大 · 使用 ← → 切换页面</p></section>
 <aside class="details"><h2 id="title"></h2><p id="description"></p><div class="pager"><button id="previous" type="button" aria-label="上一页">← 上一页</button><button id="next" type="button" aria-label="下一页">下一页 →</button></div><div class="context">截图来自 <span id="device"></span><br>保留原始图像，未绘制替代界面。<br><br>本页用于查看界面，不能操作交易。<br>后续在你的 iPhone 16 Pro 上安装调试。</div></aside></main>
-<footer><span>原生 SwiftUI · 无第三方 App 依赖</span><span><a href="https://github.com/zbjun/ths-ios-personal/actions/runs/{{RUN}}" target="_blank" rel="noreferrer">构建验证</a> · {{COMMIT}}</span></footer>
+<footer><span>原生 SwiftUI · 无第三方 App 依赖</span><span><a href="{{BUILD_URL}}" target="_blank" rel="noreferrer">构建验证</a> · {{COMMIT}}</span></footer>
 </div><dialog id="zoom"><button type="button" id="close">关闭 ✕</button><img id="large-screen" alt=""></dialog>
 <script>
 const evidence={{DATA}};

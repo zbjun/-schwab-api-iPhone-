@@ -422,10 +422,23 @@ final class TradingFlowTests: XCTestCase {
     }
 
     private func selectTab(_ identifier: String, file: StaticString = #filePath, line: UInt = #line) {
+        let labels = ["tab.accounts": "账户", "tab.watchlist": "自选", "tab.trade": "交易",
+                      "tab.orders": "订单", "tab.connection": "连接"]
+        guard let label = labels[identifier] else {
+            XCTFail("Unknown tab \(identifier)", file: file, line: line)
+            return
+        }
         let tabs = app.tabBars.buttons
-        let target = tabs[identifier]
+        // Native tab buttons expose their labels even when tabItem Label IDs are not forwarded.
+        let matches = tabs.matching(NSPredicate(format: "label == %@", label))
+        let target = matches.firstMatch
         guard target.waitForExistence(timeout: 5) else {
-            XCTFail("Missing tab \(identifier)", file: file, line: line)
+            XCTFail("Missing tab \(identifier) (\(label))", file: file, line: line)
+            return
+        }
+        let matchCount = matches.count
+        guard matchCount == 1 else {
+            XCTFail("Expected one tab \(identifier) (\(label)), found \(matchCount)", file: file, line: line)
             return
         }
         func waitForSelection() -> Bool {
@@ -435,13 +448,14 @@ final class TradingFlowTests: XCTestCase {
 
         if !target.isSelected {
             let current = tabs.matching(NSPredicate(format: "selected == true")).firstMatch
-            let previousIdentifier = current.exists ? current.identifier : nil
+            let previousLabel = current.exists ? current.label : nil
             target.tap()
-            if !waitForSelection(), let previousIdentifier, previousIdentifier != identifier {
-                let previous = tabs[previousIdentifier]
-                if previous.exists && previous.isSelected && !target.isSelected {
+            if !waitForSelection(), let previousLabel, !previousLabel.isEmpty, previousLabel != label {
+                let previousMatches = tabs.matching(NSPredicate(format: "label == %@", previousLabel))
+                let previous = previousMatches.firstMatch
+                if previousMatches.count == 1 && previous.isSelected && !target.isSelected {
                     // Retry navigation only when the first tap left the original tab selected.
-                    print("Retrying tab navigation once: \(previousIdentifier) remains selected after tapping \(identifier).")
+                    print("Retrying tab navigation once: \(previousLabel) remains selected after tapping \(identifier) (\(label)).")
                     target.tap()
                     _ = waitForSelection()
                 }

@@ -140,9 +140,10 @@ struct MarketChartView: View {
         .chartXAxis {
             AxisMarks(values: axisIndices) { value in
                 AxisGridLine().foregroundStyle(MarketTheme.separator)
-                AxisValueLabel {
+                AxisValueLabel(centered: false, anchor: axisLabelAnchor(value.as(Double.self))) {
                     if let index = value.as(Double.self) {
                         Text(axisLabel(index)).font(.system(size: 9)).foregroundStyle(MarketTheme.secondary)
+                            .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                     }
                 }
             }
@@ -152,7 +153,7 @@ struct MarketChartView: View {
                 AxisGridLine().foregroundStyle(MarketTheme.separator)
                 AxisValueLabel {
                     if let price = value.as(Double.self) {
-                        Text(MarketTheme.number(price)).font(.system(size: 9)).foregroundStyle(MarketTheme.secondary)
+                        priceAxisLabel(price)
                     }
                 }
             }
@@ -207,9 +208,27 @@ struct MarketChartView: View {
                     .foregroundStyle(MarketTheme.change(sample.candle.close - sample.candle.open).opacity(0.85))
             }
         }
-        .chartXScale(domain: xDomain).chartXAxis(.hidden).chartYAxis(.hidden)
+        .chartXScale(domain: xDomain).chartXAxis(.hidden)
+        .chartYAxis {
+            AxisMarks(position: .trailing, values: [0.0]) {
+                AxisValueLabel {
+                    priceAxisLabel(nil).accessibilityHidden(true)
+                }
+            }
+        }
         .accessibilityLabel("\(range.title) 成交量柱图")
         .accessibilityIdentifier("detail.chart.volume")
+    }
+
+    private func priceAxisLabel(_ price: Double?) -> some View {
+        // Both plots reserve the same label width, including prices crossing digit or sign boundaries.
+        ZStack(alignment: .leading) {
+            Text(MarketTheme.number(domain.lowerBound)).hidden()
+            Text(MarketTheme.number(domain.upperBound)).hidden()
+            if let price { Text(MarketTheme.number(price)) }
+        }
+        .font(.system(size: 9, design: .monospaced)).foregroundStyle(MarketTheme.secondary)
+        .lineLimit(1).fixedSize(horizontal: true, vertical: false)
     }
 
     private var sparkline: some View {
@@ -231,6 +250,13 @@ struct MarketChartView: View {
         guard candles.count > 1 else { return [0] }
         let intervals = range.minuteInterval == nil ? 4 : 2
         return (0...intervals).map { Double(Int(Double(candles.count - 1) * Double($0) / Double(intervals))) }
+    }
+
+    private func axisLabelAnchor(_ index: Double?) -> UnitPoint {
+        guard let index, candles.count > 1 else { return .top }
+        if index == 0 { return .topLeading }
+        if index == Double(candles.count - 1) { return .topTrailing }
+        return .top
     }
 
     private func axisLabel(_ index: Double) -> String {

@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 @MainActor
 final class TradingFlowTests: XCTestCase {
@@ -198,22 +199,22 @@ final class TradingFlowTests: XCTestCase {
         XCTAssertTrue(element("order.row.910002").exists)
     }
 
-    func testMarketScreensFollowSystemAppearanceWhileOpen() {
+    func testAppearanceFollowsSystemWhileAppRemainsOpen() {
         launch(tab: "watchlist")
         XCTAssertTrue(element("watchlist.symbol.AAPL").waitForExistence(timeout: 5))
-        XCUIDevice.shared.appearance = .dark
-        XCTAssertEqual(XCUIDevice.shared.appearance, .dark)
+        XCTAssertTrue(waitForRenderedAppearance(.light, in: app))
+        changeSystemAppearance(.dark)
         XCTAssertTrue(element("watchlist.symbol.AAPL").isHittable)
-        capture("19-watchlist-dark")
+        capture("19-watchlist-dark", appearance: .dark)
         element("watchlist.symbol.AAPL").tap()
         element("history.daily").tap()
         XCTAssertTrue(element("chart.movingAverages").waitForExistence(timeout: 5))
-        capture("20-detail-dark")
-        XCUIDevice.shared.appearance = .light
-        XCTAssertEqual(XCUIDevice.shared.appearance, .light)
+        XCTAssertTrue(waitForRenderedAppearance(.dark, in: app))
+        capture("20-detail-dark", appearance: .dark)
+        changeSystemAppearance(.light)
         XCTAssertTrue(element("chart.movingAverages").exists)
         XCTAssertTrue(element("detail.buy").isHittable)
-        capture("21-detail-light")
+        capture("21-detail-light", appearance: .light)
     }
 
     func testMoreMenuSelectsAllSixMinuteCandlesWithMovingAverages() {
@@ -440,8 +441,85 @@ final class TradingFlowTests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 5), .completed)
     }
 
-    private func capture(_ name: String) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+    private func changeSystemAppearance(_ appearance: XCUIDevice.Appearance) {
+        // Keep the existing app instance and navigation state while changing the real system setting.
+        XCUIDevice.shared.press(.home)
+        XCUIDevice.shared.appearance = appearance
+        reactivateExistingApp()
+        if waitForRenderedAppearance(appearance, in: app) { return }
+
+        // A device getter alone produced false-positive dark screenshots on this simulator.
+        // If its API does not update rendered UI, use the same Settings control a person uses.
+        XCTContext.runActivity(named: "Change system appearance through Display & Brightness") { _ in
+            let settings = XCUIApplication(bundleIdentifier: "com.apple.Preferences")
+            settings.launch()
+            let names = appearance == .dark ? ["Dark", "深色"] : ["Light", "浅色"]
+            let choice = settings.buttons.matching(NSPredicate(format: "label IN %@", names)).firstMatch
+            if !choice.exists {
+                let display = settings.staticTexts.matching(NSPredicate(format: "label IN %@", ["Display & Brightness", "显示与亮度"])).firstMatch
+                for _ in 0..<6 {
+                    if display.exists && display.isHittable { break }
+                    settings.swipeUp()
+                }
+                XCTAssertTrue(display.exists && display.isHittable)
+                display.tap()
+            }
+            XCTAssertTrue(choice.waitForExistence(timeout: 5))
+            choice.tap()
+            XCTAssertTrue(waitForRenderedAppearance(appearance, in: settings))
+            reactivateExistingApp()
+            XCTAssertTrue(waitForRenderedAppearance(appearance, in: app), "The app must actually render the requested appearance")
+        }
+    }
+
+    private func reactivateExistingApp() {
+        let state = app.state
+        XCTAssertTrue(state == .runningBackground || state == .runningBackgroundSuspended,
+                      "Appearance changes must preserve the existing app process")
+        app.activate()
+    }
+
+    private func waitForRenderedAppearance(_ appearance: XCUIDevice.Appearance, in application: XCUIApplication) -> Bool {
+        let deadline = Date().addingTimeInterval(6)
+        var consecutiveMatches = 0
+        repeat {
+            let matches = matchesAppearance(appearance, screenshot: application.screenshot())
+            consecutiveMatches = matches ? consecutiveMatches + 1 : 0
+            if consecutiveMatches >= 2 { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        } while Date() < deadline
+        return false
+    }
+
+    private func matchesAppearance(_ appearance: XCUIDevice.Appearance, screenshot: XCUIScreenshot) -> Bool {
+        guard let brightness = screenshotBrightness(screenshot) else { return false }
+        return appearance == .dark ? brightness < 0.4 : brightness > 0.65
+    }
+
+    private func screenshotBrightness(_ screenshot: XCUIScreenshot) -> Double? {
+        guard let image = screenshot.image.cgImage else { return nil }
+        let size = 40
+        var pixels = [UInt8](repeating: 0, count: size * size * 4)
+        return pixels.withUnsafeMutableBytes { buffer in
+            guard let context = CGContext(data: buffer.baseAddress, width: size, height: size,
+                                          bitsPerComponent: 8, bytesPerRow: size * 4,
+                                          space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else { return nil }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: CGFloat(size), height: CGFloat(size)))
+            let bytes = buffer.bindMemory(to: UInt8.self)
+            let sum = stride(from: 0, to: bytes.count, by: 4).reduce(0.0) {
+                $0 + Double(bytes[$1]) + Double(bytes[$1 + 1]) + Double(bytes[$1 + 2])
+            }
+            return sum / Double(size * size * 3 * 255)
+        }
+    }
+
+    private func capture(_ name: String, appearance: XCUIDevice.Appearance? = nil) {
+        let screenshot = app.screenshot()
+        if let appearance {
+            XCTAssertTrue(matchesAppearance(appearance, screenshot: screenshot), "The exported screenshot must show the requested appearance")
+        }
+        let attachment = XCTAttachment(screenshot: screenshot)
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)

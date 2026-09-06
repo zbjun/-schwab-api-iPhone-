@@ -202,7 +202,7 @@ final class TradingFlowTests: XCTestCase {
     func testAppearanceFollowsSystemWhileAppRemainsOpen() {
         launch(tab: "watchlist")
         XCTAssertTrue(element("watchlist.symbol.AAPL").waitForExistence(timeout: 5))
-        XCTAssertTrue(waitForRenderedAppearance(.light, in: app))
+        changeSystemAppearance(.light)
         changeSystemAppearance(.dark)
         XCTAssertTrue(element("watchlist.symbol.AAPL").isHittable)
         capture("19-watchlist-dark", appearance: .dark)
@@ -473,8 +473,10 @@ final class TradingFlowTests: XCTestCase {
             }
             let requestedValue = appearance == .dark ? "1" : "0"
             if darkAppearance.value as? String != requestedValue {
-                darkAppearance.tap()
+                // Settings exposes a full-row Switch; its center is the label, not the toggle.
+                darkAppearance.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
             }
+            captureSettingsDiagnostics(settings, name: "settings-after-toggle", appearance: appearance)
             let valueChanged = XCTNSPredicateExpectation(
                 predicate: NSPredicate(format: "value == %@", requestedValue), object: darkAppearance
             )

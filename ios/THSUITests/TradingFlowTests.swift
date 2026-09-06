@@ -89,6 +89,9 @@ final class TradingFlowTests: XCTestCase {
     }
 
     func testInlineAmountBuyKeepsChartVisibleWithKeyboardAndReview() {
+        // This end-to-end flow covers two keyboard sessions, geometry, review and order detail.
+        // Shared CI simulators can spend several minutes obtaining accessibility snapshots.
+        executionTimeAllowance = 600
         launch(tab: "watchlist")
         element("watchlist.symbol.AAPL").tap()
         XCTAssertTrue(element("detail.chart").waitForExistence(timeout: 5))
@@ -204,8 +207,15 @@ final class TradingFlowTests: XCTestCase {
             "inline.quantity", "inline.amount", "inline.limitPrice", "inline.stopPrice"].contains(identifier) {
             return app.textFields[identifier]
         }
+        if ["detail.chart", "detail.tradePanel"].contains(identifier) {
+            return app.otherElements[identifier]
+        }
+        if ["inline.maxBuy", "inline.maxSell", "inline.amountShares", "inline.review.summary"].contains(identifier) {
+            return app.staticTexts[identifier]
+        }
         if identifier.hasPrefix("history.") || identifier.hasPrefix("order.row.") || identifier.hasPrefix("watchlist.symbol.") ||
-            ["detail.buy", "detail.sell", "watchlist.lookup", "trade.review", "order.review.confirm", "order.cancel", "order.modify"].contains(identifier) {
+            ["detail.buy", "detail.sell", "watchlist.lookup", "trade.review", "order.review.confirm", "order.cancel", "order.modify",
+             "inline.review", "inline.confirm", "inline.amountMode"].contains(identifier) {
             return app.buttons[identifier]
         }
         return app.descendants(matching: .any).matching(identifier: identifier).firstMatch
@@ -282,16 +292,20 @@ final class TradingFlowTests: XCTestCase {
         let panel = element("detail.tradePanel")
         XCTAssertTrue(chart.exists, file: file, line: line)
         XCTAssertTrue(panel.exists, file: file, line: line)
-        XCTAssertGreaterThanOrEqual(chart.frame.height, 90, file: file, line: line)
-        XCTAssertLessThanOrEqual(chart.frame.maxY, panel.frame.minY + 1, file: file, line: line)
-        XCTAssertTrue(app.frame.contains(chart.frame), file: file, line: line)
-        if app.keyboards.firstMatch.exists {
-            XCTAssertLessThanOrEqual(chart.frame.maxY, app.keyboards.firstMatch.frame.minY, file: file, line: line)
-            var keyboardTop = app.keyboards.firstMatch.frame.minY
-            for toolbar in app.toolbars.allElementsBoundByIndex where toolbar.frame.minY > panel.frame.minY {
-                keyboardTop = min(keyboardTop, toolbar.frame.minY)
+        let chartFrame = chart.frame
+        let panelFrame = panel.frame
+        XCTAssertGreaterThanOrEqual(chartFrame.height, 90, file: file, line: line)
+        XCTAssertLessThanOrEqual(chartFrame.maxY, panelFrame.minY + 1, file: file, line: line)
+        XCTAssertTrue(app.frame.contains(chartFrame), file: file, line: line)
+        let keyboard = app.keyboards.firstMatch
+        if keyboard.exists {
+            var keyboardTop = keyboard.frame.minY
+            XCTAssertLessThanOrEqual(chartFrame.maxY, keyboardTop, file: file, line: line)
+            for toolbar in app.toolbars.allElementsBoundByIndex {
+                let toolbarTop = toolbar.frame.minY
+                if toolbarTop > panelFrame.minY { keyboardTop = min(keyboardTop, toolbarTop) }
             }
-            XCTAssertLessThanOrEqual(panel.frame.maxY, keyboardTop + 1, file: file, line: line)
+            XCTAssertLessThanOrEqual(panelFrame.maxY, keyboardTop + 1, file: file, line: line)
             if let focusedField {
                 let field = element(focusedField)
                 XCTAssertTrue(field.isHittable, file: file, line: line)

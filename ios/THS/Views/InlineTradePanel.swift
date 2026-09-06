@@ -72,7 +72,8 @@ struct InlineTradePanel: View {
                             }
                         }.padding(.horizontal, 12).padding(.vertical, 7)
                     }
-                    .scrollDismissesKeyboard(.interactively)
+                    // Keep focus while the chart and form resize; use Done to dismiss.
+                    .scrollDismissesKeyboard(.never)
                     .accessibilityIdentifier("inline.fields")
                     .onChange(of: input) { _, field in
                         if let field { reader.scrollTo(field, anchor: .center) }

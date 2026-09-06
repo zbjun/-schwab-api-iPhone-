@@ -223,7 +223,8 @@ final class TradingFlowTests: XCTestCase {
         XCTAssertTrue(list.waitForExistence(timeout: 5), file: file, line: line)
         for _ in 0..<7 {
             let visible = visibleContent(in: list)
-            if target.exists && target.isHittable && visible.contains(target.frame.insetBy(dx: 0, dy: -8)) {
+            let margin: CGFloat = identifier.hasPrefix("inline.") ? 0 : 8
+            if target.exists && target.isHittable && visible.contains(target.frame.insetBy(dx: 0, dy: -margin)) {
                 return target
             }
             if app.keyboards.firstMatch.exists {
@@ -268,7 +269,10 @@ final class TradingFlowTests: XCTestCase {
                 bottom = min(bottom, toolbar.frame.minY)
             }
         }
-        return CGRect(x: frame.minX, y: top, width: frame.width, height: max(0, bottom - top - 12))
+        // The inline scroll view already ends above its fixed action button.
+        // Only the full-screen lists need extra clearance from the floating tab bar.
+        let bottomClearance: CGFloat = list.identifier == "inline.fields" ? 0 : 12
+        return CGRect(x: frame.minX, y: top, width: frame.width, height: max(0, bottom - top - bottomClearance))
     }
 
     private func tapRevealing(_ identifier: String) { reveal(identifier).tap() }
@@ -304,26 +308,14 @@ final class TradingFlowTests: XCTestCase {
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
         if !previousText.isEmpty {
             let editable = reveal(identifier)
-            if identifier.hasPrefix("inline.") {
-                // Select the whole value rather than guessing a caret position in a padded field.
-                editable.press(forDuration: 1.1)
-                let selectAll = app.menuItems.matching(NSPredicate(format: "label IN %@", ["全选", "Select All"])).firstMatch
-                if selectAll.waitForExistence(timeout: 2) { selectAll.tap() }
-                else {
-                    let action = app.buttons.matching(NSPredicate(format: "label IN %@", ["全选", "Select All"])).firstMatch
-                    XCTAssertTrue(action.waitForExistence(timeout: 3))
-                    action.tap()
-                }
-            } else {
-                editable.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5))
-                    .withOffset(CGVector(dx: -1, dy: 0)).tap()
-            }
+            let trailingInset: CGFloat = identifier.hasPrefix("inline.") ? 16 : 1
+            editable.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5))
+                .withOffset(CGVector(dx: -trailingInset, dy: 0)).tap()
             XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
         }
         let activeField = app.textFields[identifier]
         XCTAssertTrue(activeField.waitForExistence(timeout: 5))
-        let deletes = identifier.hasPrefix("inline.") ? "" : String(repeating: XCUIKeyboardKey.delete.rawValue, count: previousText.count)
-        activeField.typeText(deletes + text)
+        activeField.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: previousText.count) + text)
         let updated = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", text), object: activeField)
         XCTAssertEqual(XCTWaiter.wait(for: [updated], timeout: 5), .completed)
     }

@@ -23,4 +23,16 @@
 - 不遮挡验收：图表底边不超过买卖区顶边；键盘出现后图表仍有可见高度，表单在自己的区域滚动。
 - 参考中的品牌、广告、付费指标、A 股特有功能不纳入本轮。
 
-本轮实际测试、截图和打包证据在完成后更新。
+## 关键变更位置
+
+| 需求 | 主要文件 | 实现 |
+| --- | --- | --- |
+| 自选与多股同列 | `THS/Views/WatchlistView.swift`、`MarketChartView.swift` | 对齐行情列、左右滑动、可见行分批读取走势、编辑删除 |
+| 行情详情与五图 | `THS/Views/StockDetailView.swift`、`MarketChartView.swift`、`MarketTheme.swift` | 行情摘要、五种图表、四条 MA、成交量、统一涨跌颜色 |
+| 图下买卖 | `THS/Views/InlineTradePanel.swift`、`TradeView.swift`、`THS/Models/OrderSizing.swift` | 图下独立编辑与核对、焦点随键盘调整、数量和金额共用校验 |
+| 数据与订单状态 | `THS/Services/SchwabClient.swift`、`THS/App/TradingStore.swift`、模型与演示数据 | 受限基本面读取、均线与统计、估算可买卖数、复用原交易状态机 |
+| 验证与交付 | `THSTests`、`THSUITests/TradingFlowTests.swift`、`../tools/ios/build-preview.py` | 93 项单元测试、7 项原生流程、18 张原图预览和包校验 |
+
+本轮已完成：[构建 34022718272](https://github.com/zbjun/ths-ios-personal/actions/runs/34022718272) 通过 93 项单元测试和 7 项原生界面流程，完成 Release iPhone 归档。18 张原生演示截图已逐张检查，包括键盘输入与图下金额核对；预览与未签名安装包已保存在本地。后续仍需 iPhone 16 Pro 签名安装及真机调试。
+
+应用提交、截图和安装包校验值见 [实现与验收](IMPLEMENTATION.md)。

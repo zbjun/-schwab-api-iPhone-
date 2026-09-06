@@ -75,11 +75,11 @@ GET `/marketdata/v1/pricehistory`: `symbol`, `periodType`, `period`, `frequencyT
 
 | Display preset | periodType | period | frequencyType | frequency |
 | --- | --- | ---: | --- | ---: |
-| 1 trading day | day | 1 | minute | 1 |
-| 5 trading days | day | 5 | minute | 5 |
-| 1 month | month | 1 | daily | 1 |
-| 3 months | month | 3 | daily | 1 |
-| 1 year | year | 1 | daily | 1 |
+| Intraday | day | 1 | minute | 1 |
+| Daily candles | year | 1 | daily | 1 |
+| Weekly candles | year | 2 | weekly | 1 |
+| Monthly candles | year | 5 | monthly | 1 |
+| Five trading days | day | 5 | minute | 5 |
 
 There is no `week` period type. Month periods allow 1/2/3/6 and daily/weekly frequencies; year allows 1/2/3/5/10/15/20 with daily/weekly/monthly; minute frequencies allow 1/5/10/15/30. These are parameter presets, not data-availability guarantees. [Maintainer history reference](https://raw.githubusercontent.com/tylerebowers/Schwabdev/main/docs/pages-raw/api.md).
 
@@ -88,6 +88,8 @@ Provide a deliberate end time: the raw endpoint's documented default is the prev
 The result contains `symbol`, `empty`, `candles`, and optional previous-close fields. Candles contain numeric open/high/low/close/volume and a millisecond `datetime`. Empty candles need an empty state, not invented prices. Preserve missing previous close. [Generated candle-list model](https://raw.githubusercontent.com/Chalupa-Tech/go-schwab-api-individual/main/models/components/candlelist.go), [maintainer example](https://raw.githubusercontent.com/tylerebowers/Schwabdev/main/docs/pages-raw/api.md).
 
 ## Quotes and timing labels
+
+The 0.3.0 derived metrics and dedicated fundamental read are described in [UI-DATA-REFERENCE.md](UI-DATA-REFERENCE.md). They are displayed as local estimates where applicable; missing data stays unavailable.
 
 The quote envelope includes `assetMainType`, optional `assetSubType`, `symbol`, `realtime`, optional `quoteType`, and `quote`/`reference`/`regular` groups. Treat the returned asset type as authoritative for the instrument rather than guessing from the ticker. [Generated equity response](https://raw.githubusercontent.com/Chalupa-Tech/go-schwab-api-individual/main/models/components/equityresponse.go).
 

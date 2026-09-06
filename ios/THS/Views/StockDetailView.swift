@@ -58,7 +58,7 @@ struct StockDetailView: View {
             }
             .background(MarketTheme.background)
         }
-        .accessibilityIdentifier("screen.detail")
+        .accessibilityElement(children: .contain).accessibilityIdentifier("screen.detail")
         .navigationTitle(symbol).navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
@@ -154,6 +154,7 @@ struct StockDetailView: View {
         }
         .padding(.horizontal, 16).padding(.vertical, compact ? 7 : 14)
         .background(MarketTheme.surface)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(compact ? "detail.quote.compact" : "detail.quote.summary")
     }
 

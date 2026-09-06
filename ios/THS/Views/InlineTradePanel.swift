@@ -15,6 +15,7 @@ struct InlineTradePanel: View {
     @State private var stopPrice = ""
     @State private var amountMode = false
     @State private var initialized = false
+    @State private var isVisible = false
     @State private var localError: String?
     @State private var review: PreparedOrder?
     @FocusState private var input: Field?
@@ -122,7 +123,8 @@ struct InlineTradePanel: View {
                 Button("完成") { input = nil }.accessibilityIdentifier("inline.keyboard.done")
             }
         }
-        .onDisappear { store.clearTradePreparation() }
+        .onAppear { isVisible = true }
+        .onDisappear { isVisible = false; store.clearTradePreparation() }
     }
 
     private var editor: some View {
@@ -230,7 +232,11 @@ struct InlineTradePanel: View {
         guard !needsLimit || limit != nil, !needsStop || stop != nil else { localError = "请输入有效价格，最多 4 位小数。"; return }
         let draft = OrderDraft(symbol: symbol, side: side, kind: kind, quantity: shares,
                                limitPrice: limit, stopPrice: stop, duration: duration)
-        Task { if await store.prepareOrder(draft) { review = store.preparedOrder } }
+        Task {
+            let prepared = await store.prepareOrder(draft)
+            guard isVisible else { store.clearTradePreparation(); return }
+            if prepared { review = store.preparedOrder }
+        }
     }
     private func submit() {
         guard !locked, let review, review.id == store.preparedOrder?.id else { return }

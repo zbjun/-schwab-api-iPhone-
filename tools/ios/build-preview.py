@@ -61,7 +61,11 @@ def main():
     missing = sorted(PAGES.keys() - pages.keys())
     if missing:
         raise SystemExit("Missing native screenshots: " + ", ".join(missing))
-    ordered = [pages[name] for name in sorted(pages)]
+    order = ["02-watchlist", "15-watchlist-charts", "06-stock-detail-chart", "11-daily-candles",
+             "12-weekly-candles", "13-monthly-candles", "14-five-day-chart", "16-inline-buy",
+             "17-inline-keyboard", "18-inline-review", "01-accounts", "03-trade", "04-orders",
+             "07-limit-order-review", "08-canceled-demo-order", "09-replacement-review", "10-invalid-quantity", "05-connection"]
+    ordered = [pages[name] for name in order]
     metadata = dict(version="0.3.0", run=args.run, commit=args.commit, pages=ordered)
     (output / "evidence.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     buttons = "\n".join(
@@ -85,7 +89,7 @@ TEMPLATE = """<!doctype html>
 *{box-sizing:border-box}body{margin:0}button,a{-webkit-tap-highlight-color:transparent}button{font:inherit;cursor:pointer}
 .shell{max-width:1220px;margin:0 auto;padding:36px 32px 24px}.eyebrow{font-size:12px;letter-spacing:2px;font-weight:750;color:#326bbb}
 h1{font-size:32px;letter-spacing:-1px;margin:10px 0}header p{color:#637083;line-height:1.8;margin:6px 0 24px}.badge{display:inline-block;font-size:12px;padding:5px 10px;border-radius:20px;background:#e6efff;color:#2261b9;vertical-align:middle;margin-left:10px;letter-spacing:0}
-main{display:grid;grid-template-columns:270px minmax(280px,1fr) 240px;gap:36px;align-items:start}.nav{display:grid;gap:5px;padding-top:4px}
+main{display:grid;grid-template-columns:270px minmax(280px,1fr) 240px;gap:36px;align-items:start}.nav{display:grid;gap:5px;padding-top:4px;max-height:75vh;overflow-y:auto}
 .page-button{display:flex;gap:14px;align-items:center;text-align:left;border:1px solid transparent;background:transparent;padding:13px 14px;border-radius:13px;color:#546074;font-size:14px}
 .page-button:hover{background:#edf1f7}.page-button[aria-pressed=true]{background:white;color:#185fbe;border-color:#dbe7f8;box-shadow:0 4px 14px #17406908;font-weight:650}.number{font-size:11px;letter-spacing:1px;color:#93a0b1;font-variant-numeric:tabular-nums}
 .viewer{text-align:center}.screenshot-button{border:0;padding:0;background:none;display:inline-block;max-width:100%;border-radius:32px;box-shadow:0 18px 50px #253b5722;overflow:hidden;line-height:0}

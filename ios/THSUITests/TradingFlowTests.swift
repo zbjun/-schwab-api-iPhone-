@@ -96,7 +96,7 @@ final class TradingFlowTests: XCTestCase {
         capture("16-inline-buy")
         replaceText("inline.limitPrice", with: "200")
         XCTAssertTrue(app.keyboards.firstMatch.exists)
-        assertChartAboveTradePanel()
+        assertChartAboveTradePanel(focusedField: "inline.limitPrice")
         capture("17-inline-keyboard")
         dismissKeyboard()
         tapRevealing("inline.amountMode")
@@ -268,7 +268,7 @@ final class TradingFlowTests: XCTestCase {
 
     private func tapRevealing(_ identifier: String) { reveal(identifier).tap() }
 
-    private func assertChartAboveTradePanel(file: StaticString = #filePath, line: UInt = #line) {
+    private func assertChartAboveTradePanel(focusedField: String? = nil, file: StaticString = #filePath, line: UInt = #line) {
         let chart = element("detail.chart")
         let panel = element("detail.tradePanel")
         XCTAssertTrue(chart.exists, file: file, line: line)
@@ -278,6 +278,16 @@ final class TradingFlowTests: XCTestCase {
         XCTAssertTrue(app.frame.contains(chart.frame), file: file, line: line)
         if app.keyboards.firstMatch.exists {
             XCTAssertLessThanOrEqual(chart.frame.maxY, app.keyboards.firstMatch.frame.minY, file: file, line: line)
+            var keyboardTop = app.keyboards.firstMatch.frame.minY
+            for toolbar in app.toolbars.allElementsBoundByIndex where toolbar.frame.minY > panel.frame.minY {
+                keyboardTop = min(keyboardTop, toolbar.frame.minY)
+            }
+            XCTAssertLessThanOrEqual(panel.frame.maxY, keyboardTop + 1, file: file, line: line)
+            if let focusedField {
+                let field = element(focusedField)
+                XCTAssertTrue(field.isHittable, file: file, line: line)
+                XCTAssertTrue(visibleContent(in: app.scrollViews["inline.fields"]).contains(field.frame), file: file, line: line)
+            }
         }
     }
 

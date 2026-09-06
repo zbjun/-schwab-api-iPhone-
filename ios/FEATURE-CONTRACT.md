@@ -4,9 +4,10 @@
 
 ## 本轮范围与验收
 
-- 原生中文界面，账户、自选、交易、订单、连接五个入口。统一颜色、卡片、数值排版、加载/空/错误状态，支持深浅色及大字体。
+- 原生中文界面，账户、自选、交易、订单、连接五个入口。0.3.0 行情和交易页固定深色，数值紧凑对齐，保留加载/空/错误状态。
 - 账户选择、余额与持仓；持仓点击查看证券，买卖操作进入订单草稿。
-- 自选增删、证券代码查价、行情详情及 1 日 / 1 周 / 1 月 / 1 年图表。缺失报价和空历史使用空态，不填造真实数据。
+- 自选增删、证券代码查价；左滑切换同列分时图。详情显示分时、日K、周K、月K、五日，附黄色均价估算或 MA5/10/20/30。缺失报价和空历史使用空态，不填造真实数据。
+- 买卖编辑与核对位于图下独立区域，键盘出现时保留主图；展示账户可买/卖估算，支持美元预算向下换算限价整股订单。
 - 常规交易时段、整股、买入 / 卖出持仓；市价、限价、止损、止损限价；DAY / GOOD_TILL_CANCEL，市价只允许 DAY。
 - 草稿 -> 刷新账户与证券信息 -> 本地核对 -> 本人确认 -> 券商回执 -> 订单列表/详情。核对页面不声称已获券商预审，回执不声称已成交。
 - 最近 30 天订单，状态筛选与详情；只有最新详情明确允许的简单股票单可撤改。替换发送完整订单并跟踪新 ID。
@@ -40,6 +41,7 @@ preparedOrder: PreparedOrder?
 
 func selectAccount(_ id: String) async
 func openTrade(symbol: String, side: OrderSide)
+func beginInlineTrade(symbol: String, side: OrderSide)
 func beginReplacement(_ order: BrokerageOrder)
 func clearTradePreparation()
 func prepareOrder(_ draft: OrderDraft) async -> Bool
@@ -50,6 +52,7 @@ func cancelOrder(_ order: BrokerageOrder) async -> Bool
 func acknowledgeOrderReconciliation()
 func lookupQuote(_ symbol: String) async throws -> StockQuote
 func priceHistory(symbol: String, range: HistoryRange) async throws -> PriceHistory
+func fundamentals(symbol: String) async throws -> StockFundamentals
 ```
 
 `PreparedOrder` 为 Sendable/Identifiable 的不可变本地核对快照：`id: UUID`、`draft: OrderDraft`、`accountID: String`、`accountDisplay: String`、`accountHash: String`、`quote: StockQuote`、`estimatedValue: Double?`、`availableShares: Double`、`buyingPower: Double?`、`preparedAt: Date`、`replacementOrderID: String?`、`isDemo: Bool`。确认后只提交这个快照；切换账户、授权、演示状态时失效。

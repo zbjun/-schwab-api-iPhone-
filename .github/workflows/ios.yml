@@ -8,6 +8,14 @@ on:
         required: true
         default: app.personal.ths
         type: string
+      validation_scope:
+        description: Full release verification or appearance diagnosis only
+        required: true
+        default: full
+        type: choice
+        options:
+          - full
+          - appearance
 
 permissions:
   contents: read
@@ -19,6 +27,7 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       APP_BUNDLE_ID: ${{ inputs.bundle_id }}
+      VALIDATION_SCOPE: ${{ inputs.validation_scope }}
     steps:
       - uses: actions/checkout@v4
       - name: Validate project and bundle identifier
@@ -32,6 +41,12 @@ jobs:
           python3 tools/ios/select-simulator.py >> "$GITHUB_ENV"
       - name: Build and test in the iPhone simulator
         run: |
+          test_selection=()
+          case "$VALIDATION_SCOPE" in
+            full) ;;
+            appearance) test_selection=(-only-testing:THSUITests/TradingFlowTests/testAppearanceFollowsSystemWhileAppRemainsOpen) ;;
+            *) exit 1 ;;
+          esac
           xcodebuild test \
             -project ios/THS.xcodeproj -scheme THS -configuration Debug \
             -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
@@ -40,6 +55,7 @@ jobs:
             -default-test-execution-time-allowance 90 \
             -maximum-test-execution-time-allowance 600 \
             -resultBundlePath artifacts/THSTests.xcresult \
+            "${test_selection[@]}" \
             CODE_SIGNING_ALLOWED=NO
       - name: Export native UI screenshots
         if: always()
@@ -49,6 +65,7 @@ jobs:
             xcrun xcresulttool export attachments --path artifacts/THSTests.xcresult --output-path artifacts/ui-screenshots
           fi
       - name: Archive unsigned iPhone app
+        if: ${{ success() && inputs.validation_scope == 'full' }}
         run: |
           xcodebuild archive \
             -project ios/THS.xcodeproj -scheme THS -configuration Release \
@@ -57,6 +74,7 @@ jobs:
             "PRODUCT_BUNDLE_IDENTIFIER=$APP_BUNDLE_ID" \
             CODE_SIGNING_ALLOWED=NO
       - name: Package app for user-provided signing
+        if: ${{ success() && inputs.validation_scope == 'full' }}
         run: |
           mkdir -p artifacts/package/Payload
           ditto artifacts/THS.xcarchive/Products/Applications/THS.app artifacts/package/Payload/THS.app
@@ -65,6 +83,7 @@ jobs:
           cd ..
           shasum -a 256 THS-unsigned.ipa > THS-unsigned.ipa.sha256
       - name: Upload unsigned app
+        if: ${{ success() && inputs.validation_scope == 'full' }}
         uses: actions/upload-artifact@v4
         with:
           name: THS-unsigned-iPhone

@@ -453,6 +453,7 @@ final class TradingFlowTests: XCTestCase {
         XCTContext.runActivity(named: "Change system appearance through Display & Brightness") { _ in
             let settings = XCUIApplication(bundleIdentifier: "com.apple.Preferences")
             settings.launch()
+            captureSettingsDiagnostics(settings, name: "settings-open", appearance: appearance)
             let names = appearance == .dark ? ["Dark", "深色"] : ["Light", "浅色"]
             let choice = settings.buttons.matching(NSPredicate(format: "label IN %@", names)).firstMatch
             if !choice.exists {
@@ -460,6 +461,9 @@ final class TradingFlowTests: XCTestCase {
                 for _ in 0..<6 {
                     if display.exists && display.isHittable { break }
                     settings.swipeUp()
+                }
+                if !display.exists || !display.isHittable {
+                    captureSettingsDiagnostics(settings, name: "settings-display-not-found", appearance: appearance)
                 }
                 XCTAssertTrue(display.exists && display.isHittable)
                 display.tap()
@@ -477,6 +481,19 @@ final class TradingFlowTests: XCTestCase {
         XCTAssertTrue(state == .runningBackground || state == .runningBackgroundSuspended,
                       "Appearance changes must preserve the existing app process")
         app.activate()
+    }
+
+    private func captureSettingsDiagnostics(_ settings: XCUIApplication, name: String, appearance: XCUIDevice.Appearance) {
+        let screenshot = XCTAttachment(screenshot: settings.screenshot())
+        screenshot.name = name
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        let details = "Requested appearance: \(appearance), device: \(XCUIDevice.shared.appearance), settings state: \(settings.state), app state: \(app.state)\n\(settings.debugDescription)"
+        let hierarchy = XCTAttachment(string: details)
+        hierarchy.name = name + "-accessibility"
+        hierarchy.lifetime = .keepAlways
+        add(hierarchy)
+        print(details)
     }
 
     private func waitForRenderedAppearance(_ appearance: XCUIDevice.Appearance, in application: XCUIApplication) -> Bool {

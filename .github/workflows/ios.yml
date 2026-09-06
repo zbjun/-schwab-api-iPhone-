@@ -1,0 +1,73 @@
+name: Build personal iPhone app
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundle_id:
+        description: Bundle identifier required by your signing profile
+        required: true
+        default: app.personal.ths
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      APP_BUNDLE_ID: ${{ inputs.bundle_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate project and bundle identifier
+        run: |
+          [[ "$APP_BUNDLE_ID" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]] || exit 1
+          node tools/ios/generate-project.mjs --check
+          xcodebuild -version
+          plutil -lint ios/THS/Info.plist ios/THS.xcodeproj/project.pbxproj
+      - name: Select an available iPhone simulator
+        run: |
+          python3 tools/ios/select-simulator.py >> "$GITHUB_ENV"
+      - name: Build and test in the iPhone simulator
+        run: |
+          xcodebuild test \
+            -project ios/THS.xcodeproj -scheme THS -configuration Debug \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+            -parallel-testing-enabled NO \
+            -resultBundlePath artifacts/THSTests.xcresult \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Archive unsigned iPhone app
+        run: |
+          xcodebuild archive \
+            -project ios/THS.xcodeproj -scheme THS -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath artifacts/THS.xcarchive \
+            "PRODUCT_BUNDLE_IDENTIFIER=$APP_BUNDLE_ID" \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Package app for user-provided signing
+        run: |
+          mkdir -p artifacts/package/Payload
+          ditto artifacts/THS.xcarchive/Products/Applications/THS.app artifacts/package/Payload/THS.app
+          cd artifacts/package
+          zip -qry ../THS-unsigned.ipa Payload
+          cd ..
+          shasum -a 256 THS-unsigned.ipa > THS-unsigned.ipa.sha256
+      - name: Upload unsigned app
+        uses: actions/upload-artifact@v4
+        with:
+          name: THS-unsigned-iPhone
+          path: |
+            artifacts/THS-unsigned.ipa
+            artifacts/THS-unsigned.ipa.sha256
+            ios/INSTALL.md
+          retention-days: 14
+      - name: Upload simulator test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: THS-simulator-test-results
+          path: artifacts/THSTests.xcresult
+          if-no-files-found: ignore
+          retention-days: 7

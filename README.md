@@ -8,8 +8,10 @@
 - 已实现用户手动输入应用凭据、外部浏览器授权、手动回填 `https://127.0.0.1` 回调。
 - 凭据、访问/刷新令牌和待完成授权保存在设备钥匙串；源码与构建流程不含真实凭据。
 - 账户和行情并行读取，支持手动刷新及自选增删；错误、缺失字段和演示数据均明确区分。
-- 已准备 XCTest 和 macOS 云端构建流程。
-- **当前 Windows 环境没有 Xcode；Swift 编译、模拟器测试、签名和真机验证尚未完成。不能把源码准备完成等同于已有可安装 IPA。**
+- 已在 macOS 云端完成 Swift 编译，20 项 XCTest 全部通过，设备 Release 归档和 IPA 打包成功。
+- 已下载并校验 `THS-0.1.0-unsigned.ipa`。**这是未签名 IPA，需要签名后才能安装；尚未在你的 iPhone 上验证。**
+
+构建记录：[GitHub Actions #34010504808](https://github.com/zbjun/ths-ios-personal/actions/runs/34010504808)，源码提交 `3edd5042759bbbf06f1b5eadb0732df9dddad52d`。模拟器为 iPhone 17 Pro / iOS 26.5，不等同于 iPhone 16 Pro 真机验证。
 
 账户和行情读取已经在 Windows 本机成功验证，网络对比见 `reports/authenticated-proxy-comparison-20260905-230612.md`。iPhone 网络仍需真机验证。
 
@@ -28,7 +30,7 @@ macOS 上可用 Xcode 打开工程，选择 iPhone 模拟器，然后执行 Test
 
 GitHub Actions 工作流 `.github/workflows/ios.yml` 仅由 `workflow_dispatch` 手动启动：检查项目、模拟器构建与 XCTest、设备 archive，再打包为 `THS-unsigned.ipa`。未签名 IPA 需要你安排的签名服务或自己的 Apple 签名才能安装。工作流不需要 Schwab 密钥，也不会发布 App Store。
 
-仓库上传及云端工作流尚未执行。云端机器使用已核验的 `macos-26` / Xcode 26.6；若 GitHub 后续移除该版本，需按官方镜像清单更新路径。
+源码和工作流已上传到[自己的 GitHub 私有仓库](https://github.com/zbjun/ths-ios-personal)。本次构建使用 `macos-26` / Xcode 26.6、iOS 26.5 SDK；若 GitHub 后续移除该版本，需按官方镜像清单更新路径。构建日志与下载的安装包保存在本地 `artifacts/`，不纳入源码提交。
 
 ## 首次连接
 

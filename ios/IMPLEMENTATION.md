@@ -17,11 +17,21 @@
 
 ## 验收边界
 
-本机可运行 Node 工程生成/一致性检查，并检查工程引用、XML、源码文件和提交包。它们不能证明 Swift 编译或 iOS 运行成功。真正的编译与 XCTest 需要 macOS/Xcode，界面、Safari 回调复制和手机网络需要模拟器或真机验证。
+本机已运行 Node 工程生成/一致性检查和提交差异检查。2026-09-06 又通过 GitHub macOS 构建机执行了实际 Swift 编译、XCTest 和设备归档，结果见下方。界面观感、Safari 回调复制和手机网络仍需在目标 iPhone 上验证。
 
 云端测试前不传任何 Schwab 密钥；构建产物由用户另行签名。安装后首次授权才把用户输入的凭据写入手机钥匙串。
 
 实盘能力需要在后续单独加入：账户 ID 映射、股票/ETF 订单草稿、价格与数量校验、订单确认、券商错误反馈、订单列表及状态核对。不能用目前的 HTTP 读取耗时推算成交速度。
+
+## 本次构建证据
+
+- [成功的云端构建](https://github.com/zbjun/ths-ios-personal/actions/runs/34010504808)：源码提交 `3edd5042759bbbf06f1b5eadb0732df9dddad52d`，2026-09-06 04:07 UTC 完成。
+- 构建环境：macOS 26 / Xcode 26.6 / iOS 26.5 SDK。
+- iPhone 17 Pro / iOS 26.5 模拟器执行 20 项 XCTest，0 失败；覆盖 OAuth 回调验证、刷新并发、退出竞态、钥匙串写失败一致性、账户/行情解析和错误脱敏。网络与存储使用测试替身，不调用真实券商账户。
+- `xcodebuild archive` 的 Release 真机归档成功。下载的 IPA 包含 arm64 / iPhoneOS 程序，Bundle ID 为 `app.personal.ths`，版本 0.1.0（build 1），最低 iOS 17。
+- 本地检查 ZIP 完整性及 SHA-256，与云端校验文件一致：`49d4e66b88a9670cae306803389d3b609f6bca816f4cd334bb19a0ac2d346ee0`。同时确认没有签名、描述文件或签名私钥。
+- Xcode 日志中存在测试框架不剥离签名及未启用 App Intents 元数据的工具链警告；没有导致构建或测试失败。
+- 未验证：签名安装、真实 iPhone 16 Pro 界面与网络、手机上的 Safari 授权，以及设备钥匙串的真实会话持久化。当前没有 UI 自动化验收或真实订单测试。
 
 ## 已核验的参考资料
 

@@ -218,7 +218,13 @@ private struct OrderDetailView: View {
             LabeledContent("委托数量", value: shareText(order.quantity))
             LabeledContent("已成交", value: shareText(order.filledQuantity))
             LabeledContent("剩余数量", value: shareText(order.remainingQuantity))
-            if order.limitPrice != nil { LabeledContent("限价", value: DisplayFormat.price(order.limitPrice)) }
+            if order.limitPrice != nil {
+                LabeledContent("限价", value: DisplayFormat.price(order.limitPrice))
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("限价")
+                    .accessibilityValue(DisplayFormat.price(order.limitPrice))
+                    .accessibilityIdentifier("order.detail.limitPrice")
+            }
             if order.stopPrice != nil { LabeledContent("触发价", value: DisplayFormat.price(order.stopPrice)) }
             LabeledContent("有效期", value: order.duration?.title ?? "—")
             if let time = order.enteredAt {

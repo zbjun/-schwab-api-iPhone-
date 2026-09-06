@@ -18,22 +18,49 @@ final class AppStore {
     var quotesLatencyMilliseconds: Double?
     var watchlist: [String]
     var isDemo = false
+    var activeTab: AppTab = .accounts
+    var tradeSymbol = "AAPL"
+    var tradeSide: OrderSide = .buy
+    var tradeReplacement: BrokerageOrder?
+    var tradeFormID = UUID()
+    var orders: [BrokerageOrder] = []
+    var ordersUpdatedAt: Date?
+    var isLoadingOrders = false
+    var ordersError: String?
+    var isSubmittingOrder = false
+    var unresolvedOrderOperation = false
+    var tradeError: String?
+    var tradeNotice: String?
+    var preparedOrder: PreparedOrder?
 
-    @ObservationIgnored private let client: SchwabClient
+    @ObservationIgnored let client: SchwabClient
     @ObservationIgnored private let defaults: UserDefaults
-    @ObservationIgnored private var generation = 0
+    @ObservationIgnored let operationStore: any SchwabSecureStore
+    @ObservationIgnored let now: @Sendable () -> Date
+    @ObservationIgnored var generation = 0
+    @ObservationIgnored var accountHashes: [String: String] = [:]
+    @ObservationIgnored var demoOrders: [BrokerageOrder] = []
     @ObservationIgnored private var hasLoaded = false
     private static let watchlistKey = "ths.watchlist.v1"
 
-    init(client: SchwabClient = SchwabClient(), defaults: UserDefaults = .standard) {
+    init(client: SchwabClient = SchwabClient(), defaults: UserDefaults = .standard,
+         operationStore: any SchwabSecureStore = KeychainVault(account: "pending-order-operation"),
+         now: @escaping @Sendable () -> Date = { Date() }) {
         self.client = client
         self.defaults = defaults
+        self.operationStore = operationStore
+        self.now = now
         let saved = defaults.stringArray(forKey: Self.watchlistKey) ?? ["AAPL", "MSFT", "SPY"]
         var unique: [String] = []
         for symbol in saved where Self.validSymbol(symbol) && !unique.contains(symbol) {
-            if unique.count < 12 { unique.append(symbol) }
+            if unique.count < 50 { unique.append(symbol) }
         }
         watchlist = unique
+        do { unresolvedOrderOperation = try operationStore.read() != nil }
+        catch {
+            unresolvedOrderOperation = true
+            tradeError = "无法读取上次订单操作记录，请解锁设备后重新打开 App。"
+        }
     }
 
     var selectedAccount: BrokerageAccount? {
@@ -41,18 +68,34 @@ final class AppStore {
     }
 
     func load() async {
-        guard !hasLoaded else { return }
+        guard !hasLoaded, !isBusy, !isSubmittingOrder else { return }
         hasLoaded = true
+        isBusy = true
         do {
             let status = try await client.sessionStatus()
             isConfigured = status.configured
             isAuthenticated = status.authenticated
-            if isAuthenticated { await refresh() }
         } catch { errorMessage = Self.message(for: error) }
+        isBusy = false
+        if isAuthenticated { await refresh() }
     }
 
+    #if DEBUG
+    func loadUITestDemo(tab: String?) async {
+        hasLoaded = true
+        await setDemoMode(true)
+        switch tab {
+        case "watchlist": activeTab = .watchlist
+        case "trade": activeTab = .trade
+        case "orders": activeTab = .orders
+        case "connection": activeTab = .connection
+        default: activeTab = .accounts
+        }
+    }
+    #endif
+
     func saveCredentials(clientID: String, clientSecret: String) async -> Bool {
-        guard !isBusy else { return false }
+        guard !isBusy, !isSubmittingOrder else { return false }
         isBusy = true
         defer { isBusy = false }
         errorMessage = nil
@@ -78,7 +121,8 @@ final class AppStore {
     }
 
     func beginAuthorization() async -> URL? {
-        guard !isBusy else { return nil }
+        guard !isBusy, !isSubmittingOrder, !isDemo else { return nil }
+        preparedOrder = nil
         isBusy = true
         defer { isBusy = false }
         errorMessage = nil
@@ -93,7 +137,8 @@ final class AppStore {
     }
 
     func completeAuthorization(callbackURL: String) async {
-        guard !isBusy else { return }
+        guard !isBusy, !isSubmittingOrder, !isDemo else { return }
+        preparedOrder = nil
         isBusy = true
         errorMessage = nil
         do {
@@ -121,7 +166,7 @@ final class AppStore {
     }
 
     func refresh() async {
-        guard !isBusy else { return }
+        guard !isBusy, !isSubmittingOrder else { return }
         if isDemo {
             loadDemo()
             return
@@ -147,6 +192,7 @@ final class AppStore {
             accounts = response.value
             if !accounts.contains(where: { $0.id == selectedAccountID }) {
                 selectedAccountID = accounts.first?.id
+                clearOrderContext()
             }
             accountsUpdatedAt = Date()
             accountsLatencyMilliseconds = response.elapsedMilliseconds
@@ -173,17 +219,22 @@ final class AppStore {
     }
 
     func setDemoMode(_ flag: Bool) async {
-        guard !isBusy else { return }
+        guard !isBusy, !isSubmittingOrder else { return }
         generation += 1
         isDemo = flag
         errorMessage = nil
         statusMessage = flag ? "正在查看演示数据，不连接真实账户。" : nil
         clearFinancialData()
-        if flag { loadDemo() }
+        if flag {
+            demoOrders = DemoData.orders
+            loadDemo()
+            orders = demoOrders
+        }
         else { await refresh() }
     }
 
     func disconnect() async {
+        guard !isSubmittingOrder else { return }
         generation += 1
         let currentGeneration = generation
         isBusy = true
@@ -200,6 +251,7 @@ final class AppStore {
     }
 
     func removeCredentials() async {
+        guard !isSubmittingOrder else { return }
         generation += 1
         let currentGeneration = generation
         isBusy = true
@@ -217,14 +269,15 @@ final class AppStore {
     }
 
     func addSymbol(_ value: String) async {
+        guard !isBusy, !isSubmittingOrder else { return }
         let symbol = value.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         guard Self.validSymbol(symbol) else {
             errorMessage = "请输入有效的股票或 ETF 代码，例如 AAPL。"
             return
         }
         guard !watchlist.contains(symbol) else { return }
-        guard watchlist.count < 12 else {
-            errorMessage = "第一版最多保存 12 个自选代码。"
+        guard watchlist.count < 50 else {
+            errorMessage = "最多保存 50 个自选代码。"
             return
         }
         watchlist.append(symbol)
@@ -233,12 +286,15 @@ final class AppStore {
     }
 
     func removeSymbol(_ symbol: String) async {
+        guard !isBusy, !isSubmittingOrder else { return }
         watchlist.removeAll { $0 == symbol }
         quotes.removeAll { $0.symbol == symbol }
         defaults.set(watchlist, forKey: Self.watchlistKey)
+        if watchlist.isEmpty { quotesUpdatedAt = nil; quotesLatencyMilliseconds = nil }
     }
 
-    private func clearFinancialData() {
+    func clearFinancialData() {
+        clearOrderContext()
         accounts = []
         quotes = []
         selectedAccountID = nil
@@ -251,18 +307,18 @@ final class AppStore {
     private func loadDemo() {
         accounts = DemoData.accounts
         selectedAccountID = accounts.first?.id
-        quotes = DemoData.quotes.filter { watchlist.contains($0.symbol) }
+        quotes = watchlist.compactMap { DemoData.quote(symbol: $0) }
         accountsUpdatedAt = nil
         quotesUpdatedAt = nil
         accountsLatencyMilliseconds = nil
         quotesLatencyMilliseconds = nil
     }
 
-    private static func validSymbol(_ symbol: String) -> Bool {
-        symbol.range(of: "^[A-Z0-9][A-Z0-9.\\-/]{0,14}$", options: .regularExpression) != nil
+    static func validSymbol(_ symbol: String) -> Bool {
+        symbol.range(of: "^[A-Z][A-Z0-9.\\-/]{0,14}$", options: .regularExpression) != nil
     }
 
-    private static func message(for error: Error) -> String {
+    static func message(for error: Error) -> String {
         (error as? LocalizedError)?.errorDescription ?? "暂时无法完成请求，请稍后重试。"
     }
 

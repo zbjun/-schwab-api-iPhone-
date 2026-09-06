@@ -19,5 +19,6 @@ if not candidates:
 def runtime_version(candidate):
     return tuple(int(part) for part in candidate[0].split(".iOS-")[-1].split("-"))
 
-_, selected = max(candidates, key=runtime_version)
+_, selected = max(candidates, key=lambda item: (runtime_version(item), item[1].get("name") == "iPhone 16 Pro"))
 print(f"SIMULATOR_UDID={selected['udid']}")
+print(f"SIMULATOR_NAME={selected['name']}")

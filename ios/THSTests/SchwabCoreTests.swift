@@ -383,7 +383,7 @@ final class SchwabCoreTests: XCTestCase {
         XCTAssertEqual(status.expiresAt, restoredStatus.expiresAt)
     }
 
-    func testTransportDeniesNonReadEndpointsBeforeAnyNetwork() async throws {
+    func testTransportDeniesUnconfiguredWritesAndForeignHostsBeforeAnyNetwork() async throws {
         let transport = DirectSchwabTransport()
         let urls = ["https://api.schwabapi.com/trader/v1/accounts/fixture/orders", "https://other.example/trader/v1/accounts?fields=positions"]
         for url in urls {

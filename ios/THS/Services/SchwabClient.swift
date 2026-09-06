@@ -13,6 +13,10 @@ enum SchwabClientError: Error, LocalizedError, Equatable, Sendable {
     case network
     case invalidResponse
     case invalidSymbols
+    case invalidTradingAccount
+    case invalidOrderIdentifier
+    case invalidDateRange
+    case orderOutcomeUnknown
     case redirectRejected
     case httpStatus(Int)
 
@@ -29,10 +33,14 @@ enum SchwabClientError: Error, LocalizedError, Equatable, Sendable {
         case .network: return "无法完成到 Schwab 的连接，请检查网络后重试。"
         case .invalidResponse: return "Schwab 返回的数据不完整或格式不受支持，请稍后重试。"
         case .invalidSymbols: return "请输入 1–50 个有效证券代码，每个代码最多 64 个字符。"
+        case .invalidTradingAccount: return "交易账户标识无效，请刷新账户后重试。"
+        case .invalidOrderIdentifier: return "订单编号无效，请刷新订单后重试。"
+        case .invalidDateRange: return "请选择有效的订单查询时间，本版每次最多查询 60 天。"
+        case .orderOutcomeUnknown: return "无法确认本次委托操作结果。请先刷新订单并到 Schwab 核实，避免重复提交。"
         case .redirectRejected: return "Schwab API 返回了非预期跳转，请稍后重试。"
         case .httpStatus(let status):
             switch status {
-            case 400: return "Schwab 未接受请求，请检查应用配置或重新授权（HTTP 400）。"
+            case 400: return "Schwab 未接受请求，请检查填写内容或应用配置（HTTP 400）。"
             case 401: return "Schwab 授权已失效，请重新登录（HTTP 401）。"
             case 403: return "当前应用或账户没有此接口的访问权限（HTTP 403）。"
             case 429: return "请求过于频繁，请稍后重试（HTTP 429）。"
@@ -46,6 +54,14 @@ struct SchwabHTTPResponse: Sendable {
     let statusCode: Int
     let data: Data
     let elapsedMilliseconds: Double
+    let headers: [String: String]
+
+    init(statusCode: Int, data: Data, elapsedMilliseconds: Double, headers: [String: String] = [:]) {
+        self.statusCode = statusCode
+        self.data = data
+        self.elapsedMilliseconds = elapsedMilliseconds
+        self.headers = headers
+    }
 }
 
 protocol SchwabHTTPTransport: Sendable {
@@ -79,22 +95,7 @@ struct DirectSchwabTransport: SchwabHTTPTransport {
     }
 
     func send(_ request: URLRequest) async throws -> SchwabHTTPResponse {
-        guard let url = request.url, let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              components.scheme == "https", components.host == "api.schwabapi.com",
-              components.port == nil, components.user == nil, components.password == nil,
-              components.fragment == nil else { throw SchwabClientError.invalidResponse }
-        let items = components.queryItems ?? []
-        let allowed: Bool
-        switch (request.httpMethod ?? "GET", components.path) {
-        case ("POST", "/v1/oauth/token"):
-            allowed = items.isEmpty
-        case ("GET", "/trader/v1/accounts"):
-            allowed = items.count == 1 && items[0].name == "fields" && items[0].value == "positions"
-        case ("GET", "/marketdata/v1/quotes"):
-            allowed = items.count == 1 && items[0].name == "symbols" && !(items[0].value ?? "").isEmpty
-        default: allowed = false
-        }
-        guard allowed else { throw SchwabClientError.invalidResponse }
+        try Self.validateRequest(request)
         let started = ProcessInfo.processInfo.systemUptime
         do {
             let (data, response) = try await session.data(for: request)
@@ -104,8 +105,14 @@ struct DirectSchwabTransport: SchwabHTTPTransport {
             guard !(300..<400).contains(response.statusCode) else {
                 throw SchwabClientError.redirectRejected
             }
+            var headers: [String: String] = [:]
+            for (key, value) in response.allHeaderFields {
+                guard let key = key as? String else { continue }
+                headers[key.lowercased()] = String(describing: value)
+            }
             return SchwabHTTPResponse(statusCode: response.statusCode, data: data,
-                                      elapsedMilliseconds: (ProcessInfo.processInfo.systemUptime - started) * 1_000)
+                                      elapsedMilliseconds: (ProcessInfo.processInfo.systemUptime - started) * 1_000,
+                                      headers: headers)
         } catch let error as SchwabClientError {
             throw error
         } catch is CancellationError {
@@ -114,6 +121,132 @@ struct DirectSchwabTransport: SchwabHTTPTransport {
             if Task.isCancelled { throw CancellationError() }
             throw SchwabClientError.network
         }
+    }
+
+    static func validateRequest(_ request: URLRequest) throws {
+        guard let url = request.url, let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              components.scheme == "https", components.host == "api.schwabapi.com",
+              components.port == nil, components.user == nil, components.password == nil,
+              components.fragment == nil, components.percentEncodedPath == components.path else {
+            throw SchwabClientError.invalidResponse
+        }
+        let items = components.queryItems ?? []
+        guard Set(items.map(\.name)).count == items.count else { throw SchwabClientError.invalidResponse }
+        let allowed: Bool
+        switch (request.httpMethod ?? "GET", components.path) {
+        case ("POST", "/v1/oauth/token"):
+            allowed = items.isEmpty
+        case ("GET", "/trader/v1/accounts"):
+            allowed = items.count == 1 && items[0].name == "fields" && items[0].value == "positions"
+        case ("GET", "/marketdata/v1/quotes"):
+            allowed = items.count == 1 && items[0].name == "symbols" && !(items[0].value ?? "").isEmpty
+        case ("GET", "/trader/v1/accounts/accountNumbers"):
+            allowed = items.isEmpty
+        case ("GET", "/marketdata/v1/pricehistory"):
+            allowed = SchwabRequestPolicy.validHistoryQuery(items)
+        default:
+            let path = components.path.split(separator: "/", omittingEmptySubsequences: false)
+            if (path.count == 6 || path.count == 7), path[0].isEmpty,
+               path[1] == "trader", path[2] == "v1", path[3] == "accounts", path[5] == "orders",
+               SchwabRequestPolicy.validHash(String(path[4])) {
+                switch (request.httpMethod ?? "GET", path.count) {
+                case ("GET", 6):
+                    allowed = SchwabRequestPolicy.validOrderQuery(items)
+                case ("POST", 6), ("PUT", 7):
+                    allowed = items.isEmpty && (path.count == 6 || SchwabRequestPolicy.validOrderID(String(path[6])))
+                        && request.value(forHTTPHeaderField: "Content-Type") == "application/json"
+                        && !(request.httpBody ?? Data()).isEmpty
+                case ("GET", 7), ("DELETE", 7):
+                    allowed = items.isEmpty && SchwabRequestPolicy.validOrderID(String(path[6]))
+                default: allowed = false
+                }
+            } else { allowed = false }
+        }
+        guard allowed else { throw SchwabClientError.invalidResponse }
+    }
+}
+
+private enum SchwabRequestPolicy {
+    static func validHash(_ hash: String) -> Bool {
+        !hash.isEmpty && hash.utf8.count <= 128
+            && hash.range(of: "\\A[A-Za-z0-9_-]+\\z", options: .regularExpression) != nil
+            && hash.range(of: "[A-Za-z]", options: .regularExpression) != nil
+    }
+
+    static func validOrderID(_ identifier: String) -> Bool {
+        !identifier.isEmpty && identifier.utf8.count <= 32
+            && identifier.range(of: "\\A[0-9]+\\z", options: .regularExpression) != nil
+    }
+
+    static func validDateRange(from: Date, to: Date) -> Bool {
+        let interval = to.timeIntervalSince(from)
+        return from.timeIntervalSince1970.isFinite && to.timeIntervalSince1970.isFinite
+            && from.timeIntervalSince1970 >= 0 && to.timeIntervalSince1970 < 32_503_680_000
+            && interval >= 0 && interval <= 60 * 86_400
+    }
+
+    static func dateString(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
+    }
+
+    static func parseDate(_ value: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: value) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: value)
+    }
+
+    static func validOrderQuery(_ items: [URLQueryItem]) -> Bool {
+        guard items.count == 3, Set(items.map(\.name)) == ["maxResults", "fromEnteredTime", "toEnteredTime"] else {
+            return false
+        }
+        let values = Dictionary(uniqueKeysWithValues: items.map { ($0.name, $0.value ?? "") })
+        guard values["maxResults"] == "200", let fromRaw = values["fromEnteredTime"],
+              let toRaw = values["toEnteredTime"], fromRaw.hasSuffix("Z"), toRaw.hasSuffix("Z"),
+              let from = parseDate(fromRaw), let to = parseDate(toRaw) else { return false }
+        return validDateRange(from: from, to: to)
+    }
+
+    static func historyQuery(symbol: String, range: HistoryRange, end: Date) throws -> [URLQueryItem] {
+        guard OrderDraft.isValidSymbol(symbol) else { throw SchwabClientError.invalidSymbols }
+        let milliseconds = end.timeIntervalSince1970 * 1_000
+        guard milliseconds.isFinite, milliseconds >= 0, milliseconds < 32_503_680_000_000 else {
+            throw SchwabClientError.invalidDateRange
+        }
+        let periodType: String
+        let period: String
+        let frequencyType: String
+        let frequency: String
+        switch range {
+        case .day: (periodType, period, frequencyType, frequency) = ("day", "1", "minute", "1")
+        case .week: (periodType, period, frequencyType, frequency) = ("day", "5", "minute", "30")
+        case .month: (periodType, period, frequencyType, frequency) = ("month", "1", "daily", "1")
+        case .year: (periodType, period, frequencyType, frequency) = ("year", "1", "daily", "1")
+        }
+        return [URLQueryItem(name: "symbol", value: symbol),
+                URLQueryItem(name: "periodType", value: periodType), URLQueryItem(name: "period", value: period),
+                URLQueryItem(name: "frequencyType", value: frequencyType), URLQueryItem(name: "frequency", value: frequency),
+                URLQueryItem(name: "endDate", value: String(Int64(milliseconds))),
+                URLQueryItem(name: "needExtendedHoursData", value: "false"),
+                URLQueryItem(name: "needPreviousClose", value: "true")]
+    }
+
+    static func validHistoryQuery(_ items: [URLQueryItem]) -> Bool {
+        let names: Set<String> = ["symbol", "periodType", "period", "frequencyType", "frequency", "endDate",
+                                  "needExtendedHoursData", "needPreviousClose"]
+        guard items.count == names.count, Set(items.map(\.name)) == names else { return false }
+        let values = Dictionary(uniqueKeysWithValues: items.map { ($0.name, $0.value ?? "") })
+        guard let symbol = values["symbol"], OrderDraft.isValidSymbol(symbol),
+              values["needExtendedHoursData"] == "false", values["needPreviousClose"] == "true",
+              let endRaw = values["endDate"], endRaw.range(of: "\\A[0-9]+\\z", options: .regularExpression) != nil,
+              let end = Int64(endRaw), end >= 0, end < 32_503_680_000_000 else { return false }
+        let combination = [values["periodType"], values["period"], values["frequencyType"], values["frequency"]]
+        return combination == ["day", "1", "minute", "1"] || combination == ["day", "5", "minute", "30"]
+            || combination == ["month", "1", "daily", "1"] || combination == ["year", "1", "daily", "1"]
     }
 }
 
@@ -271,6 +404,52 @@ actor SchwabClient {
                            elapsedMilliseconds: response.elapsedMilliseconds)
     }
 
+    func fetchAccountIdentifiers() async throws -> APIResponse<[TradingAccountIdentifier]> {
+        let response = try await read(path: "/trader/v1/accounts/accountNumbers")
+        return APIResponse(value: try Self.decodeAccountIdentifiers(response.data),
+                           elapsedMilliseconds: response.elapsedMilliseconds)
+    }
+
+    func fetchOrders(accountHash: String, from: Date, to: Date) async throws -> APIResponse<[BrokerageOrder]> {
+        let path = try Self.ordersPath(accountHash: accountHash)
+        guard SchwabRequestPolicy.validDateRange(from: from, to: to) else { throw SchwabClientError.invalidDateRange }
+        let query = [URLQueryItem(name: "maxResults", value: "200"),
+                     URLQueryItem(name: "fromEnteredTime", value: SchwabRequestPolicy.dateString(from)),
+                     URLQueryItem(name: "toEnteredTime", value: SchwabRequestPolicy.dateString(to))]
+        let response = try await read(path: path, query: query)
+        return APIResponse(value: try Self.decodeOrders(response.data), elapsedMilliseconds: response.elapsedMilliseconds)
+    }
+
+    func fetchOrder(accountHash: String, orderID: String) async throws -> APIResponse<BrokerageOrder> {
+        let response = try await read(path: Self.ordersPath(accountHash: accountHash, orderID: orderID))
+        let order = try Self.decodeOrder(response.data)
+        guard order.id == orderID else { throw SchwabClientError.invalidResponse }
+        return APIResponse(value: order, elapsedMilliseconds: response.elapsedMilliseconds)
+    }
+
+    func placeOrder(accountHash: String, draft: OrderDraft) async throws -> OrderReceipt {
+        let path = try Self.ordersPath(accountHash: accountHash)
+        return try await writeOrder(path: path, accountHash: accountHash, method: "POST", body: draft.encoded())
+    }
+
+    func replaceOrder(accountHash: String, orderID: String, draft: OrderDraft) async throws -> OrderReceipt {
+        let path = try Self.ordersPath(accountHash: accountHash, orderID: orderID)
+        return try await writeOrder(path: path, accountHash: accountHash, method: "PUT", body: draft.encoded())
+    }
+
+    func cancelOrder(accountHash: String, orderID: String) async throws -> OrderReceipt {
+        let path = try Self.ordersPath(accountHash: accountHash, orderID: orderID)
+        return try await writeOrder(path: path, accountHash: accountHash, method: "DELETE", canceledOrderID: orderID)
+    }
+
+    func fetchPriceHistory(symbol: String, range: HistoryRange) async throws -> APIResponse<PriceHistory> {
+        let symbol = symbol.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let query = try SchwabRequestPolicy.historyQuery(symbol: symbol, range: range, end: now())
+        let response = try await read(path: "/marketdata/v1/pricehistory", query: query)
+        return APIResponse(value: try Self.decodePriceHistory(response.data, symbol: symbol),
+                           elapsedMilliseconds: response.elapsedMilliseconds)
+    }
+
     func disconnect() async throws {
         try load()
         var next = stored
@@ -380,7 +559,7 @@ actor SchwabClient {
         } catch { throw Self.sanitized(error) }
     }
 
-    private func read(path: String, query: [URLQueryItem]) async throws -> SchwabHTTPResponse {
+    private func read(path: String, query: [URLQueryItem] = []) async throws -> SchwabHTTPResponse {
         try load()
         let currentGeneration = generation
         let token = try await ensureToken()
@@ -402,6 +581,71 @@ actor SchwabClient {
             guard currentGeneration == generation else { throw SchwabClientError.sessionChanged }
             throw Self.sanitized(error)
         }
+    }
+
+    private func writeOrder(path: String, accountHash: String, method: String, body: Data? = nil,
+                            canceledOrderID: String? = nil) async throws -> OrderReceipt {
+        try load()
+        let currentGeneration = generation
+        let token = try await ensureToken()
+        guard currentGeneration == generation else { throw SchwabClientError.sessionChanged }
+        try Task.checkCancellation()
+        var request = try Self.request(path: path)
+        request.httpMethod = method
+        request.setValue("Bearer \(token.accessToken)", forHTTPHeaderField: "Authorization")
+        request.httpBody = body
+        if body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
+        // Validate before entering the send boundary, including when a test transport is injected.
+        try DirectSchwabTransport.validateRequest(request)
+        let response: SchwabHTTPResponse
+        do {
+            response = try await transport.send(request)
+        } catch {
+            // A lost response or cancellation can happen after Schwab has accepted the request.
+            // Never retry a write or turn this into an ordinary "try again" connection error.
+            throw SchwabClientError.orderOutcomeUnknown
+        }
+        guard currentGeneration == generation else { throw SchwabClientError.orderOutcomeUnknown }
+        if response.statusCode == 401, stored.token?.accessToken == token.accessToken {
+            var next = stored
+            next.token = nil
+            try persist(next)
+        }
+        if (400..<500).contains(response.statusCode), response.statusCode != 408 {
+            throw SchwabClientError.httpStatus(response.statusCode)
+        }
+        let expectedStatus = method == "DELETE" ? 200 : 201
+        guard response.statusCode == expectedStatus else { throw SchwabClientError.orderOutcomeUnknown }
+        let identifier = canceledOrderID ?? Self.orderIdentifier(from: response.headers, accountHash: accountHash)
+        return OrderReceipt(orderID: identifier, elapsedMilliseconds: response.elapsedMilliseconds)
+    }
+
+    private static func ordersPath(accountHash: String, orderID: String? = nil) throws -> String {
+        guard SchwabRequestPolicy.validHash(accountHash) else { throw SchwabClientError.invalidTradingAccount }
+        let path = "/trader/v1/accounts/\(accountHash)/orders"
+        guard let orderID else { return path }
+        guard SchwabRequestPolicy.validOrderID(orderID) else { throw SchwabClientError.invalidOrderIdentifier }
+        return "\(path)/\(orderID)"
+    }
+
+    static func orderIdentifier(from headers: [String: String], accountHash: String) -> String? {
+        guard SchwabRequestPolicy.validHash(accountHash) else { return nil }
+        let matches = headers.filter { $0.key.lowercased() == "location" }
+        guard matches.count == 1, let raw = matches.first?.value,
+              raw.utf8.count <= 2_048, raw.rangeOfCharacter(from: .whitespacesAndNewlines.union(.controlCharacters)) == nil,
+              let components = URLComponents(string: raw), components.url != nil,
+              components.port == nil, components.user == nil, components.password == nil,
+              components.query == nil, components.fragment == nil,
+              components.percentEncodedPath == components.path else { return nil }
+        if components.scheme == nil {
+            guard components.host == nil, raw.hasPrefix("/"), !raw.hasPrefix("//") else { return nil }
+        } else {
+            guard components.scheme == "https", components.host == "api.schwabapi.com" else { return nil }
+        }
+        let prefix = "/trader/v1/accounts/\(accountHash)/orders/"
+        guard components.path.hasPrefix(prefix) else { return nil }
+        let identifier = String(components.path.dropFirst(prefix.count))
+        return SchwabRequestPolicy.validOrderID(identifier) ? identifier : nil
     }
 
     private static func request(path: String, query: [URLQueryItem] = []) throws -> URLRequest {
@@ -539,9 +783,188 @@ actor SchwabClient {
         } catch { throw SchwabClientError.invalidResponse }
     }
 
+    private struct AccountIdentifierDTO: Decodable {
+        let accountNumber: String
+        let hashValue: String
+    }
+
+    static func decodeAccountIdentifiers(_ data: Data) throws -> [TradingAccountIdentifier] {
+        do {
+            let values = try JSONDecoder().decode([AccountIdentifierDTO].self, from: data)
+            var accountNumbers = Set<String>()
+            var hashes = Set<String>()
+            return try values.map { value in
+                guard !value.accountNumber.isEmpty, value.accountNumber.utf8.count <= 64,
+                      value.accountNumber.rangeOfCharacter(from: .whitespacesAndNewlines.union(.controlCharacters)) == nil,
+                      SchwabRequestPolicy.validHash(value.hashValue),
+                      accountNumbers.insert(value.accountNumber).inserted, hashes.insert(value.hashValue).inserted else {
+                    throw SchwabClientError.invalidResponse
+                }
+                return TradingAccountIdentifier(accountNumber: value.accountNumber, hashValue: value.hashValue)
+            }
+        } catch { throw SchwabClientError.invalidResponse }
+    }
+
+    private struct OrderIdentifierDTO: Decodable {
+        let value: String
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            if let string = try? container.decode(String.self) {
+                value = string
+            } else {
+                value = String(try container.decode(UInt64.self))
+            }
+            guard SchwabRequestPolicy.validOrderID(value) else { throw SchwabClientError.invalidResponse }
+        }
+    }
+
+    private struct OrderDTO: Decodable {
+        let orderId: OrderIdentifierDTO
+        let status: String?
+        let orderType: String?
+        let session: String?
+        let duration: String?
+        let orderStrategyType: String?
+        let complexOrderStrategyType: String?
+        let specialInstruction: String?
+        let taxLotMethod: String?
+        let requestedDestination: String?
+        let cancelTime: String?
+        let quantity: Double?
+        let filledQuantity: Double?
+        let remainingQuantity: Double?
+        let price: Double?
+        let stopPrice: Double?
+        let enteredTime: String?
+        let closeTime: String?
+        let cancelable: Bool?
+        let editable: Bool?
+        let orderLegCollection: [OrderLegDTO]?
+        let childOrderStrategies: [ChildOrderDTO]?
+    }
+
+    private struct OrderLegDTO: Decodable {
+        let instruction: String?
+        let instrument: InstrumentDTO?
+    }
+
+    private struct ChildOrderDTO: Decodable {}
+
+    static func decodeOrders(_ data: Data) throws -> [BrokerageOrder] {
+        do {
+            let orders = try JSONDecoder().decode([OrderDTO].self, from: data).map(Self.order)
+            guard Set(orders.map(\.id)).count == orders.count else { throw SchwabClientError.invalidResponse }
+            return orders
+        } catch { throw SchwabClientError.invalidResponse }
+    }
+
+    static func decodeOrder(_ data: Data) throws -> BrokerageOrder {
+        do { return try order(JSONDecoder().decode(OrderDTO.self, from: data)) }
+        catch { throw SchwabClientError.invalidResponse }
+    }
+
+    private static func order(_ dto: OrderDTO) throws -> BrokerageOrder {
+        let numbers = [dto.quantity, dto.filledQuantity, dto.remainingQuantity, dto.price, dto.stopPrice].compactMap { $0 }
+        guard numbers.allSatisfy({ $0.isFinite && $0 >= 0 }) else { throw SchwabClientError.invalidResponse }
+        let entered = try optionalOrderDate(dto.enteredTime)
+        let closed = try optionalOrderDate(dto.closeTime)
+        let legs = dto.orderLegCollection ?? []
+        let singleLeg = legs.count == 1 ? legs.first : nil
+        let side = singleLeg?.instruction.flatMap(OrderSide.init(rawValue:))
+        let kind = dto.orderType.flatMap(OrderKind.init(rawValue:))
+        let duration = dto.duration.flatMap(OrderDuration.init(rawValue:))
+        var symbols: [String] = []
+        for leg in legs {
+            if let symbol = leg.instrument?.symbol, !symbol.isEmpty, !symbols.contains(symbol) { symbols.append(symbol) }
+        }
+        let symbol = symbols.isEmpty ? "未知标的" : symbols.joined(separator: " / ")
+        let assetType = singleLeg?.instrument?.assetType
+        let simple = singleLeg != nil && assetType == "EQUITY" && side != nil && kind != nil && duration != nil
+            && dto.session == "NORMAL" && dto.orderStrategyType == "SINGLE"
+            && (dto.complexOrderStrategyType == nil || dto.complexOrderStrategyType == "NONE")
+            && (dto.childOrderStrategies ?? []).isEmpty && OrderDraft.isValidSymbol(symbol)
+        let status = dto.status ?? "UNKNOWN"
+        let actionable = simple && BrokerageOrder.openStatuses.contains(status)
+            && !["PENDING_CANCEL", "PENDING_REPLACE", "AWAITING_REPLACEMENT"].contains(status)
+        let wholeQuantity = dto.quantity.map { $0 > 0 && $0.rounded(.towardZero) == $0 && $0 < Double(Int.max) } ?? false
+        // Replacing partially filled orders needs broker-specific remaining-quantity semantics.
+        // Keep them visible and cancellable, but do not expose an ambiguous replacement.
+        // OrderDraft omits these execution choices. There is no NONE special instruction or
+        // universal tax-lot default in the reviewed schema; even explicit FIFO must survive a PUT.
+        let replacementPreservesInstructions = dto.specialInstruction == nil && dto.taxLotMethod == nil
+            && (dto.requestedDestination == nil || dto.requestedDestination == "AUTO")
+            && dto.cancelTime == nil
+        let pricesFitDraft = [dto.price, dto.stopPrice].compactMap { $0 }.allSatisfy(Self.priceFitsDraftPrecision)
+        let editable = actionable && dto.editable == true && dto.filledQuantity == 0 && wholeQuantity
+            && replacementPreservesInstructions && pricesFitDraft
+        return BrokerageOrder(id: dto.orderId.value, status: status, symbol: symbol, side: side, kind: kind,
+                              quantity: dto.quantity, filledQuantity: dto.filledQuantity,
+                              remainingQuantity: dto.remainingQuantity, limitPrice: dto.price, stopPrice: dto.stopPrice,
+                              duration: duration, enteredAt: entered, closedAt: closed,
+                              cancelable: actionable && dto.cancelable == true, editable: editable,
+                              assetType: assetType, isSimpleEquity: simple)
+    }
+
+    private static func priceFitsDraftPrecision(_ value: Double) -> Bool {
+        // Use the number's decimal spelling, not Decimal(value)'s binary floating-point expansion.
+        guard var decimal = Decimal(string: String(value), locale: Locale(identifier: "en_US_POSIX")) else { return false }
+        var rounded = Decimal()
+        NSDecimalRound(&rounded, &decimal, 4, .plain)
+        return rounded == decimal
+    }
+
+    private static func optionalOrderDate(_ value: String?) throws -> Date? {
+        guard let value else { return nil }
+        guard let date = SchwabRequestPolicy.parseDate(value), date.timeIntervalSince1970.isFinite else {
+            throw SchwabClientError.invalidResponse
+        }
+        return date
+    }
+
+    private struct PriceHistoryDTO: Decodable {
+        let symbol: String
+        let candles: [PriceCandleDTO]
+        let empty: Bool?
+        let previousClose: Double?
+    }
+
+    private struct PriceCandleDTO: Decodable {
+        let datetime: Double
+        let open: Double
+        let high: Double
+        let low: Double
+        let close: Double
+        let volume: Double?
+    }
+
+    static func decodePriceHistory(_ data: Data, symbol: String) throws -> PriceHistory {
+        do {
+            let dto = try JSONDecoder().decode(PriceHistoryDTO.self, from: data)
+            guard dto.symbol == symbol, dto.previousClose == nil || (dto.previousClose!.isFinite && dto.previousClose! >= 0),
+                  dto.empty != true || dto.candles.isEmpty else { throw SchwabClientError.invalidResponse }
+            var candlesByTime: [Date: PriceCandle] = [:]
+            for candle in dto.candles {
+                guard candle.datetime.isFinite, candle.datetime >= 0, candle.datetime < 32_503_680_000_000,
+                      [candle.open, candle.high, candle.low, candle.close].allSatisfy({ $0.isFinite && $0 >= 0 }),
+                      candle.high >= max(candle.open, candle.close), candle.low <= min(candle.open, candle.close),
+                      candle.low <= candle.high,
+                      candle.volume == nil || (candle.volume!.isFinite && candle.volume! >= 0) else {
+                    throw SchwabClientError.invalidResponse
+                }
+                let time = Date(timeIntervalSince1970: candle.datetime / 1_000)
+                candlesByTime[time] = PriceCandle(time: time, open: candle.open, high: candle.high, low: candle.low,
+                                                 close: candle.close, volume: candle.volume)
+            }
+            return PriceHistory(symbol: dto.symbol, candles: candlesByTime.values.sorted { $0.time < $1.time },
+                                previousClose: dto.previousClose)
+        } catch { throw SchwabClientError.invalidResponse }
+    }
+
     private struct QuoteDTO: Decodable {
         let symbol: String?
         let realtime: Bool?
+        let assetMainType: String?
         let reference: QuoteReferenceDTO?
         let quote: QuoteFieldsDTO
     }
@@ -557,6 +980,21 @@ actor SchwabClient {
         let netChange: Double?
         let netPercentChange: Double?
         let quoteTime: Double?
+        let openPrice: Double?
+        let highPrice: Double?
+        let lowPrice: Double?
+        let closePrice: Double?
+        let totalVolume: Double?
+        let fiftyTwoWeekHigh: Double?
+        let fiftyTwoWeekLow: Double?
+        let securityStatus: String?
+
+        enum CodingKeys: String, CodingKey {
+            case lastPrice, bidPrice, askPrice, netChange, netPercentChange, quoteTime
+            case openPrice, highPrice, lowPrice, closePrice, totalVolume, securityStatus
+            case fiftyTwoWeekHigh = "52WeekHigh"
+            case fiftyTwoWeekLow = "52WeekLow"
+        }
     }
 
     private struct QuoteEntryDTO: Decodable {
@@ -583,7 +1021,11 @@ actor SchwabClient {
                 return StockQuote(symbol: symbol, description: dto.reference?.description,
                                   lastPrice: fields.lastPrice, bidPrice: fields.bidPrice, askPrice: fields.askPrice,
                                   netChange: fields.netChange, netPercentChange: fields.netPercentChange,
-                                  quoteTime: quoteTime, isRealtime: dto.realtime)
+                                  quoteTime: quoteTime, isRealtime: dto.realtime, assetMainType: dto.assetMainType,
+                                  openPrice: fields.openPrice, highPrice: fields.highPrice, lowPrice: fields.lowPrice,
+                                  closePrice: fields.closePrice, totalVolume: fields.totalVolume,
+                                  high52Week: fields.fiftyTwoWeekHigh, low52Week: fields.fiftyTwoWeekLow,
+                                  securityStatus: fields.securityStatus)
             }
             guard !quotes.isEmpty else { throw SchwabClientError.invalidResponse }
             return quotes

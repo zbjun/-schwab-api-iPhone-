@@ -2,159 +2,123 @@ import SwiftUI
 
 struct AccountsView: View {
     @Environment(AppStore.self) private var store
-    let onConnect: () -> Void
 
     var body: some View {
         NavigationStack {
             List {
-                if store.isDemo {
-                    Section { DemoNotice() }
-                }
-
+                if store.isDemo { Section { DemoNotice() } }
                 if let error = store.errorMessage {
                     Section { AppMessageView(message: error, isError: true) }
                 }
-
-                if store.isAuthenticated || store.isDemo {
-                    accountContent
-                } else {
-                    Section {
-                        ContentUnavailableView {
-                            Label("连接你的账户", systemImage: "person.crop.circle.badge.checkmark")
-                        } description: {
-                            Text("连接 Schwab 后，在这里查看余额和持仓。")
-                        } actions: {
-                            Button("前往连接", action: onConnect)
-                                .buttonStyle(.borderedProminent)
-                        }
-                    }
-                    .listRowBackground(Color.clear)
+                if store.isAuthenticated || store.isDemo { accountContent }
+                else {
+                    Section { ConnectionRequiredView() }.listRowBackground(Color.clear)
                 }
             }
             .navigationTitle("账户")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { RefreshToolbarButton() }
-            }
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { RefreshToolbarButton() } }
             .refreshable {
-                if store.isAuthenticated || store.isDemo { await store.refresh() }
+                if !store.isSubmittingOrder { await store.refresh() }
             }
+            .navigationDestination(for: String.self) { StockDetailView(symbol: $0) }
+            .accessibilityIdentifier("screen.accounts")
         }
     }
 
-    @ViewBuilder
-    private var accountContent: some View {
+    @ViewBuilder private var accountContent: some View {
         if let account = store.selectedAccount {
             Section {
-                if store.accounts.count > 1 {
-                    Picker("当前账户", selection: Binding(
-                        get: { store.selectedAccountID },
-                        set: { store.selectedAccountID = $0 }
-                    )) {
-                        ForEach(store.accounts) { option in
-                            Text(option.displayNumber).tag(Optional(option.id))
-                        }
+                AccountSelector()
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack {
+                        Text("账户净值").font(.subheadline).foregroundStyle(.secondary)
+                        Spacer()
+                        Text("USD").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     }
-                    .privacySensitive()
-                } else {
-                    LabeledContent("当前账户", value: account.displayNumber)
-                        .privacySensitive()
+                    Text(DisplayFormat.money(account.liquidationValue))
+                        .font(.system(.largeTitle, design: .rounded, weight: .semibold))
+                        .monospacedDigit().lineLimit(1).minimumScaleFactor(0.55)
+                        .accessibilityIdentifier("account.netValue")
+                    HStack(spacing: 16) {
+                        MetricCell(title: "现金余额", value: DisplayFormat.money(account.cashBalance))
+                        MetricCell(title: "购买力", value: DisplayFormat.money(account.buyingPower))
+                    }
+                    HStack {
+                        Label(DisplayFormat.accountType(account.accountType), systemImage: "building.columns")
+                        Spacer()
+                        Text("\(account.positions.count) 项持仓")
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
                 }
-                LabeledContent("账户类型", value: DisplayFormat.accountType(account.accountType))
+                .padding(.vertical, 8).privacySensitive()
+            } footer: {
+                UpdateStatusView(lastUpdated: store.accountsUpdatedAt,
+                                 latencyMilliseconds: store.accountsLatencyMilliseconds, isDemo: store.isDemo)
             }
 
             Section {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("账户净值 · USD")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    Text(DisplayFormat.money(account.liquidationValue))
-                        .font(.largeTitle.weight(.semibold))
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.6)
-                }
-                .padding(.vertical, 6)
-                .privacySensitive()
-
-                LabeledContent("现金余额", value: DisplayFormat.money(account.cashBalance))
-                    .monospacedDigit()
-                    .privacySensitive()
-                LabeledContent("购买力", value: DisplayFormat.money(account.buyingPower))
-                    .monospacedDigit()
-                    .privacySensitive()
-            } footer: {
-                UpdateStatusView(
-                    lastUpdated: store.accountsUpdatedAt,
-                    latencyMilliseconds: store.accountsLatencyMilliseconds,
-                    isDemo: store.isDemo
-                )
-            }
-
-            Section("持仓") {
                 if account.positions.isEmpty {
-                    ContentUnavailableView(
-                        "暂无持仓",
-                        systemImage: "tray",
-                        description: Text("当前账户没有可显示的持仓。")
-                    )
+                    ContentUnavailableView("暂无持仓", systemImage: "tray", description: Text("成交后的持仓会显示在这里。"))
                 } else {
                     ForEach(account.positions) { position in
-                        PositionRow(position: position)
+                        if position.assetType.uppercased() == "EQUITY" {
+                            NavigationLink(value: position.symbol) { PositionRow(position: position) }
+                                .accessibilityIdentifier("position.\(position.symbol)")
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    if position.quantity >= 1 {
+                                        Button("卖出") { store.openTrade(symbol: position.symbol, side: .sell) }
+                                            .tint(.green).disabled(store.isBusy || store.isSubmittingOrder)
+                                    }
+                                }
+                        } else { PositionRow(position: position) }
                     }
                 }
+            } header: {
+                HStack { Text("持仓"); Spacer(); Text("市值 / 当日盈亏") }
+            }
+            Section {
+                Button {
+                    store.openTrade(symbol: store.tradeSymbol, side: .buy)
+                } label: { Label("股票 / ETF 交易", systemImage: "arrow.left.arrow.right") }
+                .disabled(store.isBusy || store.isSubmittingOrder)
+                .accessibilityIdentifier("account.trade")
             }
         } else if store.isBusy {
-            Section {
-                HStack(spacing: 12) {
-                    ProgressView()
-                    Text("正在读取账户…").foregroundStyle(.secondary)
-                }
-            }
+            Section { HStack(spacing: 12) { ProgressView(); Text("正在读取账户…").foregroundStyle(.secondary) } }
         } else {
             Section {
-                ContentUnavailableView(
-                    "暂无账户数据",
-                    systemImage: "tray",
-                    description: Text("下拉刷新以重新读取已授权的账户。")
-                )
-            }
-            .listRowBackground(Color.clear)
+                ContentUnavailableView("暂无账户数据", systemImage: "tray", description: Text("下拉刷新以读取已授权的账户。"))
+            }.listRowBackground(Color.clear)
         }
     }
 }
 
 private struct PositionRow: View {
     let position: Position
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            VStack(alignment: .leading, spacing: 3) {
+        let layout = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10)) : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
+        layout {
+            VStack(alignment: .leading, spacing: 5) {
                 Text(position.symbol).font(.headline)
+                Text("\(DisplayFormat.quantity(position.quantity)) 股 · 成本 \(DisplayFormat.price(position.averagePrice))")
+                    .font(.caption).foregroundStyle(.secondary)
                 if !position.description.isEmpty {
-                    Text(position.description)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Text(position.description).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
-            }
-
-            LabeledContent("数量", value: DisplayFormat.quantity(position.quantity))
-            LabeledContent("市值", value: DisplayFormat.money(position.marketValue))
-            LabeledContent("当日盈亏") {
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(DisplayFormat.signedMoney(position.dayProfitLoss))
-                        .foregroundStyle(DisplayFormat.changeColor(position.dayProfitLoss))
-                    if position.dayProfitLossPercent != nil {
-                        Text(DisplayFormat.signedPercent(position.dayProfitLossPercent))
-                            .foregroundStyle(DisplayFormat.changeColor(position.dayProfitLossPercent))
-                    }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: typeSize.isAccessibilitySize ? .leading : .trailing, spacing: 5) {
+                Text(DisplayFormat.money(position.marketValue)).font(.subheadline.weight(.semibold))
+                Text(DisplayFormat.signedMoney(position.dayProfitLoss))
+                    .font(.subheadline).foregroundStyle(DisplayFormat.changeColor(position.dayProfitLoss))
+                if position.dayProfitLossPercent != nil {
+                    Text(DisplayFormat.signedPercent(position.dayProfitLossPercent))
+                        .font(.caption).foregroundStyle(DisplayFormat.changeColor(position.dayProfitLossPercent))
                 }
             }
         }
-        .font(.subheadline)
-        .monospacedDigit()
-        .padding(.vertical, 6)
-        .privacySensitive()
+        .monospacedDigit().padding(.vertical, 6).privacySensitive()
         .accessibilityElement(children: .combine)
     }
 }

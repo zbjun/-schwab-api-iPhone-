@@ -3,168 +3,131 @@ import SwiftUI
 struct WatchlistView: View {
     @Environment(AppStore.self) private var store
     @State private var isAddingSymbol = false
-    let onConnect: () -> Void
+    @State private var searchSymbol = ""
+    @State private var searchError: String?
+    @State private var path: [String] = []
+    @FocusState private var isSearching: Bool
+
+    private var connected: Bool { store.isAuthenticated || store.isDemo }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             List {
-                if store.isDemo {
-                    Section { DemoNotice() }
-                }
-
-                if let error = store.errorMessage {
-                    Section { AppMessageView(message: error, isError: true) }
-                }
-
-                if !store.isAuthenticated && !store.isDemo {
-                    Section {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("连接账户后查看自选行情。")
-                                .foregroundStyle(.secondary)
-                            Button("前往连接", action: onConnect)
-                                .buttonStyle(.bordered)
-                        }
+                Section {
+                    HStack(spacing: 12) {
+                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                        TextField("输入股票 / ETF 代码", text: $searchSymbol)
+                            .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                            .keyboardType(.asciiCapable).submitLabel(.search)
+                            .focused($isSearching).onSubmit(openSearch)
+                            .accessibilityIdentifier("watchlist.search")
+                        Button("查价", action: openSearch)
+                            .font(.subheadline.weight(.semibold))
+                            .disabled(searchSymbol.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !connected)
+                            .accessibilityIdentifier("watchlist.lookup")
                     }
                 }
-
+                if store.isDemo { Section { DemoNotice() } }
+                if let error = searchError ?? store.errorMessage {
+                    Section { AppMessageView(message: error, isError: true) }
+                }
+                if !connected {
+                    Section { ConnectionRequiredView(message: "连接后即可查价、查看图表和创建股票订单。") }
+                        .listRowBackground(Color.clear)
+                }
                 if store.watchlist.isEmpty {
                     Section {
                         ContentUnavailableView {
-                            Label("添加关注的股票", systemImage: "star")
-                        } description: {
-                            Text("用股票代码创建你的自选列表。")
-                        } actions: {
+                            Label("你的自选，从这里开始", systemImage: "star")
+                        } description: { Text("添加关注的股票或 ETF，集中查看报价。") }
+                        actions: {
                             Button("添加自选") { isAddingSymbol = true }
                                 .buttonStyle(.borderedProminent)
                         }
-                    }
-                    .listRowBackground(Color.clear)
+                    }.listRowBackground(Color.clear)
                 } else {
                     Section {
                         ForEach(store.watchlist, id: \.self) { symbol in
-                            if let quote = store.quotes.first(where: { $0.symbol == symbol }) {
-                                QuoteRow(quote: quote)
-                            } else {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text(symbol).font(.headline)
-                                    Text(store.isBusy ? "正在读取行情…" : "暂无报价")
-                                        .font(.subheadline)
-                                        .foregroundStyle(.secondary)
-                                }
-                                .padding(.vertical, 6)
+                            NavigationLink(value: symbol) {
+                                WatchlistQuoteRow(symbol: symbol, quote: store.quotes.first { $0.symbol == symbol }, isLoading: store.isBusy)
                             }
+                            .disabled(!connected)
+                            .accessibilityIdentifier("watchlist.symbol.\(symbol)")
                         }
                         .onDelete(perform: removeSymbols)
-                        .deleteDisabled(store.isBusy)
+                        .deleteDisabled(store.isBusy || store.isSubmittingOrder)
+                    } header: {
+                        HStack { Text("自选 · \(store.watchlist.count)"); Spacer(); Text("最新价 / 涨跌幅") }
                     } footer: {
-                        UpdateStatusView(
-                            lastUpdated: store.quotesUpdatedAt,
-                            latencyMilliseconds: store.quotesLatencyMilliseconds,
-                            isDemo: store.isDemo
-                        )
+                        VStack(alignment: .leading, spacing: 6) {
+                            UpdateStatusView(lastUpdated: store.quotesUpdatedAt,
+                                             latencyMilliseconds: store.quotesLatencyMilliseconds, isDemo: store.isDemo)
+                            Text("向左滑动可移除自选。报价时间与权限标记见证券详情。")
+                        }
                     }
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("自选")
+            .navigationDestination(for: String.self) { StockDetailView(symbol: $0) }
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     RefreshToolbarButton()
-                    Button {
-                        isAddingSymbol = true
-                    } label: {
-                        Label("添加自选", systemImage: "plus")
-                    }
-                    .disabled(store.isBusy)
+                    Button { isAddingSymbol = true } label: { Label("添加自选", systemImage: "plus") }
+                        .disabled(store.isBusy || store.isSubmittingOrder)
+                        .accessibilityIdentifier("watchlist.add")
                 }
+                ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("完成") { isSearching = false } }
             }
             .sheet(isPresented: $isAddingSymbol) { AddSymbolView() }
-            .refreshable {
-                if store.isAuthenticated || store.isDemo { await store.refresh() }
-            }
+            .refreshable { if !store.isSubmittingOrder { await store.refresh() } }
+            .accessibilityIdentifier("screen.watchlist")
         }
+    }
+
+    private func openSearch() {
+        let value = searchSymbol.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard connected else { return }
+        guard value.range(of: "^[A-Z0-9][A-Z0-9.\\-/]{0,14}$", options: .regularExpression) != nil else {
+            searchError = "请输入有效的股票或 ETF 代码，例如 AAPL。"
+            return
+        }
+        isSearching = false
+        searchError = nil
+        path.append(value)
     }
 
     private func removeSymbols(at offsets: IndexSet) {
-        let symbols = offsets.compactMap { index in
-            store.watchlist.indices.contains(index) ? store.watchlist[index] : nil
-        }
-        Task {
-            for symbol in symbols { await store.removeSymbol(symbol) }
-        }
+        let symbols = offsets.compactMap { store.watchlist.indices.contains($0) ? store.watchlist[$0] : nil }
+        Task { for symbol in symbols { await store.removeSymbol(symbol) } }
     }
 }
 
-private struct QuoteRow: View {
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    let quote: StockQuote
-
-    private var freshness: String {
-        switch quote.isRealtime {
-        case .some(true): return "实时报价权限"
-        case .some(false): return "非实时报价标记"
-        case .none: return "报价时效未确认"
-        }
-    }
+private struct WatchlistQuoteRow: View {
+    let symbol: String
+    let quote: StockQuote?
+    let isLoading: Bool
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if dynamicTypeSize.isAccessibilitySize {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(quote.symbol).font(.headline)
-                    priceLabel
-                }
-            } else {
-                HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    Text(quote.symbol).font(.headline)
-                    Spacer(minLength: 8)
-                    priceLabel
-                }
-            }
-
-            if let description = quote.description, !description.isEmpty {
-                Text(description)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-
-            LabeledContent("涨跌") {
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(DisplayFormat.signedMoney(quote.netChange))
-                        .foregroundStyle(DisplayFormat.changeColor(quote.netChange))
-                    Text(DisplayFormat.signedPercent(quote.netPercentChange))
-                        .foregroundStyle(DisplayFormat.changeColor(quote.netPercentChange))
-                }
-                .monospacedDigit()
-            }
-            .font(.subheadline)
-
-            LabeledContent("买价", value: DisplayFormat.money(quote.bidPrice))
-                .font(.subheadline)
-                .monospacedDigit()
-            LabeledContent("卖价", value: DisplayFormat.money(quote.askPrice))
-                .font(.subheadline)
-                .monospacedDigit()
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(freshness)
-                if let quoteTime = quote.quoteTime {
-                    Text("报价时间 \(quoteTime.formatted(date: .abbreviated, time: .standard))")
-                } else {
-                    Text("报价时间未提供")
-                }
-            }
-            .font(.footnote)
-            .foregroundStyle(.secondary)
+        let layout = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10)) : AnyLayout(HStackLayout(alignment: .center, spacing: 12))
+        layout {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(symbol).font(.headline)
+                Text(quote?.description ?? (isLoading ? "正在读取行情…" : "暂无报价"))
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: typeSize.isAccessibilitySize ? .leading : .trailing, spacing: 6) {
+                Text(DisplayFormat.price(quote?.lastPrice))
+                    .font(.headline).foregroundStyle(.primary)
+                Text(DisplayFormat.signedPercent(quote?.netPercentChange))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(DisplayFormat.changeColor(quote?.netPercentChange))
+                    .padding(.horizontal, 9).padding(.vertical, 5)
+                    .background(DisplayFormat.changeColor(quote?.netPercentChange).opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
+            }.monospacedDigit()
         }
-        .padding(.vertical, 8)
-        .accessibilityElement(children: .combine)
-    }
-
-    private var priceLabel: some View {
-        Text(DisplayFormat.money(quote.lastPrice))
-            .font(.title3.weight(.semibold))
-            .monospacedDigit()
-            .fixedSize(horizontal: false, vertical: true)
+        .padding(.vertical, 6).accessibilityElement(children: .combine)
     }
 }
 
@@ -172,51 +135,45 @@ private struct AddSymbolView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var symbol = ""
-    @FocusState private var isSymbolFocused: Bool
-
-    private var normalizedSymbol: String {
-        symbol.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-    }
+    @State private var isSaving = false
+    @FocusState private var isFocused: Bool
 
     var body: some View {
         NavigationStack {
             Form {
-                Section {
-                    TextField("股票代码，例如 AAPL", text: $symbol)
-                        .textInputAutocapitalization(.characters)
-                        .autocorrectionDisabled()
-                        .keyboardType(.asciiCapable)
-                        .submitLabel(.done)
-                        .focused($isSymbolFocused)
-                        .onSubmit(addSymbol)
-                } header: {
-                    Text("股票代码")
+                Section("股票 / ETF 代码") {
+                    TextField("例如 AAPL 或 SPY", text: $symbol)
+                        .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                        .keyboardType(.asciiCapable).submitLabel(.done).focused($isFocused)
+                        .onSubmit(add).accessibilityIdentifier("watchlist.add.symbol")
                 }
-
                 if let error = store.errorMessage {
                     Section { AppMessageView(message: error, isError: true) }
                 }
+                Section { Text("最多保存 50 个自选。也可以在自选页直接输入代码查价。")
+                    .font(.subheadline).foregroundStyle(.secondary) }
             }
-            .navigationTitle("添加自选")
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("添加自选").navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
-                }
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() }.disabled(isSaving) }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("添加", action: addSymbol)
-                        .disabled(normalizedSymbol.isEmpty || store.isBusy)
+                    Button("添加", action: add)
+                        .disabled(symbol.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isBusy || isSaving)
+                        .accessibilityIdentifier("watchlist.add.confirm")
                 }
             }
-            .onAppear { isSymbolFocused = true }
+            .onAppear { isFocused = true }
+            .interactiveDismissDisabled(isSaving)
         }
     }
 
-    private func addSymbol() {
-        let value = normalizedSymbol
-        guard !value.isEmpty, !store.isBusy else { return }
+    private func add() {
+        guard !store.isBusy, !isSaving else { return }
+        let value = symbol.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        isSaving = true
         Task {
             await store.addSymbol(value)
+            isSaving = false
             if store.watchlist.contains(value) { dismiss() }
         }
     }

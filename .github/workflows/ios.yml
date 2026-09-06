@@ -36,8 +36,18 @@ jobs:
             -project ios/THS.xcodeproj -scheme THS -configuration Debug \
             -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
             -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 90 \
+            -maximum-test-execution-time-allowance 120 \
             -resultBundlePath artifacts/THSTests.xcresult \
             CODE_SIGNING_ALLOWED=NO
+      - name: Export native UI screenshots
+        if: always()
+        run: |
+          if [ -d artifacts/THSTests.xcresult ]; then
+            xcrun xcresulttool help export attachments
+            xcrun xcresulttool export attachments --path artifacts/THSTests.xcresult --output-path artifacts/ui-screenshots
+          fi
       - name: Archive unsigned iPhone app
         run: |
           xcodebuild archive \
@@ -71,3 +81,11 @@ jobs:
           path: artifacts/THSTests.xcresult
           if-no-files-found: ignore
           retention-days: 7
+      - name: Upload native UI screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: THS-native-UI-screenshots
+          path: artifacts/ui-screenshots
+          if-no-files-found: ignore
+          retention-days: 14

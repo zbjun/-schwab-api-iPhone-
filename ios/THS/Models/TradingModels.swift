@@ -43,6 +43,40 @@ struct StockQuote: Identifiable, Sendable {
     let netPercentChange: Double?
     let quoteTime: Date?
     let isRealtime: Bool?
+    let assetMainType: String?
+    let openPrice: Double?
+    let highPrice: Double?
+    let lowPrice: Double?
+    let closePrice: Double?
+    let totalVolume: Double?
+    let high52Week: Double?
+    let low52Week: Double?
+    let securityStatus: String?
+
+    init(symbol: String, description: String?, lastPrice: Double?, bidPrice: Double?, askPrice: Double?,
+         netChange: Double?, netPercentChange: Double?, quoteTime: Date?, isRealtime: Bool?,
+         assetMainType: String? = nil, openPrice: Double? = nil, highPrice: Double? = nil,
+         lowPrice: Double? = nil, closePrice: Double? = nil, totalVolume: Double? = nil,
+         high52Week: Double? = nil, low52Week: Double? = nil, securityStatus: String? = nil) {
+        self.symbol = symbol
+        self.description = description
+        self.lastPrice = lastPrice
+        self.bidPrice = bidPrice
+        self.askPrice = askPrice
+        self.netChange = netChange
+        self.netPercentChange = netPercentChange
+        self.quoteTime = quoteTime
+        self.isRealtime = isRealtime
+        self.assetMainType = assetMainType
+        self.openPrice = openPrice
+        self.highPrice = highPrice
+        self.lowPrice = lowPrice
+        self.closePrice = closePrice
+        self.totalVolume = totalVolume
+        self.high52Week = high52Week
+        self.low52Week = low52Week
+        self.securityStatus = securityStatus
+    }
 
     var id: String { symbol }
 }

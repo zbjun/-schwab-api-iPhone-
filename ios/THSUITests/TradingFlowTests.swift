@@ -207,15 +207,8 @@ final class TradingFlowTests: XCTestCase {
             "inline.quantity", "inline.amount", "inline.limitPrice", "inline.stopPrice"].contains(identifier) {
             return app.textFields[identifier]
         }
-        if ["detail.chart", "detail.tradePanel"].contains(identifier) {
-            return app.otherElements[identifier]
-        }
-        if ["inline.maxBuy", "inline.maxSell", "inline.amountShares", "inline.review.summary"].contains(identifier) {
-            return app.staticTexts[identifier]
-        }
         if identifier.hasPrefix("history.") || identifier.hasPrefix("order.row.") || identifier.hasPrefix("watchlist.symbol.") ||
-            ["detail.buy", "detail.sell", "watchlist.lookup", "trade.review", "order.review.confirm", "order.cancel", "order.modify",
-             "inline.review", "inline.confirm", "inline.amountMode"].contains(identifier) {
+            ["detail.buy", "detail.sell", "watchlist.lookup", "trade.review", "order.review.confirm", "order.cancel", "order.modify"].contains(identifier) {
             return app.buttons[identifier]
         }
         return app.descendants(matching: .any).matching(identifier: identifier).firstMatch

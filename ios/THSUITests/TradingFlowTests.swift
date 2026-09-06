@@ -7,6 +7,7 @@ final class TradingFlowTests: XCTestCase {
     override func setUp() {
         super.setUp()
         continueAfterFailure = false
+        executionTimeAllowance = 240
         app = XCUIApplication()
     }
 
@@ -73,8 +74,9 @@ final class TradingFlowTests: XCTestCase {
         XCTAssertTrue(element("order.detail.status").waitForExistence(timeout: 5))
         XCTAssertTrue(element("order.detail.status").label.contains("委托中"))
         tapRevealing("order.cancel")
-        let confirmation = app.buttons["确认模拟撤单"]
+        let confirmation = app.sheets["确认撤销这笔订单？"].buttons["order.cancel.confirm"].firstMatch
         XCTAssertTrue(confirmation.waitForExistence(timeout: 3))
+        XCTAssertEqual(confirmation.label, "确认模拟撤单")
         confirmation.tap()
         waitForLabel("order.detail.status", containing: "已撤销")
         XCTAssertFalse(element("order.cancel").exists)
@@ -196,7 +198,7 @@ final class TradingFlowTests: XCTestCase {
                 bottom = min(bottom, toolbar.frame.minY)
             }
         }
-        return CGRect(x: frame.minX, y: top + 12, width: frame.width, height: max(0, bottom - top - 24))
+        return CGRect(x: frame.minX, y: top, width: frame.width, height: max(0, bottom - top - 12))
     }
 
     private func tapRevealing(_ identifier: String) { reveal(identifier).tap() }

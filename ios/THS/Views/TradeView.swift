@@ -16,6 +16,7 @@ struct TradeView: View {
             .navigationBarTitleDisplayMode(.inline)
             .accessibilityIdentifier("screen.trade")
         }
+        .preferredColorScheme(.dark)
     }
 }
 
@@ -25,6 +26,8 @@ private struct TradeTicketView: View {
     @State private var side: OrderSide = .buy
     @State private var kind: OrderKind = .limit
     @State private var quantity = ""
+    @State private var amount = ""
+    @State private var amountMode = false
     @State private var limitPrice = ""
     @State private var stopPrice = ""
     @State private var duration: OrderDuration = .day
@@ -36,7 +39,7 @@ private struct TradeTicketView: View {
     @State private var review: PreparedOrder?
     @State private var initialized = false
     @FocusState private var focusedField: Field?
-    private enum Field: Hashable { case symbol, quantity, limit, stop }
+    private enum Field: Hashable { case symbol, quantity, amount, limit, stop }
 
     private var locked: Bool { store.isBusy || store.isSubmittingOrder }
     private var normalizedSymbol: String { symbol.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() }
@@ -44,8 +47,20 @@ private struct TradeTicketView: View {
     private var needsLimit: Bool { kind == .limit || kind == .stopLimit }
     private var needsStop: Bool { kind == .stop || kind == .stopLimit }
     private var holding: Position? { store.selectedAccount?.positions.first { $0.symbol == normalizedSymbol } }
+    private var enteredShares: Int? {
+        OrderSizing.quantity(text: quantity, budget: amount, amountMode: amountMode && side == .buy, limitPrice: limitPrice)
+    }
+    private var maxBuy: Int? {
+        let price = needsLimit ? parsedPrice(limitPrice) : OrderSizing.decimal(quote?.askPrice ?? quote?.lastPrice)
+        return OrderSizing.maximumBuy(account: store.selectedAccount, price: price)
+    }
+    private var maxSell: Int? {
+        OrderSizing.maximumSell(account: store.selectedAccount, symbol: normalizedSymbol, orders: store.orders,
+                                ordersLoaded: store.ordersUpdatedAt != nil && store.ordersError == nil,
+                                excludingOrderID: store.tradeReplacement?.id)
+    }
     private var estimate: Double? {
-        guard let shares = Int(quantity), shares > 0 else { return nil }
+        guard let shares = enteredShares, shares > 0 else { return nil }
         let price: Double?
         switch kind {
         case .limit, .stopLimit: price = parsedPrice(limitPrice).map { NSDecimalNumber(decimal: $0).doubleValue }
@@ -102,12 +117,21 @@ private struct TradeTicketView: View {
             quoteError = nil
             clearPreparation()
         }
-        .onChange(of: side) { _, _ in clearPreparation() }
+        .onChange(of: side) { _, value in
+            if value == .sell { amountMode = false }
+            clearPreparation()
+        }
         .onChange(of: kind) { _, value in
             if value == .market { duration = .day }
+            if value != .limit { amountMode = false }
             clearPreparation()
         }
         .onChange(of: quantity) { _, _ in clearPreparation() }
+        .onChange(of: amount) { _, _ in clearPreparation() }
+        .onChange(of: amountMode) { _, enabled in
+            if enabled { kind = .limit }
+            clearPreparation()
+        }
         .onChange(of: limitPrice) { _, _ in clearPreparation() }
         .onChange(of: stopPrice) { _, _ in clearPreparation() }
         .onChange(of: duration) { _, _ in clearPreparation() }
@@ -182,11 +206,19 @@ private struct TradeTicketView: View {
                 ForEach([OrderKind.market, .limit, .stop, .stopLimit], id: \.self) { item in Text(item.title).tag(item) }
             }
             .disabled(locked).accessibilityIdentifier("trade.kind")
-            LabeledContent("数量 · 股") {
-                TextField("输入整股数量", text: $quantity)
-                    .keyboardType(.numberPad).multilineTextAlignment(.trailing).monospacedDigit()
-                    .focused($focusedField, equals: .quantity).disabled(locked)
-                    .accessibilityIdentifier("trade.quantity")
+            if side == .buy && !isReplacement {
+                Toggle("按金额买入", isOn: $amountMode).disabled(locked)
+                    .accessibilityIdentifier("trade.amountMode")
+            }
+            LabeledContent(amountMode ? "买入金额 · USD" : "数量 · 股") {
+                TextField(amountMode ? "输入预算金额" : "输入整股数量", text: amountMode ? $amount : $quantity)
+                    .keyboardType(amountMode ? .decimalPad : .numberPad).multilineTextAlignment(.trailing).monospacedDigit()
+                    .focused($focusedField, equals: amountMode ? .amount : .quantity).disabled(locked)
+                    .accessibilityIdentifier(amountMode ? "trade.amount" : "trade.quantity")
+            }
+            if amountMode {
+                LabeledContent("按限价换算", value: enteredShares.map { "\($0) 整股" } ?? "—")
+                    .font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("trade.amountShares")
             }
             if needsLimit {
                 LabeledContent("限价 · USD") {
@@ -226,12 +258,18 @@ private struct TradeTicketView: View {
             }
             LabeledContent("账户购买力", value: DisplayFormat.money(store.selectedAccount?.buyingPower)).monospacedDigit()
             LabeledContent("当前持有", value: store.selectedAccount == nil ? "—" : "\(DisplayFormat.quantity(holding?.quantity ?? 0)) 股").monospacedDigit()
-            if side == .sell, let count = holding?.quantity, count >= 1 {
-                Button("填入全部整股持仓（\(DisplayFormat.quantity(floor(count))) 股）") {
-                    quantity = String(format: "%.0f", floor(count))
+            LabeledContent("可买预估", value: maxBuy.map { "\($0) 股" } ?? "—")
+                .monospacedDigit().accessibilityIdentifier("trade.maxBuy")
+            LabeledContent("可卖预估", value: maxSell.map { "\($0) 股" } ?? "—")
+                .monospacedDigit().accessibilityIdentifier("trade.maxSell")
+            if side == .sell, let count = maxSell, count >= 1 {
+                Button("填入可卖预估（\(count) 股）") {
+                    quantity = String(count)
                 }
                 .font(.subheadline).disabled(locked || isReplacement).accessibilityIdentifier("trade.sellAll")
             }
+            Text("按当前账户、价格和已读取委托估算，以券商为准。按金额买入换算为限价整股订单，预算不含费用。")
+                .font(.caption).foregroundStyle(.secondary)
         }
         .font(.subheadline).privacySensitive()
     }
@@ -259,7 +297,7 @@ private struct TradeTicketView: View {
             stopPrice = DisplayFormat.inputPrice(order.stopPrice)
             duration = order.duration ?? .day
         }
-        Task { await refreshQuote() }
+        Task { await refreshQuote(); await store.refreshOrders() }
     }
 
     private func clearPreparation() {
@@ -268,9 +306,7 @@ private struct TradeTicketView: View {
     }
 
     private func parsedPrice(_ text: String) -> Decimal? {
-        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard value.range(of: "^[0-9]+(?:\\.[0-9]{1,4})?$", options: .regularExpression) != nil else { return nil }
-        return Decimal(string: value, locale: DisplayFormat.locale)
+        OrderSizing.price(text)
     }
 
     private func prepare() {
@@ -278,10 +314,8 @@ private struct TradeTicketView: View {
         focusedField = nil
         localError = nil
         store.clearTradePreparation()
-        let shares = quantity.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard shares.range(of: "^[0-9]+$", options: .regularExpression) != nil,
-              let quantityValue = Int(shares), quantityValue > 0 else {
-            localError = "请输入大于 0 的整股数量。"
+        guard let quantityValue = enteredShares, quantityValue > 0 else {
+            localError = amountMode ? "金额不足一股或限价无效。" : "请输入大于 0 的整股数量。"
             return
         }
         let limit = needsLimit ? parsedPrice(limitPrice) : nil

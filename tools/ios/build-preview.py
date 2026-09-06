@@ -10,15 +10,23 @@ import shutil
 
 PAGES = {
     "01-accounts": ("账户与持仓", "净值、现金与购买力，以及持仓入口。"),
-    "02-watchlist": ("自选行情", "按代码查价，查看自选证券和涨跌幅。"),
+    "02-watchlist": ("自选行情", "深色紧凑列表，最新价、涨跌幅与涨跌额对齐展示。"),
     "03-trade": ("股票 / ETF 交易", "选择买卖方向、订单类型、数量与价格。"),
     "04-orders": ("订单列表", "查看近期订单，按状态筛选并进入详情。"),
     "05-connection": ("连接与演示", "iPhone 直连 Schwab；演示数据与真实账户分开。"),
-    "06-stock-detail-chart": ("行情详情与图表", "1 日、5 日、1 月与 1 年价格历史，附买卖入口。"),
+    "06-stock-detail-chart": ("分时行情", "白色价格折线与黄色均价估算线，顶部展示报价和统计。"),
     "07-limit-order-review": ("下单核对", "提交前核对账户、数量、价格及预估金额。"),
     "08-canceled-demo-order": ("撤单结果", "模拟撤单后的订单详情。"),
     "09-replacement-review": ("修改订单", "修改未成交的简单订单，重新核对后确认。"),
     "10-invalid-quantity": ("输入校验", "无效数量会被拦截，不能进入提交确认。"),
+    "11-daily-candles": ("日 K", "日蜡烛图、MA5/10/20/30 与成交量。"),
+    "12-weekly-candles": ("周 K", "按周 OHLC 绘制蜡烛，均线以周为周期。"),
+    "13-monthly-candles": ("月 K", "按月 OHLC 绘制蜡烛，均线以月为周期。"),
+    "14-five-day-chart": ("五日走势", "五个交易日折线，黄色均价估算在每天重新计算。"),
+    "15-watchlist-charts": ("多股同列", "自选列表左滑切换；每只股票独立显示分时走势。"),
+    "16-inline-buy": ("图下买卖", "交易区在 K 线下方展开，可买和可卖股数随账户状态估算。"),
+    "17-inline-keyboard": ("输入时查看 K 线", "键盘弹出后图表仍保持在交易区上方，表单单独滚动。"),
+    "18-inline-review": ("按金额买入核对", "1000 美元预算按 200 美元限价换算为 5 整股，核对仍在图下。"),
 }
 
 
@@ -54,7 +62,7 @@ def main():
     if missing:
         raise SystemExit("Missing native screenshots: " + ", ".join(missing))
     ordered = [pages[name] for name in sorted(pages)]
-    metadata = dict(version="0.2.0", run=args.run, commit=args.commit, pages=ordered)
+    metadata = dict(version="0.3.0", run=args.run, commit=args.commit, pages=ordered)
     (output / "evidence.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     buttons = "\n".join(
         f'<button class="page-button" type="button" data-index="{index}" aria-pressed="false">'
@@ -88,7 +96,7 @@ dialog{border:0;background:#172435ed;border-radius:14px;padding:48px 12px 12px;m
 @media(max-width:620px){.shell{padding:24px 18px}h1{font-size:26px}main{display:flex;flex-direction:column;gap:22px}.nav{display:flex;overflow:auto;width:100%;padding-bottom:8px}.page-button{flex-shrink:0;padding:10px 12px}.number{display:none}.viewer{width:100%}#screen{height:65vh;max-width:100%}.details{display:block;width:100%}.context{display:none}footer{display:block}.badge{font-size:10px}header p{font-size:13px}}
 </style>
 <div class="shell">
-<header><div class="eyebrow">THS / PERSONAL TRADING</div><h1>你的 iPhone 交易 App<span class="badge">0.2.0</span></h1><p>股票 / ETF · iPhone 直连 Schwab · 以下为原生模拟器截图，展示的账户、行情和订单均为演示数据。</p></header>
+<header><div class="eyebrow">THS / PERSONAL TRADING</div><h1>你的 iPhone 交易 App<span class="badge">0.3.0</span></h1><p>股票 / ETF · iPhone 直连 Schwab · 以下为原生模拟器截图，展示的账户、行情和订单均为演示数据。</p></header>
 <main><nav class="nav" aria-label="选择页面">{{BUTTONS}}</nav>
 <section class="viewer" aria-label="原生页面截图"><button class="screenshot-button" type="button" aria-label="放大当前截图"><img id="screen" alt=""></button><p class="hint">点击图片放大 · 使用 ← → 切换页面</p></section>
 <aside class="details"><h2 id="title"></h2><p id="description"></p><div class="pager"><button id="previous" type="button" aria-label="上一页">← 上一页</button><button id="next" type="button" aria-label="下一页">下一页 →</button></div><div class="context">截图来自 <span id="device"></span><br>保留原始图像，未绘制替代界面。<br><br>本页用于查看界面，不能操作交易。<br>后续在你的 iPhone 16 Pro 上安装调试。</div></aside></main>

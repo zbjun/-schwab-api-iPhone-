@@ -489,8 +489,10 @@ final class SchwabTradingTests: XCTestCase {
             XCTAssertEqual(history.elapsedMilliseconds, 42)
         }
         let requests = await transport.recorded()
-        let expected = [["day", "1", "minute", "1"], ["day", "5", "minute", "30"],
-                        ["month", "1", "daily", "1"], ["year", "1", "daily", "1"]]
+        let expected = [["day", "1", "minute", "1"], ["year", "1", "daily", "1"],
+                        ["year", "2", "weekly", "1"], ["year", "5", "monthly", "1"],
+                        ["day", "5", "minute", "5"]]
+        XCTAssertEqual(requests.count, expected.count + 1)
         for (index, request) in requests.dropFirst().enumerated() {
             XCTAssertEqual(request.httpMethod, "GET")
             XCTAssertEqual(request.url?.path, "/marketdata/v1/pricehistory")
@@ -506,6 +508,11 @@ final class SchwabTradingTests: XCTestCase {
             var invalid = request
             var badComponents = components
             badComponents.queryItems?.append(URLQueryItem(name: "symbol", value: "MSFT"))
+            invalid.url = badComponents.url
+            XCTAssertThrowsError(try DirectSchwabTransport.validateRequest(invalid))
+            badComponents = components
+            badComponents.queryItems?.removeAll { $0.name == "frequency" }
+            badComponents.queryItems?.append(URLQueryItem(name: "frequency", value: "60"))
             invalid.url = badComponents.url
             XCTAssertThrowsError(try DirectSchwabTransport.validateRequest(invalid))
         }
@@ -531,6 +538,134 @@ final class SchwabTradingTests: XCTestCase {
         XCTAssertNil(quotes[1].assetMainType)
         XCTAssertNil(quotes[1].openPrice)
         XCTAssertNil(quotes[1].securityStatus)
+    }
+
+    func testQuoteFundamentalsPreserveVerifiedOptionalFieldsWithoutInventingTurnover() throws {
+        let data = Data("""
+        {"AAPL":{"symbol":"AAPL","quote":{"lastPrice":100,"totalVolume":12345},
+           "fundamental":{"peRatio":25.5,"avg10DaysVolume":1000000}},
+         "MSFT":{"symbol":"MSFT","quote":{}}}
+        """.utf8)
+        let quotes = try SchwabClient.decodeQuotes(data, symbols: ["AAPL", "MSFT"])
+        XCTAssertEqual(quotes[0].peRatio, 25.5)
+        XCTAssertEqual(quotes[0].averageVolume10Day, 1_000_000)
+        XCTAssertNil(quotes[0].marketCap)
+        XCTAssertNil(quotes[0].sharesOutstanding)
+        XCTAssertNil(quotes[0].turnoverRate)
+        XCTAssertNil(quotes[1].peRatio)
+        XCTAssertNil(quotes[1].averageVolume10Day)
+        XCTAssertNil(quotes[1].turnoverRate)
+    }
+
+    func testInvalidFundamentalMetadataCannotDiscardOtherwiseUsableQuotes() throws {
+        let data = Data("""
+        {"AAPL":{"symbol":"AAPL","quote":{"lastPrice":100},"fundamental":"unavailable"},
+         "MSFT":{"symbol":"MSFT","quote":{"lastPrice":200},
+           "fundamental":{"peRatio":-5.5,"avg10DaysVolume":-100}},
+         "NVDA":{"symbol":"NVDA","quote":{"lastPrice":300},
+           "fundamental":{"peRatio":"unavailable","avg10DaysVolume":12345}}}
+        """.utf8)
+        let quotes = try SchwabClient.decodeQuotes(data, symbols: ["AAPL", "MSFT", "NVDA"])
+        XCTAssertEqual(quotes.map(\.lastPrice), [100, 200, 300])
+        XCTAssertNil(quotes[0].peRatio)
+        XCTAssertNil(quotes[0].averageVolume10Day)
+        XCTAssertEqual(quotes[1].peRatio, -5.5)
+        XCTAssertNil(quotes[1].averageVolume10Day)
+        XCTAssertNil(quotes[2].peRatio)
+        XCTAssertEqual(quotes[2].averageVolume10Day, 12345)
+    }
+
+    func testInstrumentFundamentalsPreserveRawDollarCapAndTotalShares() throws {
+        let data = Data("""
+        {"instruments":[{"symbol":"AAPL","assetType":"EQUITY","fundamental":{
+          "symbol":"AAPL","marketCap":3524014873860,"sharesOutstanding":15204137000}}]}
+        """.utf8)
+        let value = try SchwabClient.decodeFundamentals(data, symbol: "AAPL")
+        XCTAssertEqual(value.symbol, "AAPL")
+        XCTAssertEqual(value.marketCap, 3_524_014_873_860)
+        XCTAssertEqual(value.sharesOutstanding, 15_204_137_000)
+    }
+
+    func testInstrumentFundamentalFieldsRemainIndependentlyOptional() throws {
+        let variants: [(String, Double?, Double?)] = [
+            ("{}", nil, nil),
+            ("{\"marketCap\":null,\"sharesOutstanding\":1000}", nil, 1000),
+            ("{\"marketCap\":\"unavailable\",\"sharesOutstanding\":1000}", nil, 1000),
+            ("{\"marketCap\":5000,\"sharesOutstanding\":\"unavailable\"}", 5000, nil),
+            ("{\"marketCap\":-1,\"sharesOutstanding\":0}", nil, nil),
+            ("{\"marketCap\":0,\"sharesOutstanding\":-1}", 0, nil)
+        ]
+        for (fields, cap, shares) in variants {
+            let body = "{\"instruments\":[{\"symbol\":\"AAPL\",\"assetType\":\"EQUITY\",\"fundamental\":\(fields)}]}"
+            let value = try SchwabClient.decodeFundamentals(Data(body.utf8), symbol: "AAPL")
+            XCTAssertEqual(value.marketCap, cap)
+            XCTAssertEqual(value.sharesOutstanding, shares)
+        }
+        let absent = Data("{\"instruments\":[{\"symbol\":\"AAPL\",\"assetType\":\"EQUITY\"}]}".utf8)
+        XCTAssertNil(try SchwabClient.decodeFundamentals(absent, symbol: "AAPL").marketCap)
+    }
+
+    func testInstrumentFundamentalsRejectMismatchedOrAmbiguousIdentitiesWithRedactedErrors() {
+        let invalid = [
+            "{\"instruments\":[{\"symbol\":\"MSFT\",\"assetType\":\"EQUITY\"}]}",
+            "{\"instruments\":[{\"symbol\":\"AAPL\",\"assetType\":\"OPTION\"}]}",
+            "{\"instruments\":[{\"symbol\":\"AAPL\",\"assetType\":\"EQUITY\",\"fundamental\":{\"symbol\":\"MSFT\"}}]}",
+            "{\"instruments\":[{\"symbol\":\"AAPL\",\"assetType\":\"EQUITY\",\"fundamental\":{\"symbol\":123}}]}",
+            "{\"instruments\":[{\"symbol\":\"AAPL\",\"assetType\":\"EQUITY\"},{\"symbol\":\"AAPL\",\"assetType\":\"EQUITY\"}]}",
+            "{\"instruments\":[]}", "private-provider-detail"
+        ]
+        for body in invalid {
+            XCTAssertThrowsError(try SchwabClient.decodeFundamentals(Data(body.utf8), symbol: "AAPL")) {
+                XCTAssertEqual($0 as? SchwabClientError, .invalidResponse)
+                XCTAssertFalse($0.localizedDescription.contains("private-provider-detail"))
+            }
+        }
+    }
+
+    func testFundamentalsRequestUsesOnlyTheAuthenticatedReadRouteAndFixedProjection() async throws {
+        let body = "{\"instruments\":[{\"symbol\":\"AAPL\",\"assetType\":\"EQUITY\",\"fundamental\":{\"marketCap\":5000,\"sharesOutstanding\":100}}]}"
+        let transport = TradingTransport([.response(200, tradingToken), .response(200, body)])
+        let client = try await authorizedClient(transport)
+        let response = try await client.fetchFundamentals(symbol: " aapl ")
+        XCTAssertEqual(response.value.marketCap, 5000)
+        XCTAssertEqual(response.elapsedMilliseconds, 42)
+        let requests = await transport.recorded()
+        XCTAssertEqual(requests.count, 2)
+        let request = try XCTUnwrap(requests.last)
+        XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertEqual(request.url?.path, "/marketdata/v1/instruments")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer fixture-access")
+        XCTAssertNil(request.httpBody)
+        let components = try XCTUnwrap(URLComponents(url: XCTUnwrap(request.url), resolvingAgainstBaseURL: false))
+        let values = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        XCTAssertEqual(values, ["symbol": "AAPL", "projection": "fundamental"])
+        XCTAssertNoThrow(try DirectSchwabTransport.validateRequest(request))
+        var withBody = request
+        withBody.httpBody = Data("unexpected".utf8)
+        XCTAssertThrowsError(try DirectSchwabTransport.validateRequest(withBody))
+    }
+
+    func testFundamentalRouteRejectsBroaderSearchAndInvalidSymbolsBeforeNetworking() async throws {
+        let base = "https://api.schwabapi.com/marketdata/v1/instruments"
+        let invalidQueries = [
+            "?symbol=AAPL&projection=symbol-search", "?symbols=AAPL&projection=fundamental",
+            "?symbol=AAPL,MSFT&projection=fundamental", "?symbol=AAPL%26other&projection=fundamental",
+            "?symbol=AAPL&projection=fundamental&extra=1", "?symbol=AAPL&projection=fundamental&projection=fundamental",
+            "?symbol=AAPL", "/AAPL?projection=fundamental"
+        ]
+        for suffix in invalidQueries {
+            XCTAssertThrowsError(try DirectSchwabTransport.validateRequest(request(base + suffix)))
+        }
+        for method in ["POST", "PUT", "DELETE"] {
+            XCTAssertThrowsError(try DirectSchwabTransport.validateRequest(request(base + "?symbol=AAPL&projection=fundamental", method: method)))
+        }
+        let transport = TradingTransport([])
+        let client = SchwabClient(store: TradingVault(), transport: transport)
+        for symbol in ["", "AAPL,MSFT", "AAPL&projection=search", "AAPL_260918C250", "../AAPL"] {
+            try await assertError(.invalidSymbols) { _ = try await client.fetchFundamentals(symbol: symbol) }
+        }
+        let requests = await transport.recorded()
+        XCTAssertTrue(requests.isEmpty)
     }
 
     private func draft(kind: OrderKind = .limit) -> OrderDraft {

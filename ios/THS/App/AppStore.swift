@@ -84,6 +84,8 @@ final class AppStore {
     func loadUITestDemo(tab: String?) async {
         hasLoaded = true
         await setDemoMode(true)
+        watchlist = ["AAPL", "MSFT", "SPY", "QQQ", "NVDA", "AMD", "TSLA", "IWM"]
+        quotes = watchlist.compactMap { DemoData.quote(symbol: $0) }
         switch tab {
         case "watchlist": activeTab = .watchlist
         case "trade": activeTab = .trade

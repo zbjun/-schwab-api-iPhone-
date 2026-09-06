@@ -1,19 +1,23 @@
 import Foundation
 
 enum HistoryRange: String, CaseIterable, Sendable {
-    case day
-    case week
-    case month
-    case year
+    case intraday
+    case daily
+    case weekly
+    case monthly
+    case fiveDay
 
     var title: String {
         switch self {
-        case .day: return "1 日"
-        case .week: return "5 日"
-        case .month: return "1 月"
-        case .year: return "1 年"
+        case .intraday: return "分时"
+        case .daily: return "日K"
+        case .weekly: return "周K"
+        case .monthly: return "月K"
+        case .fiveDay: return "五日"
         }
     }
+
+    var isIntraday: Bool { self == .intraday || self == .fiveDay }
 }
 
 struct PriceCandle: Identifiable, Sendable {

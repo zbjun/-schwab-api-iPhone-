@@ -1,50 +1,72 @@
 import SwiftUI
-import Charts
 
 struct StockDetailView: View {
     @Environment(AppStore.self) private var store
     let symbol: String
     @State private var quote: StockQuote?
     @State private var history: PriceHistory?
-    @State private var range: HistoryRange = .day
+    @State private var range: HistoryRange = .intraday
     @State private var quoteError: String?
     @State private var historyError: String?
     @State private var isLoadingQuote = false
     @State private var isLoadingHistory = false
     @State private var quoteRequestID = UUID()
     @State private var historyRequestID = UUID()
-    @State private var selectedTime: Date?
+    @State private var historyCache: [HistoryRange: PriceHistory] = [:]
+    @State private var cachedSession = ""
+    @State private var editorSide: OrderSide?
+    @State private var showsMetricNotes = false
+    @State private var fundamentals: StockFundamentals?
+    @State private var metricRequestID = UUID()
 
-    private var sessionKey: String { "\(symbol)|\(store.isDemo)|\(store.isAuthenticated)" }
-    private var historyKey: String { "\(sessionKey)|\(rangeName(range))" }
+    private var sessionKey: String { "\(symbol)|\(store.generation)|\(store.isDemo)|\(store.isAuthenticated)" }
+    private var historyKey: String { "\(sessionKey)|\(range.rawValue)" }
     private var holding: Position? { store.selectedAccount?.positions.first { $0.symbol == symbol } }
     private var canTrade: Bool { quote?.assetMainType == "EQUITY" && (store.isDemo || store.isAuthenticated) }
-    private var selectedCandle: PriceCandle? {
-        guard let selectedTime else { return nil }
-        return history?.candles.min { abs($0.time.timeIntervalSince(selectedTime)) < abs($1.time.timeIntervalSince(selectedTime)) }
+    private var volumeRatio: Double? {
+        MarketStatistics.volumeRatio(intraday: historyCache[.intraday], daily: historyCache[.daily])
     }
-    private var priceDomain: ClosedRange<Double> {
-        let values = history?.candles.map(\.close).filter(\.isFinite) ?? []
-        guard let low = values.min(), let high = values.max() else { return 0...1 }
-        let padding = max((high - low) * 0.12, max(abs(high) * 0.001, 0.01))
-        return (low - padding)...(high + padding)
-    }
-    private var chartColor: Color {
-        guard let first = history?.candles.first?.close, let last = history?.candles.last?.close else { return .blue }
-        return DisplayFormat.changeColor(last - first)
+    private var turnover: Double? {
+        guard let shares = fundamentals?.sharesOutstanding, shares.isFinite, shares > 0,
+              let volume = quote?.totalVolume, volume.isFinite, volume >= 0 else { return nil }
+        let value = volume / shares * 100
+        return value.isFinite ? value : nil
     }
 
     var body: some View {
-        List {
-            if store.isDemo { Section { DemoNotice() } }
-            quoteSection
-            chartSection
-            if let quote { statisticsSection(quote) }
-            if let holding { holdingSection(holding) }
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                if let side = editorSide {
+                    quoteSummary(compact: true).frame(height: 72)
+                    chartSection(height: min(320, max(180, (geometry.size.height - 72) * 0.44)))
+                    Rectangle().fill(MarketTheme.separator).frame(height: 1)
+                    InlineTradePanel(symbol: symbol, initialSide: side, quote: quote) { editorSide = nil }
+                        .id("\(symbol)|\(side.rawValue)")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            quoteSummary(compact: false)
+                            chartSection(height: min(450, max(330, geometry.size.height * 0.56)))
+                            extraStatistics
+                            if let holding { holdingSection(holding) }
+                        }
+                    }
+                    .refreshable { await refreshDetail() }
+                    tradeBar
+                }
+            }
+            .background(MarketTheme.background)
         }
         .accessibilityIdentifier("screen.detail")
         .navigationTitle(symbol).navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                VStack(spacing: 2) {
+                    Text(quote?.description ?? symbol).font(.subheadline.weight(.semibold)).lineLimit(1)
+                    Text("\(symbol) · USD").font(.system(size: 10)).foregroundStyle(MarketTheme.secondary)
+                }.frame(maxWidth: 190)
+            }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button {
                     Task {
@@ -55,165 +77,212 @@ struct StockDetailView: View {
                     Label(store.watchlist.contains(symbol) ? "移除自选" : "加入自选",
                           systemImage: store.watchlist.contains(symbol) ? "star.fill" : "star")
                 }
-                .disabled(store.isBusy || store.isSubmittingOrder)
-                .accessibilityIdentifier("detail.watchlist")
+                .foregroundStyle(store.watchlist.contains(symbol) ? MarketTheme.average : .white)
+                .disabled(store.isBusy || store.isSubmittingOrder).accessibilityIdentifier("detail.watchlist")
                 Button { Task { await refreshDetail() } } label: { Label("刷新", systemImage: "arrow.clockwise") }
                     .disabled(isLoadingQuote || isLoadingHistory || store.isSubmittingOrder)
                     .accessibilityIdentifier("detail.refresh")
             }
         }
-        .safeAreaInset(edge: .bottom) { tradeBar }
+        .toolbar(.hidden, for: .tabBar)
+        .toolbarBackground(MarketTheme.background, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .preferredColorScheme(.dark).tint(.white)
         .task(id: sessionKey) { await loadQuote() }
+        .task(id: sessionKey) { await loadMetrics() }
         .task(id: historyKey) { await loadHistory() }
-        .refreshable { await refreshDetail() }
+        .onChange(of: sessionKey) { _, _ in editorSide = nil }
     }
 
-    private var quoteSection: some View {
-        Section {
-            if let quote {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(quote.description ?? symbol).font(.subheadline).foregroundStyle(.secondary)
-                    Text(DisplayFormat.price(quote.lastPrice))
-                        .font(.system(.largeTitle, design: .rounded, weight: .semibold))
+    private func quoteSummary(compact: Bool) -> some View {
+        VStack(alignment: .leading, spacing: compact ? 7 : 11) {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(MarketTheme.number(quote?.lastPrice))
+                        .font(.system(size: compact ? 27 : 34, weight: .semibold, design: .rounded))
                         .monospacedDigit().lineLimit(1).minimumScaleFactor(0.6)
+                        .foregroundStyle(MarketTheme.change(quote?.netChange))
                         .accessibilityIdentifier("detail.lastPrice")
-                    HStack(spacing: 12) {
-                        Text(DisplayFormat.signedMoney(quote.netChange))
-                        Text(DisplayFormat.signedPercent(quote.netPercentChange))
+                    HStack(spacing: 7) {
+                        Text(MarketTheme.signedNumber(quote?.netChange))
+                        Text(DisplayFormat.signedPercent(quote?.netPercentChange))
                     }
-                    .font(.subheadline.weight(.semibold)).monospacedDigit()
-                    .foregroundStyle(DisplayFormat.changeColor(quote.netChange))
-                    QuoteTimeLabel(quote: quote, isDemo: store.isDemo)
-                }.padding(.vertical, 6)
-            } else if isLoadingQuote {
-                HStack(spacing: 12) { ProgressView(); Text("正在读取 \(symbol) 报价…").foregroundStyle(.secondary) }
-            } else {
-                ContentUnavailableView("暂无报价", systemImage: "chart.line.uptrend.xyaxis", description: Text("检查证券代码，或稍后刷新。"))
-            }
-            if let error = quoteError { AppMessageView(message: error, isError: true) }
-        }
-    }
-
-    private var chartSection: some View {
-        Section {
-            HStack(spacing: 4) {
-                ForEach([HistoryRange.day, .week, .month, .year], id: \.self) { item in
-                    Button {
-                        selectedTime = nil
-                        range = item
-                    } label: {
-                        Text(rangeTitle(item)).font(.subheadline.weight(range == item ? .semibold : .regular))
-                            .frame(maxWidth: .infinity).padding(.vertical, 8)
-                            .background(range == item ? Color.blue.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
-                    }
-                    .buttonStyle(.plain).foregroundStyle(range == item ? .blue : .secondary)
-                    .accessibilityIdentifier("history.\(rangeName(item))")
-                    .accessibilityAddTraits(range == item ? .isSelected : [])
+                    .font(.system(size: 12, weight: .semibold)).monospacedDigit()
+                    .foregroundStyle(MarketTheme.change(quote?.netChange))
+                }.frame(maxWidth: .infinity, alignment: .leading)
+                VStack(spacing: 5) {
+                    priceMetric("高", value: quote?.highPrice)
+                    priceMetric("低", value: quote?.lowPrice)
+                    if !compact { priceMetric("开", value: quote?.openPrice) }
+                }.frame(width: compact ? 86 : 100)
+                if compact {
+                    VStack(spacing: 5) {
+                        priceMetric("开", value: quote?.openPrice)
+                        priceMetric("昨", value: quote?.closePrice)
+                    }.frame(width: 86)
                 }
             }
-            .listRowSeparator(.hidden)
-            if isLoadingHistory {
-                VStack(spacing: 12) { ProgressView(); Text("正在加载图表…").font(.caption).foregroundStyle(.secondary) }
-                    .frame(maxWidth: .infinity).frame(height: 220)
-            } else if let history, !history.candles.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    if let candle = selectedCandle {
-                        HStack {
-                            Text(candle.time.formatted(date: range == .day ? .omitted : .abbreviated, time: range == .day ? .shortened : .omitted))
-                            Spacer()
-                            Text(DisplayFormat.price(candle.close)).monospacedDigit()
-                        }.font(.caption.weight(.medium))
-                    } else {
-                        Text("\(range.title) · 收盘价格 · 长按查看")
-                            .font(.caption).foregroundStyle(.secondary)
+            if !compact {
+                Grid(horizontalSpacing: 14, verticalSpacing: 10) {
+                    GridRow {
+                        statistic("昨收", value: MarketTheme.number(quote?.closePrice))
+                        statistic("成交量", value: DisplayFormat.volume(quote?.totalVolume))
+                        statistic("换手估", value: turnover.map { MarketTheme.number($0) + "%" } ?? "—")
                     }
-                    Chart {
-                        ForEach(history.candles) { candle in
-                            LineMark(x: .value("时间", candle.time), y: .value("价格", candle.close))
-                                .foregroundStyle(chartColor).lineStyle(StrokeStyle(lineWidth: 2))
-                        }
-                        if let candle = selectedCandle {
-                            RuleMark(x: .value("选中时间", candle.time))
-                                .foregroundStyle(.secondary.opacity(0.5)).lineStyle(StrokeStyle(dash: [3, 3]))
-                            PointMark(x: .value("时间", candle.time), y: .value("价格", candle.close))
-                                .foregroundStyle(chartColor).symbolSize(45)
-                        }
+                    GridRow {
+                        statistic("市值", value: DisplayFormat.volume(fundamentals?.marketCap))
+                        statistic("市盈率", value: MarketTheme.number(quote?.peRatio))
+                        statistic("量比估", value: MarketTheme.number(volumeRatio))
                     }
-                    .chartYScale(domain: priceDomain)
-                    .chartXAxis { AxisMarks(values: .automatic(desiredCount: 4)) }
-                    .chartYAxis { AxisMarks(position: .trailing, values: .automatic(desiredCount: 4)) }
-                    .chartXSelection(value: $selectedTime)
-                    .frame(height: 205)
-                    .accessibilityLabel("\(symbol) \(range.title) 价格图表，\(history.candles.count) 个数据点")
-                    .accessibilityIdentifier("detail.chart")
-                }.padding(.vertical, 4)
-            } else {
-                ContentUnavailableView("此区间暂无价格数据", systemImage: "chart.xyaxis.line", description: Text("可以切换区间，或下拉重新加载。"))
-                    .frame(minHeight: 190)
+                }
+                HStack(spacing: 5) {
+                    Circle().fill(store.isDemo ? MarketTheme.average : (quote?.isRealtime == true ? MarketTheme.fall : MarketTheme.secondary))
+                        .frame(width: 4, height: 4)
+                    Text(quoteStatus).lineLimit(1)
+                    Spacer(minLength: 4)
+                    Button { showsMetricNotes.toggle() } label: { Image(systemName: "info.circle") }
+                        .accessibilityLabel("行情指标说明").accessibilityIdentifier("detail.metricInfo")
+                }
+                .font(.system(size: 10)).foregroundStyle(MarketTheme.secondary)
+                if showsMetricNotes {
+                    Text("换手率＝成交量 / 总股本，股本和市值来自基本面数据。量比以最近分时交易日每分钟成交量对比此前五日日均量，按常规交易日390分钟估算；半日市或数据缺失时可能不适用。黄色线按分钟价格与成交量估算均价，每日重置。")
+                        .font(.caption2).foregroundStyle(MarketTheme.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                if let error = quoteError { AppMessageView(message: error, isError: true) }
+                if isLoadingQuote { ProgressView().controlSize(.mini).accessibilityLabel("正在刷新报价") }
             }
-            if let error = historyError { AppMessageView(message: error, isError: true) }
         }
+        .padding(.horizontal, 16).padding(.vertical, compact ? 7 : 14)
+        .background(MarketTheme.surface)
+        .accessibilityIdentifier(compact ? "detail.quote.compact" : "detail.quote.summary")
     }
 
-    private func statisticsSection(_ quote: StockQuote) -> some View {
-        Section("报价与统计 · USD") {
-            MetricRow {
-                MetricCell(title: "买价 Bid", value: DisplayFormat.price(quote.bidPrice))
-                MetricCell(title: "卖价 Ask", value: DisplayFormat.price(quote.askPrice))
-            }.padding(.vertical, 3)
-            MetricRow {
-                MetricCell(title: "开盘", value: DisplayFormat.price(quote.openPrice))
-                MetricCell(title: "昨收", value: DisplayFormat.price(quote.closePrice))
-            }.padding(.vertical, 3)
-            MetricRow {
-                MetricCell(title: "最高", value: DisplayFormat.price(quote.highPrice))
-                MetricCell(title: "最低", value: DisplayFormat.price(quote.lowPrice))
-            }.padding(.vertical, 3)
-            MetricRow {
-                MetricCell(title: "52 周最高", value: DisplayFormat.price(quote.high52Week))
-                MetricCell(title: "52 周最低", value: DisplayFormat.price(quote.low52Week))
-            }.padding(.vertical, 3)
-            LabeledContent("成交量", value: DisplayFormat.volume(quote.totalVolume)).font(.subheadline).monospacedDigit()
-            if let status = quote.securityStatus, !status.isEmpty {
-                LabeledContent("证券状态", value: status).font(.subheadline)
+    private var quoteStatus: String {
+        if store.isDemo { return "演示行情 · 换手与量比为估算" }
+        let status = quote?.isRealtime == true ? "实时权限" : (quote?.isRealtime == false ? "非实时标记" : "时效未确认")
+        let time = quote?.quoteTime?.formatted(date: .omitted, time: .standard) ?? "时间未提供"
+        return "\(status) · \(time) · 换手按总股本估算"
+    }
+
+    private func priceMetric(_ name: String, value: Double?) -> some View {
+        HStack(spacing: 6) {
+            Text(name).foregroundStyle(MarketTheme.secondary)
+            Spacer(minLength: 0)
+            Text(MarketTheme.number(value))
+                .foregroundStyle(MarketTheme.change(value.flatMap { current in quote?.closePrice.map { current - $0 } }))
+                .monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+        }.font(.system(size: 12))
+        .accessibilityElement(children: .combine)
+    }
+
+    private func statistic(_ title: String, value: String) -> some View {
+        HStack(spacing: 5) {
+            Text(title).foregroundStyle(MarketTheme.secondary)
+            Spacer(minLength: 0)
+            Text(value).foregroundStyle(.white).monospacedDigit().lineLimit(1).minimumScaleFactor(0.65)
+        }
+        .font(.system(size: 11)).frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func chartSection(height: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                ForEach(HistoryRange.allCases, id: \.self) { item in
+                    Button {
+                        range = item
+                    } label: {
+                        VStack(spacing: 6) {
+                            Text(item.title).font(.system(size: 14, weight: range == item ? .semibold : .regular))
+                            Capsule().fill(range == item ? MarketTheme.rise : .clear).frame(width: 18, height: 3)
+                        }.frame(maxWidth: .infinity).padding(.top, 9)
+                    }
+                    .buttonStyle(.plain).foregroundStyle(range == item ? .white : MarketTheme.secondary)
+                    .disabled(store.isSubmittingOrder).accessibilityIdentifier("history.\(item.rawValue)")
+                    .accessibilityAddTraits(range == item ? .isSelected : [])
+                }
+            }.frame(height: 38)
+            Group {
+                if let history, !history.candles.isEmpty {
+                    MarketChartView(history: history, range: range)
+                } else if isLoadingHistory {
+                    VStack(spacing: 8) {
+                        ProgressView().tint(MarketTheme.secondary)
+                        Text("正在读取\(range.title)…").font(.caption).foregroundStyle(MarketTheme.secondary)
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    VStack(spacing: 8) {
+                        Image(systemName: "chart.xyaxis.line").font(.title2)
+                        Text(historyError ?? "此区间暂无价格数据").font(.caption).multilineTextAlignment(.center)
+                    }.foregroundStyle(MarketTheme.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 8)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("detail.chart")
+        }
+        .frame(height: height)
+        .background(MarketTheme.background)
+        .clipped()
+    }
+
+    private var extraStatistics: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            HStack {
+                Text("报价与统计").font(.subheadline.weight(.semibold))
+                Spacer()
+                Text("USD").font(.caption2).foregroundStyle(MarketTheme.secondary)
+            }
+            HStack(spacing: 20) {
+                statistic("买价", value: MarketTheme.number(quote?.bidPrice))
+                statistic("卖价", value: MarketTheme.number(quote?.askPrice))
+            }
+            HStack(spacing: 20) {
+                statistic("52周高", value: MarketTheme.number(quote?.high52Week))
+                statistic("52周低", value: MarketTheme.number(quote?.low52Week))
+            }
+            if let status = quote?.securityStatus, !status.isEmpty {
+                statistic("证券状态", value: status)
             }
         }
+        .padding(16).background(MarketTheme.surface)
+        .overlay(alignment: .top) { Rectangle().fill(MarketTheme.separator).frame(height: 1) }
     }
 
     private func holdingSection(_ holding: Position) -> some View {
-        Section("当前账户持仓") {
-            MetricRow {
-                MetricCell(title: "持有股数", value: DisplayFormat.quantity(holding.quantity))
-                MetricCell(title: "平均成本", value: DisplayFormat.price(holding.averagePrice))
+        VStack(alignment: .leading, spacing: 12) {
+            Text("当前账户持仓").font(.subheadline.weight(.semibold))
+            HStack(spacing: 20) {
+                statistic("持有", value: DisplayFormat.quantity(holding.quantity) + " 股")
+                statistic("成本", value: MarketTheme.number(holding.averagePrice))
             }
-            MetricRow {
-                MetricCell(title: "持仓市值", value: DisplayFormat.money(holding.marketValue))
-                MetricCell(title: "当日盈亏", value: DisplayFormat.signedMoney(holding.dayProfitLoss), color: DisplayFormat.changeColor(holding.dayProfitLoss))
+            HStack(spacing: 20) {
+                statistic("市值", value: DisplayFormat.money(holding.marketValue))
+                statistic("当日盈亏", value: DisplayFormat.signedMoney(holding.dayProfitLoss))
             }
-        }.privacySensitive()
+        }
+        .padding(16).background(MarketTheme.surface)
+        .overlay(alignment: .top) { Rectangle().fill(MarketTheme.separator).frame(height: 1) }
+        .privacySensitive()
     }
 
     private var tradeBar: some View {
-        VStack(spacing: 6) {
-            if !canTrade, quote != nil {
-                Text("此页仅支持明确识别为股票 / ETF 的证券交易。")
-                    .font(.caption).foregroundStyle(.secondary)
+        HStack(spacing: 12) {
+            Button { editorSide = .buy } label: {
+                Text("买入").font(.headline).frame(maxWidth: .infinity).frame(height: 43)
+                    .background(MarketTheme.rise, in: RoundedRectangle(cornerRadius: 8))
+            }.buttonStyle(.plain).accessibilityIdentifier("detail.buy")
+            Button { editorSide = .sell } label: {
+                Text("卖出").font(.headline).frame(maxWidth: .infinity).frame(height: 43)
+                    .background(MarketTheme.ma30.opacity(0.85), in: RoundedRectangle(cornerRadius: 8))
             }
-            HStack(spacing: 12) {
-                Button { store.openTrade(symbol: symbol, side: .buy) } label: {
-                    Text("买入").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 5)
-                }
-                .buttonStyle(.borderedProminent).tint(.red).accessibilityIdentifier("detail.buy")
-                Button { store.openTrade(symbol: symbol, side: .sell) } label: {
-                    Text("卖出").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 5)
-                }
-                .buttonStyle(.borderedProminent).tint(.green)
-                .disabled((holding?.quantity ?? 0) < 1).accessibilityIdentifier("detail.sell")
-            }
-            .disabled(!canTrade || store.isBusy || store.isSubmittingOrder)
+            .buttonStyle(.plain).disabled((holding?.quantity ?? 0) < 1).accessibilityIdentifier("detail.sell")
         }
-        .accessibilityElement(children: .contain)
-        .padding(.horizontal, 20).padding(.vertical, 12).background(.regularMaterial)
+        .foregroundStyle(.white)
+        .disabled(!canTrade || store.isBusy || store.isSubmittingOrder)
+        .padding(.horizontal, 16).padding(.vertical, 10)
+        .background(MarketTheme.surface)
+        .overlay(alignment: .top) { Rectangle().fill(MarketTheme.separator).frame(height: 1) }
     }
 
     @MainActor private func loadQuote() async {
@@ -222,7 +291,7 @@ struct StockDetailView: View {
         quoteRequestID = request
         isLoadingQuote = true
         quoteError = nil
-        quote = nil
+        quote = store.quotes.first { $0.symbol == symbol }
         defer { if request == quoteRequestID { isLoadingQuote = false } }
         do {
             let response = try await store.lookupQuote(symbol)
@@ -234,18 +303,24 @@ struct StockDetailView: View {
         }
     }
 
-    @MainActor private func loadHistory() async {
+    @MainActor private func loadHistory(force: Bool = false) async {
         let key = historyKey
         let request = UUID()
         historyRequestID = request
-        isLoadingHistory = true
         historyError = nil
-        history = nil
+        if cachedSession != sessionKey {
+            historyCache.removeAll()
+            cachedSession = sessionKey
+        }
+        history = historyCache[range]
+        if history != nil, !force { isLoadingHistory = false; return }
+        isLoadingHistory = true
         defer { if request == historyRequestID { isLoadingHistory = false } }
         do {
             let response = try await store.priceHistory(symbol: symbol, range: range)
             guard !Task.isCancelled, key == historyKey, request == historyRequestID else { return }
             history = response
+            historyCache[range] = response
         } catch {
             guard !Task.isCancelled, key == historyKey, request == historyRequestID else { return }
             historyError = DisplayFormat.message(error)
@@ -253,15 +328,27 @@ struct StockDetailView: View {
     }
 
     @MainActor private func refreshDetail() async {
+        historyCache.removeAll()
         await loadQuote()
-        await loadHistory()
+        await loadHistory(force: true)
+        await loadMetrics()
     }
 
-    private func rangeName(_ item: HistoryRange) -> String {
-        switch item { case .day: return "day"; case .week: return "week"; case .month: return "month"; case .year: return "year" }
-    }
-
-    private func rangeTitle(_ item: HistoryRange) -> String {
-        switch item { case .day: return "1D"; case .week: return "1W"; case .month: return "1M"; case .year: return "1Y" }
+    @MainActor private func loadMetrics() async {
+        let key = sessionKey
+        let request = UUID()
+        metricRequestID = request
+        fundamentals = nil
+        async let basics = try? store.fundamentals(symbol: symbol)
+        async let daily = try? store.priceHistory(symbol: symbol, range: .daily)
+        let (basicResult, dailyResult) = await (basics, daily)
+        guard !Task.isCancelled, key == sessionKey, request == metricRequestID else { return }
+        fundamentals = basicResult
+        if let dailyResult { historyCache[.daily] = dailyResult }
+        if historyCache[.intraday] == nil {
+            let intraday = try? await store.priceHistory(symbol: symbol, range: .intraday)
+            guard !Task.isCancelled, key == sessionKey, request == metricRequestID else { return }
+            if let intraday { historyCache[.intraday] = intraday }
+        }
     }
 }

@@ -52,12 +52,18 @@ struct StockQuote: Identifiable, Sendable {
     let high52Week: Double?
     let low52Week: Double?
     let securityStatus: String?
+    let marketCap: Double?
+    let peRatio: Double?
+    let sharesOutstanding: Double?
+    let averageVolume10Day: Double?
 
     init(symbol: String, description: String?, lastPrice: Double?, bidPrice: Double?, askPrice: Double?,
          netChange: Double?, netPercentChange: Double?, quoteTime: Date?, isRealtime: Bool?,
          assetMainType: String? = nil, openPrice: Double? = nil, highPrice: Double? = nil,
          lowPrice: Double? = nil, closePrice: Double? = nil, totalVolume: Double? = nil,
-         high52Week: Double? = nil, low52Week: Double? = nil, securityStatus: String? = nil) {
+         high52Week: Double? = nil, low52Week: Double? = nil, securityStatus: String? = nil,
+         marketCap: Double? = nil, peRatio: Double? = nil, sharesOutstanding: Double? = nil,
+         averageVolume10Day: Double? = nil) {
         self.symbol = symbol
         self.description = description
         self.lastPrice = lastPrice
@@ -76,7 +82,19 @@ struct StockQuote: Identifiable, Sendable {
         self.high52Week = high52Week
         self.low52Week = low52Week
         self.securityStatus = securityStatus
+        self.marketCap = marketCap
+        self.peRatio = peRatio
+        self.sharesOutstanding = sharesOutstanding
+        self.averageVolume10Day = averageVolume10Day
     }
 
     var id: String { symbol }
+
+    /// Percentage of total shares outstanding, not float turnover or an exchange-provided metric.
+    var turnoverRate: Double? {
+        guard let volume = totalVolume, volume.isFinite, volume >= 0,
+              let shares = sharesOutstanding, shares.isFinite, shares > 0 else { return nil }
+        let percent = (volume / shares) * 100
+        return percent.isFinite ? percent : nil
+    }
 }

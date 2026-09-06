@@ -36,26 +36,88 @@ final class TradingFlowTests: XCTestCase {
         }
     }
 
-    func testWatchlistLookupAndFourChartRanges() {
+    func testWatchlistLookupAndFiveChartRanges() {
         launch(tab: "watchlist")
         let apple = element("watchlist.symbol.AAPL")
         XCTAssertTrue(apple.waitForExistence(timeout: 5))
         apple.tap()
         XCTAssertTrue(element("detail.lastPrice").waitForExistence(timeout: 5))
         XCTAssertTrue(element("detail.chart").waitForExistence(timeout: 5))
-        for range in ["week", "month", "year", "day"] {
+        for (range, screenshot) in [("intraday", "06-stock-detail-chart"), ("daily", "11-daily-candles"),
+                                    ("weekly", "12-weekly-candles"), ("monthly", "13-monthly-candles"),
+                                    ("fiveDay", "14-five-day-chart")] {
             element("history.\(range)").tap()
             XCTAssertTrue(element("detail.chart").waitForExistence(timeout: 5))
+            let line = range == "intraday" || range == "fiveDay"
+            let legend = element(line ? "chart.average" : "chart.movingAverages")
+            XCTAssertTrue(legend.waitForExistence(timeout: 5))
+            if line { XCTAssertTrue(legend.label.contains("均价估算")) }
+            else {
+                for average in ["MA5", "MA10", "MA20", "MA30"] { XCTAssertTrue(legend.label.contains(average)) }
+            }
+            capture(screenshot)
         }
         XCTAssertTrue(app.buttons["detail.buy"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["detail.buy"].isEnabled)
         XCTAssertTrue(app.buttons["detail.sell"].isEnabled)
-        capture("06-stock-detail-chart")
         app.navigationBars.buttons.element(boundBy: 0).tap()
         replaceText("watchlist.search", with: "QQQ")
         element("watchlist.lookup").tap()
         XCTAssertTrue(app.navigationBars["QQQ"].waitForExistence(timeout: 5))
         XCTAssertTrue(element("detail.lastPrice").waitForExistence(timeout: 5))
+    }
+
+    func testWatchlistSwipesBetweenQuotesAndMultipleCharts() {
+        launch(tab: "watchlist")
+        let apple = element("watchlist.symbol.AAPL")
+        XCTAssertTrue(apple.waitForExistence(timeout: 5))
+        apple.swipeLeft()
+        for symbol in ["AAPL", "MSFT", "SPY", "QQQ"] {
+            let row = element("watchlist.symbol.\(symbol)")
+            let loaded = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "分时走势，390"), object: row)
+            XCTAssertEqual(XCTWaiter.wait(for: [loaded], timeout: 5), .completed)
+        }
+        capture("15-watchlist-charts")
+        element("watchlist.symbol.AAPL").swipeRight()
+        XCTAssertEqual(element("watchlist.symbol.AAPL").value as? String, "行情列表")
+        XCTAssertTrue(element("watchlist.symbol.AAPL").exists)
+    }
+
+    func testInlineAmountBuyKeepsChartVisibleWithKeyboardAndReview() {
+        launch(tab: "watchlist")
+        element("watchlist.symbol.AAPL").tap()
+        XCTAssertTrue(element("detail.chart").waitForExistence(timeout: 5))
+        element("history.daily").tap()
+        XCTAssertTrue(element("chart.movingAverages").waitForExistence(timeout: 5))
+        element("detail.buy").tap()
+        XCTAssertTrue(element("detail.tradePanel").waitForExistence(timeout: 5))
+        XCTAssertTrue(element("inline.quantity").waitForExistence(timeout: 5))
+        assertChartAboveTradePanel()
+        capture("16-inline-buy")
+        replaceText("inline.limitPrice", with: "200")
+        XCTAssertTrue(app.keyboards.firstMatch.exists)
+        assertChartAboveTradePanel()
+        capture("17-inline-keyboard")
+        dismissKeyboard()
+        tapRevealing("inline.amountMode")
+        replaceText("inline.amount", with: "1000")
+        dismissKeyboard()
+        XCTAssertTrue(reveal("inline.amountShares").label.contains("5 整股"))
+        XCTAssertTrue(reveal("inline.maxBuy").label.contains("23 股"))
+        XCTAssertTrue(reveal("inline.maxSell").label.contains("20 股"))
+        element("inline.review").tap()
+        XCTAssertTrue(element("inline.review.summary").waitForExistence(timeout: 5))
+        XCTAssertTrue(element("inline.review.summary").label.contains("5 股"))
+        XCTAssertEqual(element("inline.confirm").label, "确认模拟下单")
+        XCTAssertFalse(app.sheets.firstMatch.exists)
+        assertChartAboveTradePanel()
+        capture("18-inline-review")
+        element("inline.confirm").tap()
+        XCTAssertTrue(app.navigationBars["订单"].waitForExistence(timeout: 5))
+        newestOrder().tap()
+        XCTAssertTrue(element("order.detail.status").waitForExistence(timeout: 5))
+        XCTAssertTrue(element("order.detail.status").label.contains("委托中"))
+        XCTAssertEqual(reveal("order.detail.limitPrice").value as? String, "$200.00")
     }
 
     func testLimitBuyReviewSubmitAndCancelInDemo() {
@@ -133,7 +195,8 @@ final class TradingFlowTests: XCTestCase {
     }
 
     private func element(_ identifier: String) -> XCUIElement {
-        if ["watchlist.search", "trade.quantity", "trade.limitPrice", "trade.stopPrice", "trade.symbol"].contains(identifier) {
+        if ["watchlist.search", "trade.quantity", "trade.amount", "trade.limitPrice", "trade.stopPrice", "trade.symbol",
+            "inline.quantity", "inline.amount", "inline.limitPrice", "inline.stopPrice"].contains(identifier) {
             return app.textFields[identifier]
         }
         if identifier.hasPrefix("history.") || identifier.hasPrefix("order.row.") || identifier.hasPrefix("watchlist.symbol.") ||
@@ -177,6 +240,7 @@ final class TradingFlowTests: XCTestCase {
     }
 
     private func contentList(for identifier: String) -> XCUIElement {
+        if identifier.hasPrefix("inline.") { return app.scrollViews["inline.fields"] }
         let screen: String
         if identifier.hasPrefix("trade.") { screen = "screen.trade" }
         else if identifier.hasPrefix("watchlist.") { screen = "screen.watchlist" }
@@ -203,6 +267,19 @@ final class TradingFlowTests: XCTestCase {
     }
 
     private func tapRevealing(_ identifier: String) { reveal(identifier).tap() }
+
+    private func assertChartAboveTradePanel(file: StaticString = #filePath, line: UInt = #line) {
+        let chart = element("detail.chart")
+        let panel = element("detail.tradePanel")
+        XCTAssertTrue(chart.exists, file: file, line: line)
+        XCTAssertTrue(panel.exists, file: file, line: line)
+        XCTAssertGreaterThanOrEqual(chart.frame.height, 90, file: file, line: line)
+        XCTAssertLessThanOrEqual(chart.frame.maxY, panel.frame.minY + 1, file: file, line: line)
+        XCTAssertTrue(app.frame.contains(chart.frame), file: file, line: line)
+        if app.keyboards.firstMatch.exists {
+            XCTAssertLessThanOrEqual(chart.frame.maxY, app.keyboards.firstMatch.frame.minY, file: file, line: line)
+        }
+    }
 
     private func replaceText(_ identifier: String, with text: String) {
         let field = reveal(identifier)

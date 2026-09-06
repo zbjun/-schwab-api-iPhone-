@@ -194,6 +194,13 @@ extension AppStore {
         activeTab = .trade
     }
 
+    func beginInlineTrade(symbol: String, side: OrderSide) {
+        guard !isSubmittingOrder else { return }
+        resetTradeForm()
+        tradeSymbol = symbol.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        tradeSide = side
+    }
+
     func beginReplacement(_ order: BrokerageOrder) {
         guard !isSubmittingOrder, order.editable, order.isSimpleEquity,
               order.isOpen, order.filledQuantity == 0, let side = order.side else { return }
@@ -215,7 +222,7 @@ extension AppStore {
         guard Self.validSymbol(symbol) else { throw TradingWorkflowError.message("请输入有效的股票或 ETF 代码。") }
         if isDemo {
             guard let quote = DemoData.quote(symbol: symbol) else {
-                throw TradingWorkflowError.message("演示可查看 AAPL、MSFT、SPY、QQQ 和 NVDA。")
+                throw TradingWorkflowError.message("演示可查看 AAPL、MSFT、SPY、QQQ、NVDA、AMD、TSLA 和 IWM。")
             }
             return quote
         }
@@ -236,6 +243,20 @@ extension AppStore {
         let context = generation
         guard isAuthenticated else { throw SchwabClientError.authorizationRequired }
         let response = try await client.fetchPriceHistory(symbol: symbol, range: range)
+        guard context == generation, !isDemo else { throw SchwabClientError.sessionChanged }
+        return response.value
+    }
+
+    func fundamentals(symbol value: String) async throws -> StockFundamentals {
+        let symbol = value.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard Self.validSymbol(symbol) else { throw SchwabClientError.invalidSymbols }
+        if isDemo {
+            guard let quote = DemoData.quote(symbol: symbol) else { throw SchwabClientError.invalidSymbols }
+            return StockFundamentals(symbol: symbol, marketCap: quote.marketCap, sharesOutstanding: quote.sharesOutstanding)
+        }
+        let context = generation
+        guard isAuthenticated else { throw SchwabClientError.authorizationRequired }
+        let response = try await client.fetchFundamentals(symbol: symbol)
         guard context == generation, !isDemo else { throw SchwabClientError.sessionChanged }
         return response.value
     }

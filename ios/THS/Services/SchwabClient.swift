@@ -144,6 +144,8 @@ struct DirectSchwabTransport: SchwabHTTPTransport {
             allowed = items.isEmpty
         case ("GET", "/marketdata/v1/pricehistory"):
             allowed = SchwabRequestPolicy.validHistoryQuery(items)
+        case ("GET", "/marketdata/v1/instruments"):
+            allowed = (request.httpBody ?? Data()).isEmpty && SchwabRequestPolicy.validFundamentalQuery(items)
         default:
             let path = components.path.split(separator: "/", omittingEmptySubsequences: false)
             if (path.count == 6 || path.count == 7), path[0].isEmpty,
@@ -167,6 +169,13 @@ struct DirectSchwabTransport: SchwabHTTPTransport {
 }
 
 private enum SchwabRequestPolicy {
+    static func validFundamentalQuery(_ items: [URLQueryItem]) -> Bool {
+        guard items.count == 2, Set(items.map(\.name)) == ["symbol", "projection"] else { return false }
+        let values = Dictionary(uniqueKeysWithValues: items.map { ($0.name, $0.value ?? "") })
+        guard values["projection"] == "fundamental", let symbol = values["symbol"] else { return false }
+        return OrderDraft.isValidSymbol(symbol)
+    }
+
     static func validHash(_ hash: String) -> Bool {
         !hash.isEmpty && hash.utf8.count <= 128
             && hash.range(of: "\\A[A-Za-z0-9_-]+\\z", options: .regularExpression) != nil
@@ -222,10 +231,11 @@ private enum SchwabRequestPolicy {
         let frequencyType: String
         let frequency: String
         switch range {
-        case .day: (periodType, period, frequencyType, frequency) = ("day", "1", "minute", "1")
-        case .week: (periodType, period, frequencyType, frequency) = ("day", "5", "minute", "30")
-        case .month: (periodType, period, frequencyType, frequency) = ("month", "1", "daily", "1")
-        case .year: (periodType, period, frequencyType, frequency) = ("year", "1", "daily", "1")
+        case .intraday: (periodType, period, frequencyType, frequency) = ("day", "1", "minute", "1")
+        case .daily: (periodType, period, frequencyType, frequency) = ("year", "1", "daily", "1")
+        case .weekly: (periodType, period, frequencyType, frequency) = ("year", "2", "weekly", "1")
+        case .monthly: (periodType, period, frequencyType, frequency) = ("year", "5", "monthly", "1")
+        case .fiveDay: (periodType, period, frequencyType, frequency) = ("day", "5", "minute", "5")
         }
         return [URLQueryItem(name: "symbol", value: symbol),
                 URLQueryItem(name: "periodType", value: periodType), URLQueryItem(name: "period", value: period),
@@ -245,8 +255,9 @@ private enum SchwabRequestPolicy {
               let endRaw = values["endDate"], endRaw.range(of: "\\A[0-9]+\\z", options: .regularExpression) != nil,
               let end = Int64(endRaw), end >= 0, end < 32_503_680_000_000 else { return false }
         let combination = [values["periodType"], values["period"], values["frequencyType"], values["frequency"]]
-        return combination == ["day", "1", "minute", "1"] || combination == ["day", "5", "minute", "30"]
-            || combination == ["month", "1", "daily", "1"] || combination == ["year", "1", "daily", "1"]
+        return combination == ["day", "1", "minute", "1"] || combination == ["day", "5", "minute", "5"]
+            || combination == ["year", "1", "daily", "1"] || combination == ["year", "2", "weekly", "1"]
+            || combination == ["year", "5", "monthly", "1"]
     }
 }
 
@@ -401,6 +412,16 @@ actor SchwabClient {
         let response = try await read(path: "/marketdata/v1/quotes",
                                       query: [URLQueryItem(name: "symbols", value: symbols.joined(separator: ","))])
         return APIResponse(value: try Self.decodeQuotes(response.data, symbols: symbols),
+                           elapsedMilliseconds: response.elapsedMilliseconds)
+    }
+
+    func fetchFundamentals(symbol: String) async throws -> APIResponse<StockFundamentals> {
+        let symbol = symbol.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard OrderDraft.isValidSymbol(symbol) else { throw SchwabClientError.invalidSymbols }
+        let response = try await read(path: "/marketdata/v1/instruments", query: [
+            URLQueryItem(name: "symbol", value: symbol), URLQueryItem(name: "projection", value: "fundamental")
+        ])
+        return APIResponse(value: try Self.decodeFundamentals(response.data, symbol: symbol),
                            elapsedMilliseconds: response.elapsedMilliseconds)
     }
 
@@ -961,12 +982,84 @@ actor SchwabClient {
         } catch { throw SchwabClientError.invalidResponse }
     }
 
+    private struct FundamentalEnvelopeDTO: Decodable {
+        let instruments: [FundamentalInstrumentDTO]
+    }
+
+    private struct FundamentalInstrumentDTO: Decodable {
+        let symbol: String
+        let assetType: String
+        let fundamental: InstrumentFundamentalDTO?
+    }
+
+    private struct InstrumentFundamentalDTO: Decodable {
+        let symbol: String?
+        let marketCap: Double?
+        let sharesOutstanding: Double?
+
+        enum CodingKeys: String, CodingKey { case symbol, marketCap, sharesOutstanding }
+
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            symbol = try values.decodeIfPresent(String.self, forKey: .symbol)
+            let cap = try? values.decode(Double.self, forKey: .marketCap)
+            marketCap = cap.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+            let shares = try? values.decode(Double.self, forKey: .sharesOutstanding)
+            sharesOutstanding = shares.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        }
+    }
+
+    static func decodeFundamentals(_ data: Data, symbol: String) throws -> StockFundamentals {
+        do {
+            guard OrderDraft.isValidSymbol(symbol) else { throw SchwabClientError.invalidResponse }
+            let envelope = try JSONDecoder().decode(FundamentalEnvelopeDTO.self, from: data)
+            guard envelope.instruments.count == 1, let instrument = envelope.instruments.first,
+                  instrument.symbol == symbol, instrument.assetType == "EQUITY",
+                  instrument.fundamental?.symbol == nil || instrument.fundamental?.symbol == symbol else {
+                throw SchwabClientError.invalidResponse
+            }
+            return StockFundamentals(symbol: symbol, marketCap: instrument.fundamental?.marketCap,
+                                     sharesOutstanding: instrument.fundamental?.sharesOutstanding)
+        } catch { throw SchwabClientError.invalidResponse }
+    }
+
     private struct QuoteDTO: Decodable {
         let symbol: String?
         let realtime: Bool?
         let assetMainType: String?
         let reference: QuoteReferenceDTO?
         let quote: QuoteFieldsDTO
+        let fundamental: QuoteFundamentalDTO?
+
+        enum CodingKeys: String, CodingKey {
+            case symbol, realtime, assetMainType, reference, quote, fundamental
+        }
+
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            symbol = try values.decodeIfPresent(String.self, forKey: .symbol)
+            realtime = try values.decodeIfPresent(Bool.self, forKey: .realtime)
+            assetMainType = try values.decodeIfPresent(String.self, forKey: .assetMainType)
+            reference = try values.decodeIfPresent(QuoteReferenceDTO.self, forKey: .reference)
+            quote = try values.decode(QuoteFieldsDTO.self, forKey: .quote)
+            // Optional fundamental metadata must not discard a valid executable quote.
+            fundamental = try? values.decode(QuoteFundamentalDTO.self, forKey: .fundamental)
+        }
+    }
+
+    private struct QuoteFundamentalDTO: Decodable {
+        let peRatio: Double?
+        let avg10DaysVolume: Double?
+
+        enum CodingKeys: String, CodingKey { case peRatio, avg10DaysVolume }
+
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            let ratio = try? values.decode(Double.self, forKey: .peRatio)
+            peRatio = ratio.flatMap { $0.isFinite ? $0 : nil }
+            let volume = try? values.decode(Double.self, forKey: .avg10DaysVolume)
+            avg10DaysVolume = volume.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+        }
     }
 
     private struct QuoteReferenceDTO: Decodable {
@@ -1025,7 +1118,9 @@ actor SchwabClient {
                                   openPrice: fields.openPrice, highPrice: fields.highPrice, lowPrice: fields.lowPrice,
                                   closePrice: fields.closePrice, totalVolume: fields.totalVolume,
                                   high52Week: fields.fiftyTwoWeekHigh, low52Week: fields.fiftyTwoWeekLow,
-                                  securityStatus: fields.securityStatus)
+                                  securityStatus: fields.securityStatus,
+                                  peRatio: dto.fundamental?.peRatio,
+                                  averageVolume10Day: dto.fundamental?.avg10DaysVolume)
             }
             guard !quotes.isEmpty else { throw SchwabClientError.invalidResponse }
             return quotes

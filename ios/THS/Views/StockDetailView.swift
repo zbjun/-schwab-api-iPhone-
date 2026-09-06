@@ -6,6 +6,7 @@ struct StockDetailView: View {
     @State private var quote: StockQuote?
     @State private var history: PriceHistory?
     @State private var range: HistoryRange = .intraday
+    @State private var chartViewport: CandleViewport?
     @State private var quoteError: String?
     @State private var historyError: String?
     @State private var isLoadingQuote = false
@@ -98,7 +99,11 @@ struct StockDetailView: View {
         .task(id: sessionKey) { await loadQuote() }
         .task(id: sessionKey) { await loadMetrics() }
         .task(id: historyKey) { await loadHistory() }
-        .onChange(of: sessionKey) { _, _ in editorAction = nil }
+        .onChange(of: sessionKey) { _, _ in
+            editorAction = nil
+            chartViewport = nil
+        }
+        .onChange(of: range) { _, _ in chartViewport = nil }
     }
 
     private func quoteSummary(compact: Bool) -> some View {
@@ -234,7 +239,8 @@ struct StockDetailView: View {
             }.frame(height: 38)
             Group {
                 if let history, !history.candles.isEmpty {
-                    MarketChartView(history: history, range: range)
+                    MarketChartView(history: history, range: range, viewport: $chartViewport)
+                        .id(historyKey)
                 } else if isLoadingHistory {
                     VStack(spacing: 8) {
                         ProgressView().tint(MarketTheme.secondary)
@@ -367,6 +373,7 @@ struct StockDetailView: View {
     }
 
     @MainActor private func refreshDetail() async {
+        chartViewport = nil
         historyCache.removeAll()
         await loadQuote()
         await loadHistory(force: true)

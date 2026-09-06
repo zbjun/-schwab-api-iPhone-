@@ -294,6 +294,114 @@ final class TradingFlowTests: XCTestCase {
         XCTAssertTrue(canceled.label.contains("已撤销"))
     }
 
+    func testDailyCandlesPinchPanAndReturnToLatestWithoutBlockingPageScroll() throws {
+        executionTimeAllowance = 600
+        launch(tab: "watchlist")
+        element("watchlist.symbol.AAPL").tap()
+        element("history.daily").tap()
+        XCTAssertTrue(element("chart.movingAverages").waitForExistence(timeout: 5))
+        let initial = try chartWindow()
+        XCTAssertEqual(initial.count, min(120, initial.total))
+        XCTAssertEqual(initial.last, initial.total)
+        XCTAssertTrue(element("chart.window").label.contains("最近\(initial.count)根"))
+        let plot = element("chart.interaction.price")
+        XCTAssertTrue(plot.waitForExistence(timeout: 5))
+        XCTAssertTrue(plot.isHittable)
+
+        plot.pinch(withScale: 2, velocity: 1)
+        let zoomed = try waitForChartWindow { $0.count < initial.count && $0.total == initial.total }
+        capture("32-chart-zoomed")
+
+        dragChart(plot, fromX: 0.25, toX: 0.75)
+        // A continuous viewport may expose one additional partial candle at an edge while panning.
+        let earlier = try waitForChartWindow {
+            $0.first < zoomed.first && abs($0.count - zoomed.count) <= 1 && $0.total == zoomed.total
+        }
+        capture("33-chart-panned")
+
+        dragChart(plot, fromX: 0.75, toX: 0.25)
+        let later = try waitForChartWindow {
+            $0.first > earlier.first && abs($0.count - earlier.count) <= 1 && $0.total == earlier.total
+        }
+        plot.pinch(withScale: 0.6, velocity: -1)
+        _ = try waitForChartWindow { $0.count > later.count && $0.total == initial.total }
+        let latest = app.buttons["chart.latest"]
+        XCTAssertTrue(latest.isHittable)
+        latest.tap()
+        let reset = try waitForChartWindow { $0.last == initial.total && $0.count == min(120, initial.total) }
+        XCTAssertEqual(reset, initial)
+
+        // A vertical touch that starts inside the plot must still scroll the detail page.
+        let chart = element("detail.chart")
+        let originalTop = chart.frame.minY
+        plot.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
+            .press(forDuration: 0.05, thenDragTo: plot.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2)))
+        let scrolled = XCTNSPredicateExpectation(predicate: NSPredicate { object, _ in
+            guard let chart = object as? XCUIElement else { return false }
+            return chart.frame.minY < originalTop - 12
+        }, object: chart)
+        XCTAssertEqual(XCTWaiter.wait(for: [scrolled], timeout: 5), .completed)
+        XCTAssertEqual(try chartWindow(), reset, "Vertical scrolling must not pan or zoom the candle window")
+    }
+
+    func testMinuteCandlesAndInlineBuySellAcceptActualChartGestures() throws {
+        executionTimeAllowance = 600
+        launch(tab: "watchlist")
+        element("watchlist.symbol.AAPL").tap()
+        element("history.more").tap()
+        let fiveMinutes = app.buttons["history.minute5"]
+        XCTAssertTrue(fiveMinutes.waitForExistence(timeout: 5))
+        fiveMinutes.tap()
+        XCTAssertEqual(element("history.more").value as? String, "5分钟")
+        XCTAssertTrue(element("chart.movingAverages").waitForExistence(timeout: 5))
+        let initial = try chartWindow()
+        let plot = element("chart.interaction.price")
+        XCTAssertTrue(plot.waitForExistence(timeout: 5))
+        plot.pinch(withScale: 2, velocity: 1)
+        let zoomed = try waitForChartWindow { $0.count < initial.count && $0.total == initial.total }
+
+        // The volume plot manipulates the same visible candle window as the price plot.
+        let volume = element("chart.interaction.volume")
+        XCTAssertTrue(volume.waitForExistence(timeout: 5))
+        XCTAssertTrue(volume.isHittable)
+        dragChart(volume, fromX: 0.25, toX: 0.75)
+        let earlier = try waitForChartWindow {
+            $0.first < zoomed.first && abs($0.count - zoomed.count) <= 1 && $0.total == zoomed.total
+        }
+        let averagesLabel = element("chart.movingAverages").label
+        for period in [5, 10, 20, 30] {
+            XCTAssertTrue(averagesLabel.contains("MA\(period)"))
+        }
+        capture("34-chart-minute-panned")
+        dragChart(plot, fromX: 0.75, toX: 0.25)
+        let beforeOpen = try waitForChartWindow {
+            $0.first > earlier.first && abs($0.count - earlier.count) <= 1 && $0.total == earlier.total
+        }
+
+        element("detail.buy").tap()
+        XCTAssertTrue(element("detail.tradePanel").waitForExistence(timeout: 5))
+        assertChartAboveTradePanel()
+        let inlineInitial = try chartWindow()
+        XCTAssertEqual(inlineInitial, beforeOpen, "Opening buy/sell must preserve the candle viewport")
+        let inlinePlot = element("chart.interaction.price")
+        XCTAssertTrue(inlinePlot.isHittable)
+        inlinePlot.pinch(withScale: 2, velocity: 1)
+        let inlineZoomed = try waitForChartWindow { $0.count < inlineInitial.count && $0.total == inlineInitial.total }
+        assertChartAboveTradePanel()
+        capture("35-chart-inline-zoomed")
+
+        let actions = app.segmentedControls["inline.side"]
+        XCTAssertTrue(actions.buttons["卖"].isHittable)
+        actions.buttons["卖"].tap()
+        dragChart(inlinePlot, fromX: 0.25, toX: 0.75)
+        _ = try waitForChartWindow {
+            $0.first < inlineZoomed.first && abs($0.count - inlineZoomed.count) <= 1 && $0.total == inlineZoomed.total
+        }
+        assertChartAboveTradePanel()
+        XCTAssertFalse(element("inline.review.summary").exists)
+        XCTAssertFalse(element("order.review.confirm").exists)
+    }
+
     private func launch(tab: String? = nil) {
         app.launchArguments = ["--uitesting-demo", "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
         if let tab { app.launchArguments += ["--snapshot-tab", tab] }
@@ -409,6 +517,45 @@ final class TradingFlowTests: XCTestCase {
     }
 
     private func tapRevealing(_ identifier: String) { reveal(identifier).tap() }
+
+    private struct CandleWindow: Equatable {
+        let first: Int
+        let last: Int
+        let total: Int
+        var count: Int { last - first + 1 }
+
+        init?(value: Any?) {
+            guard let text = value as? String else { return nil }
+            let numbers = text.split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }
+            guard numbers.count == 3, numbers[0] > 0, numbers[1] >= numbers[0], numbers[2] >= numbers[1] else { return nil }
+            first = numbers[0]
+            last = numbers[1]
+            total = numbers[2]
+        }
+    }
+
+    private func chartWindow(file: StaticString = #filePath, line: UInt = #line) throws -> CandleWindow {
+        let window = element("chart.window")
+        XCTAssertTrue(window.waitForExistence(timeout: 5), file: file, line: line)
+        return try XCTUnwrap(CandleWindow(value: window.value), "Expected a candle window with first, last and total counts", file: file, line: line)
+    }
+
+    private func waitForChartWindow(file: StaticString = #filePath, line: UInt = #line,
+                                    matching condition: @escaping (CandleWindow) -> Bool) throws -> CandleWindow {
+        let target = element("chart.window")
+        let changed = XCTNSPredicateExpectation(predicate: NSPredicate { object, _ in
+            guard let element = object as? XCUIElement, let window = CandleWindow(value: element.value) else { return false }
+            return condition(window)
+        }, object: target)
+        XCTAssertEqual(XCTWaiter.wait(for: [changed], timeout: 5), .completed,
+                       "The actual chart gesture must change the candle window as expected", file: file, line: line)
+        return try chartWindow(file: file, line: line)
+    }
+
+    private func dragChart(_ plot: XCUIElement, fromX: CGFloat, toX: CGFloat) {
+        plot.coordinate(withNormalizedOffset: CGVector(dx: fromX, dy: 0.5))
+            .press(forDuration: 0.05, thenDragTo: plot.coordinate(withNormalizedOffset: CGVector(dx: toX, dy: 0.5)))
+    }
 
     private func assertChartAboveTradePanel(focusedField: String? = nil, file: StaticString = #filePath, line: UInt = #line) {
         let chart = element("detail.chart")

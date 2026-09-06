@@ -1,0 +1,24 @@
+# Local credentials and OAuth tokens
+.env
+.env.*
+!.env.example
+.secrets/
+tokens/
+
+# Apple signing material
+*.p8
+*.p12
+*.mobileprovision
+
+# Xcode build products and personal project state
+DerivedData/
+build/
+artifacts/
+*.xcarchive/
+*.xcresult/
+*.ipa
+*.dSYM/
+xcuserdata/
+*.xcuserstate
+.DS_Store
+__pycache__/

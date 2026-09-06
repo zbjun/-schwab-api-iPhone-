@@ -1,44 +1,65 @@
-# 第一阶段实现与验收
+# 实现与验收
 
-## 已确定的范围
+个人股票 / ETF 客户端 **0.2.0（build 2）** 已完成功能和原生 UI 实现、模拟器验证及未签名 iPhone 包归档。之后再安装到用户的 iPhone 16 Pro 调试。部署目标 iOS 17+，网络路径 iPhone → Schwab；透明 VPN/TUN 和上游路由仍取决于设备网络。
 
-目标设备为用户的 iPhone 16 Pro；使用原生 SwiftUI，部署目标 iOS 17+，构建 SDK 采用云端 Xcode 提供的当前版本。此阶段完成个人授权、账户/持仓读取、自选股票/ETF 报价与请求耗时展示。原始需求中的交易功能属于后续阶段，当前源码没有订单写接口。
+## 模块与边界
 
-网络路径为 iPhone → Schwab；没有自建后端。设备的透明 VPN/TUN 和上游网络仍可能影响路径，不能仅凭 App 的连接设置排除。
+- Services/SchwabClient.swift：OAuth、令牌刷新、固定主机及请求白名单、账户与行情、历史、订单查询和写请求回执。
+- Services/KeychainVault.swift：仅本设备解锁后可用的钥匙串项；会话与待核对操作使用不同 account key。
+- Models：账户/行情模型、订单草稿、订单状态、历史蜡烛及不可变核对快照。
+- App/AppStore.swift：账户、授权、自选、演示与会话上下文。
+- App/TradingStore.swift：交易核对、一次性提交、撤改、订单缓存和持久待核对标记。
+- App/DemoData.swift：显式演示行情、历史和订单；不当作真实账户或真实成交。
+- Views：五标签原生界面、证券详情、核对页、订单详情；深浅色和大字体布局。
+- THSTests / THSUITests：替身网络测试、页面状态测试和原生演示流程；不调用真实券商。
 
-## 模块边界
+订单仅支持常规时段、整股股票/ETF。卖出必须有对应持仓；券商仍执行最终可卖数量、购买力、价格档位及账户权限校验。改单刷新详情并要求证券/方向一致、未成交且明确 editable；不会用简单草稿覆盖特殊条件、自定义到期或不支持精度的订单。
 
-- `THS/Services/KeychainVault.swift`：设备解锁可读且不迁移的钥匙串单项存储，不同步到 iCloud。
-- `THS/Services/SchwabClient.swift`：固定券商地址、OAuth state、一次性回调、令牌刷新合并、HTTP/JSON 边界和经过脱敏的错误。
-- `THS/Models/TradingModels.swift`：页面使用的账户、持仓及行情模型；缺失金额保持可选值。
-- `THS/App/AppStore.swift`：主线程页面状态、账户/行情并行刷新、切换与退出时清除金融页面数据。UserDefaults 仅保存非凭据的自选代码。
-- `THS/Views/`：原生页面和显式演示状态；粘贴由用户主动触发，提交敏感输入后立即清空文本框。
-- `THSTests/`：模拟网络、虚构凭据和账户的 XCTest，禁止真实账户调用。
+每次确认快照有效期 120 秒，切换账户、授权或演示模式后失效。写入前持久化待核对标记；明确拒绝或完整回执可清除，结果不确定时不自动重发。演示模式既不发送真实订单，也不清除真实待核对记录。
 
-## 验收边界
+## 本轮验证结果
 
-本机已运行 Node 工程生成/一致性检查和提交差异检查。2026-09-06 又通过 GitHub macOS 构建机执行了实际 Swift 编译、XCTest 和设备归档，结果见下方。界面观感、Safari 回调复制和手机网络仍需在目标 iPhone 上验证。
+[构建 34015712967](https://github.com/zbjun/ths-ios-personal/actions/runs/34015712967) 于 2026-09-06 成功，应用代码提交为 `dfacac2f19fd151ed6da71474c5791154470f504`。使用 Xcode 26.6、iOS 26.5、iPhone 17 Pro 模拟器。随后仅更新交付文档，应用与测试代码保持该提交版本。
 
-云端测试前不传任何 Schwab 密钥；构建产物由用户另行签名。安装后首次授权才把用户输入的凭据写入手机钥匙串。
+| 验证项目 | 结果 |
+| --- | --- |
+| 本地工程一致性、差异空白检查 | 通过；17 个 App 源文件、3 个单元测试源文件、1 个界面测试源文件 |
+| Swift 编译与类型检查 | Debug 模拟器构建及 Release iPhone 归档通过 |
+| 单元测试 | 63 项通过，0 失败；覆盖 OAuth、模型、四种订单、撤改、失效快照、重复提交与不确定结果恢复 |
+| 原生界面流程 | 5 项通过，0 失败；五主页面、无效数量拦截、查价和四区间图表、模拟下单撤单、修改价格及旧单已替换 |
+| 截图导出 | 10 张命名原生截图；预览保留原图并记录每张 SHA-256 |
+| 视觉检查与本地预览 | 已查看五主页面、图表、订单核对、撤单结果、修改核对及无效数量截图；桌面浏览器验证页面选择、前后翻页、首尾禁用状态和放大关闭 |
+| Release 包检查 | ZIP 完整、iPhoneOS 平台、arm64、版本 0.2.0 / build 2、未签名；无 DEBUG 测试入口 |
+| 下载一致性 | 本地 IPA 的 SHA-256 与云端产物一致 |
 
-实盘能力需要在后续单独加入：账户 ID 映射、股票/ETF 订单草稿、价格与数量校验、订单确认、券商错误反馈、订单列表及状态核对。不能用目前的 HTTP 读取耗时推算成交速度。
+已根据原生截图修复报价拥挤，并给订单限价提供独立的可访问性名称和值。界面测试依据实际可见区域操作表单，避免点击落在底部导航栏；确认页和旧单状态断言完整保留。复用原生控件和格式化工具，无新增第三方 App 依赖。
 
-## 本次构建证据
+测试通过 DEBUG 启动参数使用隔离存储与禁止网络的演示环境，不读取设备会话或待核对记录。生产版仍保留钥匙串失败和真实订单结果不确定时的保护；Release 不接受测试启动参数。
 
-- [成功的云端构建](https://github.com/zbjun/ths-ios-personal/actions/runs/34010504808)：源码提交 `3edd5042759bbbf06f1b5eadb0732df9dddad52d`，2026-09-06 04:07 UTC 完成。
-- 构建环境：macOS 26 / Xcode 26.6 / iOS 26.5 SDK。
-- iPhone 17 Pro / iOS 26.5 模拟器执行 20 项 XCTest，0 失败；覆盖 OAuth 回调验证、刷新并发、退出竞态、钥匙串写失败一致性、账户/行情解析和错误脱敏。网络与存储使用测试替身，不调用真实券商账户。
-- `xcodebuild archive` 的 Release 真机归档成功。下载的 IPA 包含 arm64 / iPhoneOS 程序，Bundle ID 为 `app.personal.ths`，版本 0.1.0（build 1），最低 iOS 17。
-- 本地检查 ZIP 完整性及 SHA-256，与云端校验文件一致：`49d4e66b88a9670cae306803389d3b609f6bca816f4cd334bb19a0ac2d346ee0`。同时确认没有签名、描述文件或签名私钥。
-- Xcode 日志中存在测试框架不剥离签名及未启用 App Intents 元数据的工具链警告；没有导致构建或测试失败。
-- 未验证：签名安装、真实 iPhone 16 Pro 界面与网络、手机上的 Safari 授权，以及设备钥匙串的真实会话持久化。当前没有 UI 自动化验收或真实订单测试。
+本地证据：`artifacts/logs-34015712967/0_build.txt`、`artifacts/ui-curl-34015712967/manifest.json`、`artifacts/preview-0.2.0/evidence.json` 及 `artifacts/THS-0.2.0-verification.json`。
 
-## 已核验的参考资料
+IPA：`THS-0.2.0-unsigned.ipa`，494,564 字节，SDK `iphoneos26.5`。SHA-256：
 
-- 手动 OAuth 流程与 token 周期依据为客户端维护者资料：[schwab-py 授权说明](https://schwab-py.readthedocs.io/en/latest/auth.html)、[Schwabdev token 实现](https://github.com/tylerebowers/Schwabdev/blob/main/schwabdev/tokens.py)。Schwab 官方 portal 未提供本次可读取的文档，因此不把库实现描述为券商官方保证。
-- [Apple HTTPS callback 文档](https://developer.apple.com/documentation/authenticationservices/aswebauthenticationsession/callback/https(host:path:))要求关联域名；本机 IP 不是可替代的关联域名。
-- [Apple 设备钥匙串可访问性](https://developer.apple.com/documentation/security/ksecattraccessiblewhenunlockedthisdeviceonly)说明解锁后且限本设备的存储属性。
-- [GitHub macOS 26 镜像清单](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md)、[Apple Xcode 系统要求](https://developer.apple.com/xcode/system-requirements)用于构建机选择。
-- [Apple ad hoc 描述文件要求](https://developer.apple.com/help/account/provisioning-profiles/create-an-ad-hoc-provisioning-profile)及[GitHub Xcode 签名指南](https://docs.github.com/en/actions/how-tos/deploy/deploy-to-third-party-platforms/sign-xcode-applications)用于后续装机。
+```text
+e820e0eef2ed66c8931bc49ccea0eb24c8ae3a2bc252814fb629ea7603696307
+```
 
-引用核验日期：2026-09-05。令牌过期时间以实际 `expires_in` 为准；刷新令牌失效由真实接口结果处理，不在 App 内假定无限有效。
+## 后续真机边界
+
+尚未验证签名安装、iPhone 16 Pro 上的 Safari 回填与钥匙串、Wi-Fi/蜂窝直连、真实交易和券商回执。深浅色和大字体有布局支持，本轮截图验收使用默认浅色与默认字号；真机还需检查这些设置。开发期间未向真实券商发送下单、撤单或改单请求。
+
+本版手动刷新行情；只读取最近 30 天、最多 200 笔订单，不代表完整历史或更早的未完成 GTC 订单。新订单仅限常规时段、整股股票 / ETF；已有复杂订单不会被简单编辑器重写。
+
+## 历史基线
+
+0.1.0 在 [构建 #34010504808](https://github.com/zbjun/ths-ios-personal/actions/runs/34010504808) 通过了 20 项核心测试及 Release 归档，使用 Xcode 26.6 / iOS 26.5。此记录不能替代本轮新增功能的验证。
+
+Windows 账户和报价读取已成功验证，直连优于当时的代理结果。测速报告保留在本地 reports；不能据此推断手机耗时或订单成交速度。
+
+## 参考资料
+
+接口、回执和验证工具的证据及不确定性集中在 [API-REFERENCE.md](API-REFERENCE.md)。Schwab Portal 未返回本次可读取的规范正文，维护者源码明确标成实现参考，不能当作券商官方保证。
+
+- [Apple HTTPS callback](https://developer.apple.com/documentation/authenticationservices/aswebauthenticationsession/callback/https(host:path:))：自动 HTTPS 回调要求关联域名；无域名版本手动回填。
+- [Apple Keychain 可访问性](https://developer.apple.com/documentation/security/ksecattraccessiblewhenunlockedthisdeviceonly)：设备解锁与不迁移属性。
+- [GitHub macOS 镜像](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md)：当前云端 Xcode 工具链。

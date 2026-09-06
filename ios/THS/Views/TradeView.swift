@@ -372,6 +372,7 @@ private struct OrderReviewView: View {
                     Section { AppMessageView(message: "核对信息已失效，请返回重新核对账户和报价。", isError: true) }
                 }
             }
+            .accessibilityIdentifier("screen.orderReview")
             .navigationTitle(order.replacementOrderID == nil ? "确认订单" : "确认修改")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -401,7 +402,6 @@ private struct OrderReviewView: View {
                 .padding(20).background(.regularMaterial)
             }
             .interactiveDismissDisabled(store.isSubmittingOrder)
-            .accessibilityIdentifier("screen.orderReview")
         }
     }
 

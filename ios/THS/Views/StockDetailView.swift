@@ -42,6 +42,7 @@ struct StockDetailView: View {
             if let quote { statisticsSection(quote) }
             if let holding { holdingSection(holding) }
         }
+        .accessibilityIdentifier("screen.detail")
         .navigationTitle(symbol).navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
@@ -65,7 +66,6 @@ struct StockDetailView: View {
         .task(id: sessionKey) { await loadQuote() }
         .task(id: historyKey) { await loadHistory() }
         .refreshable { await refreshDetail() }
-        .accessibilityIdentifier("screen.detail")
     }
 
     private var quoteSection: some View {
@@ -212,6 +212,7 @@ struct StockDetailView: View {
             }
             .disabled(!canTrade || store.isBusy || store.isSubmittingOrder)
         }
+        .accessibilityElement(children: .contain)
         .padding(.horizontal, 20).padding(.vertical, 12).background(.regularMaterial)
     }
 

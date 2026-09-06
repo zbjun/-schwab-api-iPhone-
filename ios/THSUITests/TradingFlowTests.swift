@@ -10,6 +10,17 @@ final class TradingFlowTests: XCTestCase {
         app = XCUIApplication()
     }
 
+    override func tearDown() {
+        if testRun?.hasSucceeded == false {
+            capture("failure-screen")
+            let hierarchy = XCTAttachment(string: app.debugDescription)
+            hierarchy.name = "failure-accessibility-tree"
+            hierarchy.lifetime = .keepAlways
+            add(hierarchy)
+        }
+        super.tearDown()
+    }
+
     func testFiveMainScreensHaveDemoContextAndScreenshots() {
         launch()
         for (tab, name) in [("账户", "01-accounts"), ("自选", "02-watchlist"), ("交易", "03-trade"), ("订单", "04-orders"), ("连接", "05-connection")] {
@@ -35,8 +46,9 @@ final class TradingFlowTests: XCTestCase {
             element("history.\(range)").tap()
             XCTAssertTrue(element("detail.chart").waitForExistence(timeout: 5))
         }
-        XCTAssertTrue(element("detail.buy").isEnabled)
-        XCTAssertTrue(element("detail.sell").isEnabled)
+        XCTAssertTrue(app.buttons["detail.buy"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["detail.buy"].isEnabled)
+        XCTAssertTrue(app.buttons["detail.sell"].isEnabled)
         capture("06-stock-detail-chart")
         app.navigationBars.buttons.element(boundBy: 0).tap()
         replaceText("watchlist.search", with: "QQQ")
@@ -117,11 +129,18 @@ final class TradingFlowTests: XCTestCase {
     }
 
     private func element(_ identifier: String) -> XCUIElement {
-        app.descendants(matching: .any).matching(identifier: identifier).firstMatch
+        if ["watchlist.search", "trade.quantity", "trade.limitPrice", "trade.stopPrice", "trade.symbol"].contains(identifier) {
+            return app.textFields[identifier]
+        }
+        if identifier.hasPrefix("history.") || identifier.hasPrefix("order.row.") || identifier.hasPrefix("watchlist.symbol.") ||
+            ["detail.buy", "detail.sell", "watchlist.lookup", "trade.review", "order.review.confirm", "order.cancel", "order.modify"].contains(identifier) {
+            return app.buttons[identifier]
+        }
+        return app.descendants(matching: .any).matching(identifier: identifier).firstMatch
     }
 
     private func newestOrder() -> XCUIElement {
-        let row = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "order.row.")).firstMatch
+        let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "order.row.")).firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 5))
         return row
     }
@@ -130,6 +149,7 @@ final class TradingFlowTests: XCTestCase {
         let target = element(identifier)
         for _ in 0..<7 {
             if target.exists && target.isHittable { return target }
+            dismissKeyboard()
             app.swipeUp()
         }
         XCTFail("Element is not reachable: \(identifier)", file: file, line: line)
@@ -140,16 +160,23 @@ final class TradingFlowTests: XCTestCase {
 
     private func replaceText(_ identifier: String, with text: String) {
         let field = reveal(identifier)
+        let value = field.value as? String ?? ""
+        let previousText = value == field.placeholderValue ? "" : value
         field.tap()
-        // Tapping the end of the input keeps replacement independent of the localized edit menu.
-        field.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.5)).tap()
-        let count = (field.value as? String)?.count ?? 0
-        field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: count) + text)
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        let activeField = app.textFields[identifier]
+        XCTAssertTrue(activeField.waitForExistence(timeout: 5))
+        activeField.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: previousText.count) + text)
+        XCTAssertEqual(activeField.value as? String, text)
     }
 
     private func dismissKeyboard() {
         let done = app.toolbars.buttons["完成"]
-        if done.exists { done.tap() }
+        if done.exists && done.isHittable {
+            done.tap()
+            let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
+            XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed)
+        }
     }
 
     private func waitForLabel(_ identifier: String, containing text: String) {

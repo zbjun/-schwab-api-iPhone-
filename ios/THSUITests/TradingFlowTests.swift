@@ -500,17 +500,20 @@ final class TradingFlowTests: XCTestCase {
         guard let image = screenshot.image.cgImage else { return nil }
         let size = 40
         var pixels = [UInt8](repeating: 0, count: size * size * 4)
-        return pixels.withUnsafeMutableBytes { buffer in
+        return pixels.withUnsafeMutableBytes { (buffer: UnsafeMutableRawBufferPointer) -> Double? in
             guard let context = CGContext(data: buffer.baseAddress, width: size, height: size,
                                           bitsPerComponent: 8, bytesPerRow: size * 4,
                                           space: CGColorSpaceCreateDeviceRGB(),
                                           bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else { return nil }
             context.draw(image, in: CGRect(x: 0, y: 0, width: CGFloat(size), height: CGFloat(size)))
             let bytes = buffer.bindMemory(to: UInt8.self)
-            let sum = stride(from: 0, to: bytes.count, by: 4).reduce(0.0) {
-                $0 + Double(bytes[$1]) + Double(bytes[$1 + 1]) + Double(bytes[$1 + 2])
+            var sum: UInt64 = 0
+            for index in stride(from: 0, to: bytes.count, by: 4) {
+                sum += UInt64(bytes[index])
+                sum += UInt64(bytes[index + 1])
+                sum += UInt64(bytes[index + 2])
             }
-            return sum / Double(size * size * 3 * 255)
+            return Double(sum) / Double(size * size * 3 * 255)
         }
     }
 

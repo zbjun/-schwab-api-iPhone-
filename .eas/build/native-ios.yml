@@ -1,0 +1,19 @@
+build:
+  name: Verify native THS and archive unsigned iPhone app
+  steps:
+    - eas/checkout
+    - run:
+        name: Run all native tests and create the generic unsigned IPA
+        command: bash tools/ios/build-native.sh
+    - eas/upload_artifact:
+        name: Preserve native test results and diagnostic logs
+        if: ${ always() }
+        inputs:
+          type: build-artifact
+          path: artifacts/eas-native/diagnostics
+    - eas/upload_artifact:
+        name: Upload the verified unsigned app
+        if: ${ success() }
+        inputs:
+          type: application-archive
+          path: artifacts/eas-native/THS-unsigned.ipa

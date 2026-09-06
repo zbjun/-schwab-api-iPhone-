@@ -4,6 +4,7 @@
 !.env.example
 .secrets/
 tokens/
+SchwabPersonalConfiguration.plist
 
 # Apple signing material
 *.p8
@@ -13,6 +14,7 @@ tokens/
 # Xcode build products and personal project state
 DerivedData/
 build/
+!/.eas/build/
 artifacts/
 *.xcarchive/
 *.xcresult/

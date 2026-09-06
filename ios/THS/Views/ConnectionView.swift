@@ -44,12 +44,21 @@ struct ConnectionView: View {
                         Label("准备连接真实账户时，关闭上面的演示模式。", systemImage: "info.circle")
                             .font(.subheadline).foregroundStyle(.secondary)
                     }
+                } else if !store.hasLoadedSession {
+                    Section {
+                        if store.isBusy {
+                            ProgressView("正在读取连接配置…")
+                        } else {
+                            Button("重新读取连接配置") { Task { await store.load() } }
+                                .accessibilityIdentifier("connection.retryConfiguration")
+                        }
+                    }
                 } else {
                     if !store.isConfigured || isEditingCredentials { credentialSection }
                     else {
                         Section("应用凭据") {
                             Label("已保存在这台 iPhone", systemImage: "key.fill")
-                                .font(.subheadline)
+                                .font(.subheadline).accessibilityIdentifier("connection.credentialsSaved")
                             Button("更换应用凭据") { isEditingCredentials = true }
                                 .disabled(locked).accessibilityIdentifier("connection.editCredentials")
                         }
@@ -214,9 +223,14 @@ struct ConnectionView: View {
         let id = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
         let secret = clientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !id.isEmpty, !secret.isEmpty, !locked else { return }
-        clearInputs()
+        focusedField = nil
         browserError = nil
-        Task { if await store.saveCredentials(clientID: id, clientSecret: secret) { isEditingCredentials = false } }
+        Task {
+            if await store.saveCredentials(clientID: id, clientSecret: secret) {
+                clearInputs()
+                isEditingCredentials = false
+            }
+        }
     }
 
     private func beginAuthorization() {

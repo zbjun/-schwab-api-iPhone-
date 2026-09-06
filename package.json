@@ -1,0 +1,9 @@
+{
+  "name": "ths-ios-personal",
+  "version": "0.0.0",
+  "private": true,
+  "description": "EAS metadata for the existing native SwiftUI app; no JavaScript runtime is shipped.",
+  "scripts": {
+    "check:project": "node tools/ios/generate-project.mjs --check"
+  }
+}

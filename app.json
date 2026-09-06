@@ -1,0 +1,17 @@
+{
+  "expo": {
+    "name": "THS",
+    "slug": "ths-ios-personal",
+    "platforms": [
+      "ios"
+    ],
+    "ios": {
+      "bundleIdentifier": "app.personal.ths"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "d761ff71-86e8-49a5-a51c-2f32280e45c5"
+      }
+    }
+  }
+}

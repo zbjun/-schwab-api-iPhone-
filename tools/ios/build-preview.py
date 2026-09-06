@@ -44,6 +44,7 @@ PAGES = {
     "33-chart-panned": ("单指浏览历史", "单指向右拖动查看更早 K 线，均线仍使用完整历史计算。"),
     "34-chart-minute-panned": ("分钟 K 线拖动", "分钟主图与成交量共用时间窗口，可拖动已读取的历史。"),
     "35-chart-inline-zoomed": ("交易时缩放 K 线", "图下买卖展开后仍可双指缩放和左右拖动，上方主图保持可见。"),
+    "36-personal-first-launch": ("个人版首次启动", "自动读取并保存应用配置，直接显示 Schwab 登录入口；截图使用虚构配置。"),
 }
 
 
@@ -51,11 +52,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("screenshots", type=Path)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--run", required=True, help="Verified GitHub Actions run ID")
+    parser.add_argument("--run", required=True, help="Verified GitHub Actions run ID or EAS build UUID")
     parser.add_argument("--commit", required=True)
     args = parser.parse_args()
-    if not re.fullmatch(r"\d+", args.run) or not re.fullmatch(r"[0-9a-f]{7,40}", args.commit):
-        parser.error("Use a numeric run ID and hexadecimal commit ID.")
+    if not re.fullmatch(r"(?:\d+|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})", args.run) or not re.fullmatch(r"[0-9a-f]{7,40}", args.commit):
+        parser.error("Use a numeric run ID or EAS build UUID, and a hexadecimal commit ID.")
     source = args.screenshots.resolve()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -78,7 +79,7 @@ def main():
     missing = sorted(PAGES.keys() - pages.keys())
     if missing:
         raise SystemExit("Missing native screenshots: " + ", ".join(missing))
-    order = ["02-watchlist", "32-chart-zoomed", "33-chart-panned", "34-chart-minute-panned", "35-chart-inline-zoomed",
+    order = ["36-personal-first-launch", "02-watchlist", "32-chart-zoomed", "33-chart-panned", "34-chart-minute-panned", "35-chart-inline-zoomed",
              "19-watchlist-dark", "15-watchlist-charts", "06-stock-detail-chart", "11-daily-candles",
              "12-weekly-candles", "13-monthly-candles", "14-five-day-chart", "16-inline-buy",
              "22-minute-menu", "23-minute-1", "24-minute-5", "25-minute-15", "26-minute-30", "27-minute-60", "28-minute-120",
@@ -86,7 +87,7 @@ def main():
              "29-inline-cancel-orders", "30-inline-cancel-review", "31-inline-cancel-result", "01-accounts", "03-trade", "04-orders",
              "07-limit-order-review", "08-canceled-demo-order", "09-replacement-review", "10-invalid-quantity", "05-connection"]
     ordered = [pages[name] for name in order]
-    metadata = dict(version="0.4.1", run=args.run, commit=args.commit, pages=ordered)
+    metadata = dict(version="0.4.2", run=args.run, commit=args.commit, pages=ordered)
     (output / "evidence.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     buttons = "\n".join(
         f'<button class="page-button" type="button" data-index="{index}" aria-pressed="false">'
@@ -120,7 +121,7 @@ dialog{border:0;background:#172435ed;border-radius:14px;padding:48px 12px 12px;m
 @media(max-width:620px){.shell{padding:24px 18px}h1{font-size:26px}main{display:flex;flex-direction:column;gap:22px}.nav{display:flex;overflow:auto;width:100%;padding-bottom:8px}.page-button{flex-shrink:0;padding:10px 12px}.number{display:none}.viewer{width:100%}#screen{height:65vh;max-width:100%}.details{display:block;width:100%}.context{display:none}footer{display:block}.badge{font-size:10px}header p{font-size:13px}}
 </style>
 <div class="shell">
-<header><div class="eyebrow">THS / PERSONAL TRADING</div><h1>你的 iPhone 交易 App<span class="badge">0.4.1</span></h1><p>股票 / ETF · iPhone 直连 Schwab · 以下为原生模拟器截图，展示的账户、行情和订单均为演示数据。</p></header>
+<header><div class="eyebrow">THS / PERSONAL TRADING</div><h1>你的 iPhone 交易 App<span class="badge">0.4.2</span></h1><p>股票 / ETF · iPhone 直连 Schwab · 以下为原生模拟器截图，展示的账户、行情、订单与连接配置均为测试数据。</p></header>
 <main><nav class="nav" aria-label="选择页面">{{BUTTONS}}</nav>
 <section class="viewer" aria-label="原生页面截图"><button class="screenshot-button" type="button" aria-label="放大当前截图"><img id="screen" alt=""></button><p class="hint">点击图片放大 · 使用 ← → 切换页面</p></section>
 <aside class="details"><h2 id="title"></h2><p id="description"></p><div class="pager"><button id="previous" type="button" aria-label="上一页">← 上一页</button><button id="next" type="button" aria-label="下一页">下一页 →</button></div><div class="context">截图来自 <span id="device"></span><br>保留原始图像，未绘制替代界面。<br><br>本页用于查看界面，不能操作交易。<br>后续在你的 iPhone 16 Pro 上安装调试。</div></aside></main>

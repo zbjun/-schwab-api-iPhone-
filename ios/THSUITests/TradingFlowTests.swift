@@ -27,6 +27,17 @@ final class TradingFlowTests: XCTestCase {
         super.tearDown()
     }
 
+    func testPersonalFirstLaunchOpensLoginWithoutCredentialFields() {
+        app.launchArguments = ["--uitesting-personal-config"]
+        app.launch()
+        XCTAssertTrue(element("connection.authorize").waitForExistence(timeout: 10))
+        XCTAssertTrue(element("connection.credentialsSaved").exists)
+        XCTAssertFalse(element("connection.clientID").exists)
+        XCTAssertFalse(element("connection.clientSecret").exists)
+        XCTAssertFalse(element("connection.saveCredentials").exists)
+        capture("36-personal-first-launch")
+    }
+
     func testFiveMainScreensHaveDemoContextAndScreenshots() {
         launch()
         for (identifier, tab, name) in [("tab.accounts", "账户", "01-accounts"), ("tab.watchlist", "自选", "02-watchlist"),

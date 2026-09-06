@@ -40,7 +40,7 @@ final class AppStore {
     @ObservationIgnored var generation = 0
     @ObservationIgnored var accountHashes: [String: String] = [:]
     @ObservationIgnored var demoOrders: [BrokerageOrder] = []
-    @ObservationIgnored private var hasLoaded = false
+    private(set) var hasLoadedSession = false
     private static let watchlistKey = "ths.watchlist.v1"
 
     init(client: SchwabClient = SchwabClient(), defaults: UserDefaults = .standard,
@@ -68,13 +68,15 @@ final class AppStore {
     }
 
     func load() async {
-        guard !hasLoaded, !isBusy, !isSubmittingOrder else { return }
-        hasLoaded = true
+        guard !hasLoadedSession, !isBusy, !isSubmittingOrder else { return }
         isBusy = true
         do {
             let status = try await client.sessionStatus()
             isConfigured = status.configured
             isAuthenticated = status.authenticated
+            hasLoadedSession = true
+            errorMessage = nil
+            if !isDemo, isConfigured && !isAuthenticated { activeTab = .connection }
         } catch { errorMessage = Self.message(for: error) }
         isBusy = false
         if isAuthenticated { await refresh() }
@@ -82,7 +84,7 @@ final class AppStore {
 
     #if DEBUG
     func loadUITestDemo(tab: String?) async {
-        hasLoaded = true
+        hasLoadedSession = true
         await setDemoMode(true)
         watchlist = ["AAPL", "MSFT", "SPY", "QQQ", "NVDA", "AMD", "TSLA", "IWM"]
         quotes = watchlist.compactMap { DemoData.quote(symbol: $0) }
@@ -107,6 +109,7 @@ final class AppStore {
             let status = try await client.sessionStatus()
             isConfigured = status.configured
             isAuthenticated = status.authenticated
+            hasLoadedSession = true
             isDemo = false
             clearFinancialData()
             statusMessage = "凭据已保存在这台 iPhone，接下来登录 Schwab。"

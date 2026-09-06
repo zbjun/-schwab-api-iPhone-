@@ -4,6 +4,7 @@ import Security
 enum SchwabClientError: Error, LocalizedError, Equatable, Sendable {
     case credentialsRequired
     case invalidCredentials
+    case invalidPersonalConfiguration
     case authorizationRequired
     case authorizationExpired
     case invalidCallback
@@ -24,6 +25,7 @@ enum SchwabClientError: Error, LocalizedError, Equatable, Sendable {
         switch self {
         case .credentialsRequired: return "请先填写并保存 Schwab Client ID 和 Client Secret。"
         case .invalidCredentials: return "Client ID 或 Client Secret 格式无效，请检查后重新填写。"
+        case .invalidPersonalConfiguration: return "个人安装包的连接配置不完整，请更换安装包后重试。"
         case .authorizationRequired: return "请先完成 Schwab 登录授权。"
         case .authorizationExpired: return "本次授权已过期或已使用，请重新打开 Schwab 登录。"
         case .invalidCallback: return "回调链接与本次授权不匹配，请粘贴浏览器中的完整链接。"
@@ -307,11 +309,13 @@ actor SchwabClient {
         var credentials: Credentials?
         var token: Token?
         var pending: PendingAuthorization?
+        var personalConfigurationDisabled: Bool?
     }
 
     private let store: any SchwabSecureStore
     private let transport: any SchwabHTTPTransport
     private let now: @Sendable () -> Date
+    private let personalConfiguration: @Sendable () throws -> PersonalSchwabConfiguration?
     private var stored = StoredSession()
     private var hasLoaded = false
     private var generation: UInt64 = 0
@@ -320,10 +324,12 @@ actor SchwabClient {
 
     init(store: any SchwabSecureStore = KeychainVault(),
          transport: any SchwabHTTPTransport = DirectSchwabTransport(),
-         now: @escaping @Sendable () -> Date = { Date() }) {
+         now: @escaping @Sendable () -> Date = { Date() },
+         personalConfiguration: @escaping @Sendable () throws -> PersonalSchwabConfiguration? = { nil }) {
         self.store = store
         self.transport = transport
         self.now = now
+        self.personalConfiguration = personalConfiguration
     }
 
     func sessionStatus() async throws -> SessionStatus {
@@ -511,20 +517,33 @@ actor SchwabClient {
     }
 
     func clearCredentials() async throws {
-        do { try store.clear() } catch { throw SchwabClientError.secureStorage }
+        // Keep only this opt-out marker so a later launch cannot undo an explicit deletion.
+        try persist(StoredSession(personalConfigurationDisabled: true))
         invalidateOperations()
-        stored = StoredSession()
-        hasLoaded = true
     }
 
     private func load() throws {
         guard !hasLoaded else { return }
+        var restored = StoredSession()
         do {
             if let data = try store.read() {
-                stored = try JSONDecoder().decode(StoredSession.self, from: data)
+                restored = try JSONDecoder().decode(StoredSession.self, from: data)
             }
-            hasLoaded = true
         } catch { throw SchwabClientError.secureStorage }
+        if restored.credentials == nil, restored.personalConfigurationDisabled != true {
+            let configuration: PersonalSchwabConfiguration?
+            do { configuration = try personalConfiguration()?.validated() }
+            catch { throw SchwabClientError.invalidPersonalConfiguration }
+            if let configuration {
+                restored.credentials = Credentials(clientID: configuration.clientID, clientSecret: configuration.clientSecret)
+                restored.token = nil
+                restored.pending = nil
+                try persist(restored)
+                return
+            }
+        }
+        stored = restored
+        hasLoaded = true
     }
 
     private func persist(_ next: StoredSession) throws {
@@ -733,7 +752,7 @@ actor SchwabClient {
         } catch { throw SchwabClientError.invalidResponse }
     }
 
-    private static func validCredential(_ value: String) -> Bool {
+    static func validCredential(_ value: String) -> Bool {
         !value.isEmpty && value.utf8.count <= 512 && value.rangeOfCharacter(from: .whitespacesAndNewlines.union(.controlCharacters)) == nil
     }
 

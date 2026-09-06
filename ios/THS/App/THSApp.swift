@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct THSApp: App {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var store = Self.makeStore()
 
     @MainActor static func makeStore(arguments: [String] = ProcessInfo.processInfo.arguments) -> AppStore {
@@ -14,8 +15,19 @@ struct THSApp: App {
                 operationStore: emptyStore
             )
         }
+        if arguments.contains("--uitesting-personal-config") {
+            let fixtureStore = UITestMemorySecureStore()
+            return AppStore(
+                client: SchwabClient(store: fixtureStore, transport: UITestOfflineTransport(),
+                    personalConfiguration: {
+                        PersonalSchwabConfiguration(clientID: "fixture-client", clientSecret: "fixture-secret")
+                    }),
+                defaults: UserDefaults(suiteName: "ths.ui-tests.\(UUID().uuidString)")!,
+                operationStore: UITestEmptySecureStore()
+            )
+        }
         #endif
-        return AppStore()
+        return AppStore(client: SchwabClient(personalConfiguration: { try PersonalSchwabConfiguration.load() }))
     }
 
     var body: some Scene {
@@ -34,11 +46,26 @@ struct THSApp: App {
                     #endif
                     await store.load()
                 }
+                .onChange(of: scenePhase) { _, phase in
+                    #if DEBUG
+                    // Demo UI fixtures have a separate, single initialization path above.
+                    if ProcessInfo.processInfo.arguments.contains("--uitesting-demo") { return }
+                    #endif
+                    if phase == .active { Task { await store.load() } }
+                }
         }
     }
 }
 
 #if DEBUG
+private final class UITestMemorySecureStore: SchwabSecureStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var data: Data?
+    func read() throws -> Data? { lock.lock(); defer { lock.unlock() }; return data }
+    func write(_ value: Data) throws { lock.lock(); defer { lock.unlock() }; data = value }
+    func clear() throws { lock.lock(); defer { lock.unlock() }; data = nil }
+}
+
 // UI fixtures never read the device's session, pending operation, or network.
 private struct UITestEmptySecureStore: SchwabSecureStore {
     func read() throws -> Data? { nil }

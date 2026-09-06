@@ -295,7 +295,7 @@ final class SchwabCoreTests: XCTestCase {
         try await client.clearCredentials()
         let cleared = try await client.sessionStatus()
         XCTAssertFalse(cleared.configured)
-        XCTAssertNil(try store.read())
+        try assertOnlyPersonalConfigurationOptOut(store)
     }
 
     func testInvalidTokensAndSymbolInjectionAreRejected() async throws {
@@ -336,7 +336,7 @@ final class SchwabCoreTests: XCTestCase {
         let store = MemoryVault()
         let client = try await authorizedClient(store: store, transport: FixtureTransport([.response(200, tokenJSON())]))
         let before = try XCTUnwrap(store.read())
-        store.failNextClear()
+        store.failNextWrite()
         try await assertError(.secureStorage) { try await client.clearCredentials() }
         XCTAssertEqual(try store.read(), before)
         let status = try await client.sessionStatus()
@@ -349,7 +349,7 @@ final class SchwabCoreTests: XCTestCase {
         let cleared = try await client.sessionStatus()
         XCTAssertFalse(cleared.configured)
         XCTAssertFalse(cleared.authenticated)
-        XCTAssertNil(try store.read())
+        try assertOnlyPersonalConfigurationOptOut(store)
     }
 
     func testFailedTokenInvalidationAfter401DoesNotChangeOnlyTheMemoryCopy() async throws {
@@ -391,6 +391,14 @@ final class SchwabCoreTests: XCTestCase {
             request.httpMethod = "POST"
             try await assertError(.invalidResponse) { _ = try await transport.send(request) }
         }
+    }
+
+    private func assertOnlyPersonalConfigurationOptOut(_ store: MemoryVault,
+                                                       file: StaticString = #filePath, line: UInt = #line) throws {
+        let data = try XCTUnwrap(store.read(), file: file, line: line)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any], file: file, line: line)
+        XCTAssertEqual(Set(object.keys), ["personalConfigurationDisabled"], file: file, line: line)
+        XCTAssertEqual(object["personalConfigurationDisabled"] as? Bool, true, file: file, line: line)
     }
 
     private func state(from authorizationURL: URL) throws -> String {
@@ -436,7 +444,6 @@ private final class MemoryVault: SchwabSecureStore, @unchecked Sendable {
     private let lock = NSLock()
     private var data: Data?
     private var shouldFailWrite = false
-    private var shouldFailClear = false
     func read() throws -> Data? {
         lock.lock(); defer { lock.unlock() }
         return data
@@ -451,19 +458,11 @@ private final class MemoryVault: SchwabSecureStore, @unchecked Sendable {
     }
     func clear() throws {
         lock.lock(); defer { lock.unlock() }
-        if shouldFailClear {
-            shouldFailClear = false
-            throw FixtureFailure(message: "Private storage detail must be redacted")
-        }
         data = nil
     }
     func failNextWrite() {
         lock.lock(); defer { lock.unlock() }
         shouldFailWrite = true
-    }
-    func failNextClear() {
-        lock.lock(); defer { lock.unlock() }
-        shouldFailClear = true
     }
 }
 

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import plistlib
 import struct
+import unicodedata
 import zipfile
 
 
@@ -20,6 +21,7 @@ def main():
     parser.add_argument("--build", required=True)
     parser.add_argument("--bundle-id", default="app.personal.ths")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--personal", action="store_true", help="Expect configuration injected locally after the cloud build")
     args = parser.parse_args()
     with zipfile.ZipFile(args.ipa) as archive:
         require(archive.testzip() is None, "ZIP integrity check failed")
@@ -29,6 +31,27 @@ def main():
         plist_path = plists[0]
         info = plistlib.loads(archive.read(plist_path))
         root = plist_path.removesuffix("Info.plist")
+        personal_path = root + "SchwabPersonalConfiguration.plist"
+        personal_files = [name for name in names if name.endswith("/SchwabPersonalConfiguration.plist")]
+        if args.personal:
+            require(personal_files == [personal_path], "Expected exactly one personal configuration in the app bundle")
+            require(archive.getinfo(personal_path).file_size <= 4_096, "Personal configuration exceeds the app's size limit")
+            require(type(info.get("THSPersonalConfigurationVersion")) is int and info["THSPersonalConfigurationVersion"] == 1,
+                    "App does not support personal configuration")
+            try:
+                configuration = plistlib.loads(archive.read(personal_path))
+            except Exception:
+                raise SystemExit("Invalid personal configuration") from None
+            require(isinstance(configuration, dict) and set(configuration) == {"schemaVersion", "clientID", "clientSecret"},
+                    "Unexpected personal configuration fields")
+            require(type(configuration["schemaVersion"]) is int and configuration["schemaVersion"] == 1,
+                    "Unsupported personal configuration version")
+            require(all(isinstance(configuration[key], str) and 0 < len(configuration[key].encode("utf-8")) <= 512
+                        and not any(char.isspace() or unicodedata.category(char) in {"Cc", "Cf"} for char in configuration[key])
+                        for key in ("clientID", "clientSecret")), "Invalid personal credentials")
+            require(":" not in configuration["clientID"], "Invalid personal client identifier")
+        else:
+            require(not personal_files, "Generic cloud archive must not contain personal configuration")
         require(info["CFBundleIdentifier"] == args.bundle_id, "Bundle identifier mismatch")
         require(info["CFBundleShortVersionString"] == args.version, "Version mismatch")
         require(info["CFBundleVersion"] == args.build, "Build number mismatch")
@@ -52,12 +75,14 @@ def main():
             offset += size
         require(offset == 32 + command_bytes, "Mach-O command size mismatch")
         require(platforms == [2], "Executable was not built for physical iOS devices")
-        require(b"--uitesting-demo" not in executable and b"--snapshot-tab" not in executable, "Release contains UI test launch switches")
+        require(not any(flag in executable for flag in (b"--uitesting-demo", b"--snapshot-tab", b"--uitesting-personal-config")),
+                "Release contains UI test launch switches")
     result = dict(app=info["CFBundleName"], version=args.version, build=args.build,
                   bundle_id=args.bundle_id, minimum_ios=info.get("MinimumOSVersion"), sdk=info.get("DTSDKName"),
                   architecture="arm64", signing="unsigned", bytes=args.ipa.stat().st_size,
                   sha256=hashlib.sha256(args.ipa.read_bytes()).hexdigest(),
                   zip_integrity="passed", device_platform="iOS", debug_test_switches_present=False,
+                  personal_configuration="embedded_locally" if args.personal else "absent",
                   physical_iphone_tested=False)
     rendered = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
     if args.output:

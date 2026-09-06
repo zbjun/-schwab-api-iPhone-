@@ -1,6 +1,6 @@
 # 在 EAS 构建现有 SwiftUI 应用
 
-本配置把 Xcode 测试和打包移到 Expo EAS 的 Mac 构建机，保留现有 SwiftUI 代码。没有 Expo、React Native、CocoaPods 或其他运行依赖，也不支持用 Expo Go 打开此应用。`package.json` 和 `app.json` 只用于 EAS 项目识别；App 的版本号仍由原生 Xcode 工程管理。
+本配置把 Xcode 测试和打包移到 Expo EAS 的 Mac 构建机，保留现有 SwiftUI 代码。没有 Expo、React Native、CocoaPods 或其他运行依赖，也不支持用 Expo Go 打开此应用。`package.json` 和 `app.json` 只用于 EAS 项目识别；`package-lock.json` 记录零第三方依赖以满足 EAS 检查。App 的版本号仍由原生 Xcode 工程管理。
 
 2026-09-06 已登录并连接个人 Free 项目 `@fried_chicken_cn/ths-ios-personal`，关闭了内部构建的未登录访问。上传预检的 49 个文件符合白名单，未发现本地应用凭据。完整原生构建尚待执行；不能把这些检查视为 Xcode 编译或真机验证通过。
 
@@ -36,7 +36,7 @@ EAS 官方说明源码归档存放在私有云存储中供构建机读取。这�
 npx eas-cli@23.2.0 build:inspect --platform ios --profile native-unsigned --stage archive --output artifacts/eas-upload-inspection
 ```
 
-不要加 `--force` 覆盖已有检查结果。检查目录中只应包含 `.easignore`、三个根 JSON 文件、`.eas/build/native-ios.yml`、Swift 源码与测试、原生工程/Info.plist/scheme，以及 `build-native.sh`、`generate-project.mjs`、`select-simulator.py`、`verify-ipa.py`。没有配置资源目录或个人凭据文件。
+不要加 `--force` 覆盖已有检查结果。检查目录中只应包含 `.easignore`、四个根 JSON 文件、`.eas/build/native-ios.yml`、Swift 源码与测试、原生工程/Info.plist/scheme，以及 `build-native.sh`、`generate-project.mjs`、`select-simulator.py`、`verify-ipa.py`。没有配置资源目录或个人凭据文件。
 
 `.easignore` 默认拒绝全部文件，再逐项允许必需文件；同时明确拒绝 `.env`、`.secrets/`、token、证书、个人描述文件、旧 IPA、`artifacts/`、`reports/`、`tools/schwab-connect/`、Git 历史和本机状态。`SchwabPersonalConfiguration.plist` 在任何目录中都禁止上传。通用 Info.plist 中的 `THSPersonalConfigurationVersion = 1` 只是配置格式标记，必须保留，不含私人数据。`EXPO_NO_DOTENV=1` 防止工具意外导入本地环境文件。不要把 Schwab Client ID、Client Secret、令牌或 Apple 证书配置成 Expo 环境变量。
 

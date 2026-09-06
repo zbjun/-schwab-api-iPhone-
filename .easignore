@@ -3,6 +3,7 @@
 *
 !/.easignore
 !/package.json
+!/package-lock.json
 !/app.json
 !/eas.json
 

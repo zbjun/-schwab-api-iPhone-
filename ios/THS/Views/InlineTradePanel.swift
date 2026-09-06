@@ -60,18 +60,28 @@ struct InlineTradePanel: View {
             .font(.caption.weight(.medium)).padding(.horizontal, 12).padding(.top, 6)
             .disabled(store.isSubmittingOrder)
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 9) {
-                    if let review { reviewContent(review) }
-                    else { editor }
-                    if let error = localError ?? store.tradeError {
-                        Text(error).font(.caption).foregroundStyle(.orange)
-                            .accessibilityIdentifier("inline.error")
+            GeometryReader { geometry in
+                ScrollViewReader { reader in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 9) {
+                            if let review { reviewContent(review) }
+                            else { editor }
+                            if let error = localError ?? store.tradeError {
+                                Text(error).font(.caption).foregroundStyle(.orange)
+                                    .accessibilityIdentifier("inline.error")
+                            }
+                        }.padding(.horizontal, 12).padding(.vertical, 7)
                     }
-                }.padding(.horizontal, 12).padding(.vertical, 7)
+                    .scrollDismissesKeyboard(.interactively)
+                    .accessibilityIdentifier("inline.fields")
+                    .onChange(of: input) { _, field in
+                        if let field { reader.scrollTo(field, anchor: .center) }
+                    }
+                    .onChange(of: geometry.size.height) { _, _ in
+                        if let input { reader.scrollTo(input, anchor: .center) }
+                    }
+                }
             }
-            .scrollDismissesKeyboard(.interactively)
-            .accessibilityIdentifier("inline.fields")
 
             Button(action: review == nil ? prepare : submit) {
                 HStack(spacing: 8) {
@@ -154,7 +164,7 @@ struct InlineTradePanel: View {
                         .font(.headline).monospacedDigit().padding(.horizontal, 10).frame(height: 34)
                         .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 5))
                         .accessibilityIdentifier(amountMode ? "inline.amount" : "inline.quantity")
-                }.frame(maxWidth: .infinity)
+                }.frame(maxWidth: .infinity).id(amountMode ? Field.amount : Field.quantity)
             }
             if needsStop { priceInput("触发价 · USD", text: $stopPrice, field: .stop, id: "inline.stopPrice") }
             HStack(spacing: 8) {
@@ -191,7 +201,7 @@ struct InlineTradePanel: View {
                 .font(.headline).monospacedDigit().padding(.horizontal, 10).frame(height: 34)
                 .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 5))
                 .accessibilityIdentifier(id)
-        }.frame(maxWidth: .infinity)
+        }.frame(maxWidth: .infinity).id(field)
     }
 
     private func reviewContent(_ order: PreparedOrder) -> some View {

@@ -72,6 +72,8 @@ final class TradingFlowTests: XCTestCase {
         let apple = element("watchlist.symbol.AAPL")
         XCTAssertTrue(apple.waitForExistence(timeout: 5))
         apple.swipeLeft()
+        XCTAssertTrue(app.navigationBars["自选"].exists)
+        XCTAssertFalse(element("detail.chart").exists)
         for symbol in ["AAPL", "MSFT", "SPY", "QQQ"] {
             let row = element("watchlist.symbol.\(symbol)")
             let loaded = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "分时走势，390"), object: row)
@@ -81,6 +83,9 @@ final class TradingFlowTests: XCTestCase {
         element("watchlist.symbol.AAPL").swipeRight()
         XCTAssertEqual(element("watchlist.symbol.AAPL").value as? String, "行情列表")
         XCTAssertTrue(element("watchlist.symbol.AAPL").exists)
+        XCTAssertTrue(app.navigationBars["自选"].exists)
+        element("watchlist.symbol.AAPL").tap()
+        XCTAssertTrue(element("detail.chart").waitForExistence(timeout: 5))
     }
 
     func testInlineAmountBuyKeepsChartVisibleWithKeyboardAndReview() {
@@ -299,9 +304,10 @@ final class TradingFlowTests: XCTestCase {
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
         if !previousText.isEmpty {
             let editable = reveal(identifier)
-            // These inputs align values to the trailing edge. Reposition only after the keyboard has settled.
+            // The inline inputs include horizontal padding; tap within their editable content.
+            let trailingInset: CGFloat = identifier.hasPrefix("inline.") ? 16 : 1
             editable.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5))
-                .withOffset(CGVector(dx: -1, dy: 0)).tap()
+                .withOffset(CGVector(dx: -trailingInset, dy: 0)).tap()
             XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
         }
         let activeField = app.textFields[identifier]

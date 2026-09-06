@@ -13,10 +13,15 @@ struct WatchlistView: View {
     @State private var visibleSymbols: Set<String> = []
     @State private var historyTasks: [String: Task<Void, Never>] = [:]
     @State private var historyEpoch = UUID()
+    @State private var rowActivationBlockedUntil: TimeInterval = 0
+    @GestureState private var isDraggingRows = false
     @FocusState private var isSearching: Bool
 
     private var connected: Bool { store.isAuthenticated || store.isDemo }
     private var sessionKey: String { "\(store.generation)|\(store.isDemo)|\(store.isAuthenticated)" }
+    private var allowsRowActivation: Bool {
+        !isDraggingRows && ProcessInfo.processInfo.systemUptime >= rowActivationBlockedUntil
+    }
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -56,11 +61,7 @@ struct WatchlistView: View {
             }
             .listStyle(.plain).scrollContentBackground(.hidden).background(MarketTheme.background)
             .scrollDismissesKeyboard(.interactively)
-            .simultaneousGesture(DragGesture(minimumDistance: 25).onEnded { gesture in
-                guard abs(gesture.translation.width) > 55,
-                      abs(gesture.translation.width) > abs(gesture.translation.height) * 1.6 else { return }
-                changeMode(gesture.translation.width < 0 ? .charts : .quotes)
-            })
+            .simultaneousGesture(rowDragGesture)
             .navigationTitle("自选").navigationBarTitleDisplayMode(.inline)
             .navigationDestination(for: String.self) { StockDetailView(symbol: $0) }
             .toolbar {
@@ -171,7 +172,7 @@ struct WatchlistView: View {
                 .accessibilityIdentifier("watchlist.remove.\(symbol)")
                 .disabled(store.isBusy || store.isSubmittingOrder)
             }
-            Button { isSearching = false; path.append(symbol) } label: {
+            Button { openSymbol(symbol) } label: {
                 WatchlistQuoteRow(symbol: symbol, quote: quote, mode: mode,
                                   history: histories[symbol], failedHistory: failedHistories.contains(symbol))
             }
@@ -200,7 +201,31 @@ struct WatchlistView: View {
         path.append(value)
     }
 
-    private func removeSymbol(_ symbol: String) { Task { await store.removeSymbol(symbol) } }
+    private var rowDragGesture: some Gesture {
+        DragGesture(minimumDistance: 25)
+            .updating($isDraggingRows) { _, active, _ in active = true }
+            .onChanged { _ in
+                // A row Button can receive a trailing activation from the same drag.
+                rowActivationBlockedUntil = ProcessInfo.processInfo.systemUptime + 0.25
+            }
+            .onEnded { gesture in
+                rowActivationBlockedUntil = ProcessInfo.processInfo.systemUptime + 0.25
+                guard abs(gesture.translation.width) > 55,
+                      abs(gesture.translation.width) > abs(gesture.translation.height) * 1.6 else { return }
+                changeMode(gesture.translation.width < 0 ? .charts : .quotes)
+            }
+    }
+
+    private func openSymbol(_ symbol: String) {
+        guard connected, allowsRowActivation else { return }
+        isSearching = false
+        path.append(symbol)
+    }
+
+    private func removeSymbol(_ symbol: String) {
+        guard allowsRowActivation else { return }
+        Task { await store.removeSymbol(symbol) }
+    }
 
     private func changeMode(_ value: WatchlistMode) {
         isSearching = false

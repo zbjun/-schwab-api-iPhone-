@@ -450,27 +450,41 @@ final class TradingFlowTests: XCTestCase {
 
         // A device getter alone produced false-positive dark screenshots on this simulator.
         // If its API does not update rendered UI, use the same Settings control a person uses.
-        XCTContext.runActivity(named: "Change system appearance through Display & Brightness") { _ in
+        XCTContext.runActivity(named: "Change Simulator appearance through Developer settings") { _ in
             let settings = XCUIApplication(bundleIdentifier: "com.apple.Preferences")
             settings.launch()
             captureSettingsDiagnostics(settings, name: "settings-open", appearance: appearance)
-            let names = appearance == .dark ? ["Dark", "深色"] : ["Light", "浅色"]
-            let choice = settings.buttons.matching(NSPredicate(format: "label IN %@", names)).firstMatch
-            if !choice.exists {
-                let display = settings.staticTexts.matching(NSPredicate(format: "label IN %@", ["Display & Brightness", "显示与亮度"])).firstMatch
+            let darkAppearance = settings.switches.matching(NSPredicate(
+                format: "label CONTAINS[c] %@ OR label CONTAINS %@", "Dark Appearance", "深色外观"
+            )).firstMatch
+            if !darkAppearance.exists {
+                let developer = settings.buttons["com.apple.settings.developer"]
                 for _ in 0..<6 {
-                    if display.exists && display.isHittable { break }
+                    if developer.exists && developer.isHittable { break }
                     settings.swipeUp()
                 }
-                if !display.exists || !display.isHittable {
-                    captureSettingsDiagnostics(settings, name: "settings-display-not-found", appearance: appearance)
+                guard developer.exists && developer.isHittable else {
+                    captureSettingsDiagnostics(settings, name: "settings-developer-not-found", appearance: appearance)
+                    XCTFail("Simulator Settings must expose the Developer appearance control")
+                    return
                 }
-                XCTAssertTrue(display.exists && display.isHittable)
-                display.tap()
+                developer.tap()
             }
-            XCTAssertTrue(choice.waitForExistence(timeout: 5))
-            choice.tap()
+            captureSettingsDiagnostics(settings, name: "settings-developer", appearance: appearance)
+            guard darkAppearance.waitForExistence(timeout: 5) else {
+                XCTFail("Developer settings must expose the Dark Appearance switch")
+                return
+            }
+            let requestedValue = appearance == .dark ? "1" : "0"
+            if darkAppearance.value as? String != requestedValue {
+                darkAppearance.tap()
+            }
+            let valueChanged = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "value == %@", requestedValue), object: darkAppearance
+            )
+            XCTAssertEqual(XCTWaiter.wait(for: [valueChanged], timeout: 5), .completed)
             XCTAssertTrue(waitForRenderedAppearance(appearance, in: settings))
+            captureSettingsDiagnostics(settings, name: "settings-appearance-applied", appearance: appearance)
             reactivateExistingApp()
             XCTAssertTrue(waitForRenderedAppearance(appearance, in: app), "The app must actually render the requested appearance")
         }

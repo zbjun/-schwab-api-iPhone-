@@ -4,103 +4,122 @@
 	classes = {};
 	objectVersion = 56;
 	objects = {
+/* Begin PBXFileReference section */
 		3182DB257E7C3ECB6EB1BB60 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THS/App/AppStore.swift"; sourceTree = SOURCE_ROOT; };
-		CBEADF474FFD7759ADBA6A52 = { isa = PBXBuildFile; fileRef = 3182DB257E7C3ECB6EB1BB60; };
 		10C93EB853D258DF0880345F = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THS/App/DemoData.swift"; sourceTree = SOURCE_ROOT; };
-		F6AA2B9DBC602298817EB966 = { isa = PBXBuildFile; fileRef = 10C93EB853D258DF0880345F; };
 		474AB69F433BEC26BA999173 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THS/App/THSApp.swift"; sourceTree = SOURCE_ROOT; };
-		49AF9B906E5FD9FB0F2C0BB9 = { isa = PBXBuildFile; fileRef = 474AB69F433BEC26BA999173; };
 		8043A1A6467C8F9B5AFFBD8B = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THS/App/TradingStore.swift"; sourceTree = SOURCE_ROOT; };
-		9913374C831A7D3DAFDB8C72 = { isa = PBXBuildFile; fileRef = 8043A1A6467C8F9B5AFFBD8B; };
 		91AD49D57A612C94A0D4CF4C = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THS/Models/CandleViewport.swift"; sourceTree = SOURCE_ROOT; };
-		224DA985FAEF1B7DFD812F03 = { isa = PBXBuildFile; fileRef = 91AD49D57A612C94A0D4CF4C; };
 		E832CAB1202AA5C1F4FAEDA6 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THS/Models/ChartAnalytics.swift"; sourceTree = SOURCE_ROOT; };
-		8BA1B81C8403CB0C14DC0324 = { isa = PBXBuildFile; fileRef = E832CAB1202AA5C1F4FAEDA6; };
 		0344CA8D7416CA01CE2E494F = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THS/Models/MarketStatistics.swift"; sourceTree = SOURCE_ROOT; };
-		495B651999E0FB4F9083AD7D = { isa = PBXBuildFile; fileRef = 0344CA8D7416CA01CE2E494F; };
 		262A696119CB8E2AC7948B61 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THS/Models/OrderModels.swift"; sourceTree = SOURCE_ROOT; };
-		42EA34C6ECFCE42F92660961 = { isa = PBXBuildFile; fileRef = 262A696119CB8E2AC7948B61; };
 		C44072CA8026D913F2AD72A1 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THS/Models/OrderSizing.swift"; sourceTree = SOURCE_ROOT; };
-		AD9591BDFA60D099223B47C0 = { isa = PBXBuildFile; fileRef = C44072CA8026D913F2AD72A1; };
 		D725E1F4F407590EFD202455 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THS/Models/PreparedOrder.swift"; sourceTree = SOURCE_ROOT; };
-		AAC0E783E0C96CD357571C3A = { isa = PBXBuildFile; fileRef = D725E1F4F407590EFD202455; };
 		0128B9EFC9C4A554F1E4D06C = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THS/Models/PriceHistory.swift"; sourceTree = SOURCE_ROOT; };
-		97692E42EDF93461B88F974D = { isa = PBXBuildFile; fileRef = 0128B9EFC9C4A554F1E4D06C; };
 		DB0B26138A5EFEF35CBF271C = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THS/Models/TradingModels.swift"; sourceTree = SOURCE_ROOT; };
-		EA25EFFF37512F49AA373C1E = { isa = PBXBuildFile; fileRef = DB0B26138A5EFEF35CBF271C; };
 		85C35BBFA370844AC3C05B75 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THS/Services/KeychainVault.swift"; sourceTree = SOURCE_ROOT; };
-		A3EA35E9A5FC0F5E6626DB73 = { isa = PBXBuildFile; fileRef = 85C35BBFA370844AC3C05B75; };
 		CCFE4F48D13BDBD55934D8A4 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THS/Services/PersonalSchwabConfiguration.swift"; sourceTree = SOURCE_ROOT; };
-		488AEAABCB58BDF6648E7D8C = { isa = PBXBuildFile; fileRef = CCFE4F48D13BDBD55934D8A4; };
 		04A8B517719D8768DD470929 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THS/Services/SchwabClient.swift"; sourceTree = SOURCE_ROOT; };
-		52665B028EF0001230FDDACE = { isa = PBXBuildFile; fileRef = 04A8B517719D8768DD470929; };
 		90285E8E8C7AE5B94B36D615 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THS/Views/AccountsView.swift"; sourceTree = SOURCE_ROOT; };
-		6307478DFD29FFDB63AF933C = { isa = PBXBuildFile; fileRef = 90285E8E8C7AE5B94B36D615; };
 		696DBD96EAFD1CC823F3713B = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THS/Views/CandleGestureSurface.swift"; sourceTree = SOURCE_ROOT; };
-		3F6DE9FC30D4231394533AC7 = { isa = PBXBuildFile; fileRef = 696DBD96EAFD1CC823F3713B; };
 		4CDA842425B257F10A9B1D0A = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THS/Views/ConnectionView.swift"; sourceTree = SOURCE_ROOT; };
-		1CC711C2311551CEC4E08209 = { isa = PBXBuildFile; fileRef = 4CDA842425B257F10A9B1D0A; };
 		81FD5CA09D181A9E6FC8AA11 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THS/Views/InlineCancelPanel.swift"; sourceTree = SOURCE_ROOT; };
-		CD7747483F37EB05DC7A7D81 = { isa = PBXBuildFile; fileRef = 81FD5CA09D181A9E6FC8AA11; };
 		247632DD1E5AD8B8F7E863B0 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THS/Views/InlineTradePanel.swift"; sourceTree = SOURCE_ROOT; };
-		43E2533A705E76AB0A3B6A84 = { isa = PBXBuildFile; fileRef = 247632DD1E5AD8B8F7E863B0; };
 		5E08E0391DF483B4F176E525 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THS/Views/MarketChartView.swift"; sourceTree = SOURCE_ROOT; };
-		4A0B27B908FDC09D43426988 = { isa = PBXBuildFile; fileRef = 5E08E0391DF483B4F176E525; };
 		7507F75F9212BD57CA39C003 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THS/Views/MarketTheme.swift"; sourceTree = SOURCE_ROOT; };
-		C0F482E2A0C86816756F2E39 = { isa = PBXBuildFile; fileRef = 7507F75F9212BD57CA39C003; };
 		3E380133695FDCC5C4E2B534 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THS/Views/OrdersView.swift"; sourceTree = SOURCE_ROOT; };
-		EECE4B01A7BE12BCBB2F5C4D = { isa = PBXBuildFile; fileRef = 3E380133695FDCC5C4E2B534; };
 		E805FDED7BCCE871E2426416 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THS/Views/RootView.swift"; sourceTree = SOURCE_ROOT; };
-		0B20F113C316872095F54AD5 = { isa = PBXBuildFile; fileRef = E805FDED7BCCE871E2426416; };
 		CA6D262D3810BE4E05E3CCBB = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THS/Views/StockDetailView.swift"; sourceTree = SOURCE_ROOT; };
-		2ADA30EC2190C0DF03803C48 = { isa = PBXBuildFile; fileRef = CA6D262D3810BE4E05E3CCBB; };
 		B8347BAED82278C4B3280A3B = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THS/Views/TradeView.swift"; sourceTree = SOURCE_ROOT; };
-		05756E52AEB1EDA4D22D5BEC = { isa = PBXBuildFile; fileRef = B8347BAED82278C4B3280A3B; };
 		E41FC0C7B9A5EED359492A48 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THS/Views/WatchlistView.swift"; sourceTree = SOURCE_ROOT; };
-		828EAC79E9DF1114054BDDE4 = { isa = PBXBuildFile; fileRef = E41FC0C7B9A5EED359492A48; };
 		7260C3C6270E9EB67CDE6FBB = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THSTests/AppStoreTradingTests.swift"; sourceTree = SOURCE_ROOT; };
-		4EC6D5EEECAD7569DC721895 = { isa = PBXBuildFile; fileRef = 7260C3C6270E9EB67CDE6FBB; };
 		566916AA059098F9676E3E4E = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THSTests/CandleViewportTests.swift"; sourceTree = SOURCE_ROOT; };
-		5FEA75B8D480D0297A8F0142 = { isa = PBXBuildFile; fileRef = 566916AA059098F9676E3E4E; };
 		1F5B62FD7DAAF834AE01CB3B = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THSTests/ChartAnalyticsTests.swift"; sourceTree = SOURCE_ROOT; };
-		EB6DC6E0FFF1E1D3C259718E = { isa = PBXBuildFile; fileRef = 1F5B62FD7DAAF834AE01CB3B; };
 		93D69BC808AB5F102090BC3E = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THSTests/MarketStatisticsTests.swift"; sourceTree = SOURCE_ROOT; };
-		03860F065BDACB45B25D0111 = { isa = PBXBuildFile; fileRef = 93D69BC808AB5F102090BC3E; };
 		8C81D726C4BBED9782AA5CC0 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THSTests/MinuteCandleTests.swift"; sourceTree = SOURCE_ROOT; };
-		F149AB04F422F727FB1B2338 = { isa = PBXBuildFile; fileRef = 8C81D726C4BBED9782AA5CC0; };
 		E0D72A33BD551F4420EE4299 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THSTests/OrderSizingTests.swift"; sourceTree = SOURCE_ROOT; };
-		034080182CE5EEEFE89FBCBF = { isa = PBXBuildFile; fileRef = E0D72A33BD551F4420EE4299; };
 		AEA64A094D14123CCC0D4E88 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THSTests/PersonalConfigurationTests.swift"; sourceTree = SOURCE_ROOT; };
-		F35633A02464A3AD59F2A7F3 = { isa = PBXBuildFile; fileRef = AEA64A094D14123CCC0D4E88; };
 		59400EC17CF7BBFB5C770A5B = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THSTests/SchwabCoreTests.swift"; sourceTree = SOURCE_ROOT; };
-		60B279BE15A78749CF31E5D3 = { isa = PBXBuildFile; fileRef = 59400EC17CF7BBFB5C770A5B; };
 		8D3BEBE8676FAE98D349AADE = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THSTests/SchwabTradingTests.swift"; sourceTree = SOURCE_ROOT; };
-		8D8E06C44DD7B93DC2A43B10 = { isa = PBXBuildFile; fileRef = 8D3BEBE8676FAE98D349AADE; };
 		EB941DAE4D7CFE6029AC53F8 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "THSUITests/TradingFlowTests.swift"; sourceTree = SOURCE_ROOT; };
-		8B9BB17067524F6DEEA75EB5 = { isa = PBXBuildFile; fileRef = EB941DAE4D7CFE6029AC53F8; };
 		349560ECA33779BF460B04C4 = { isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = THS/Info.plist; sourceTree = SOURCE_ROOT; };
 		81F31879437340D5CD6ED968 = { isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = THS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		70F09BF32F6D77A92FF191B4 = { isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = THSTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		1E72342EF5FEED24ED965995 = { isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = THSUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		085ED06E573690BA3A56BC1E = { isa = PBXGroup; children = (3182DB257E7C3ECB6EB1BB60, 10C93EB853D258DF0880345F, 474AB69F433BEC26BA999173, 8043A1A6467C8F9B5AFFBD8B, 91AD49D57A612C94A0D4CF4C, E832CAB1202AA5C1F4FAEDA6, 0344CA8D7416CA01CE2E494F, 262A696119CB8E2AC7948B61, C44072CA8026D913F2AD72A1, D725E1F4F407590EFD202455, 0128B9EFC9C4A554F1E4D06C, DB0B26138A5EFEF35CBF271C, 85C35BBFA370844AC3C05B75, CCFE4F48D13BDBD55934D8A4, 04A8B517719D8768DD470929, 90285E8E8C7AE5B94B36D615, 696DBD96EAFD1CC823F3713B, 4CDA842425B257F10A9B1D0A, 81FD5CA09D181A9E6FC8AA11, 247632DD1E5AD8B8F7E863B0, 5E08E0391DF483B4F176E525, 7507F75F9212BD57CA39C003, 3E380133695FDCC5C4E2B534, E805FDED7BCCE871E2426416, CA6D262D3810BE4E05E3CCBB, B8347BAED82278C4B3280A3B, E41FC0C7B9A5EED359492A48, 349560ECA33779BF460B04C4); name = THS; sourceTree = "<group>"; };
-		D60409337774CCE94860379A = { isa = PBXGroup; children = (7260C3C6270E9EB67CDE6FBB, 566916AA059098F9676E3E4E, 1F5B62FD7DAAF834AE01CB3B, 93D69BC808AB5F102090BC3E, 8C81D726C4BBED9782AA5CC0, E0D72A33BD551F4420EE4299, AEA64A094D14123CCC0D4E88, 59400EC17CF7BBFB5C770A5B, 8D3BEBE8676FAE98D349AADE); name = THSTests; sourceTree = "<group>"; };
-		2676C1C3130EC43A71AB56D8 = { isa = PBXGroup; children = (EB941DAE4D7CFE6029AC53F8); name = THSUITests; sourceTree = "<group>"; };
-		6F7199ED7B63CDA338A0FB82 = { isa = PBXGroup; children = (81F31879437340D5CD6ED968, 70F09BF32F6D77A92FF191B4, 1E72342EF5FEED24ED965995); name = Products; sourceTree = "<group>"; };
-		CC5D242D023A9271190EA7C6 = { isa = PBXGroup; children = (085ED06E573690BA3A56BC1E, D60409337774CCE94860379A, 2676C1C3130EC43A71AB56D8, 6F7199ED7B63CDA338A0FB82); sourceTree = "<group>"; };
-		17655138DE091C505416ABEA = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (CBEADF474FFD7759ADBA6A52, F6AA2B9DBC602298817EB966, 49AF9B906E5FD9FB0F2C0BB9, 9913374C831A7D3DAFDB8C72, 224DA985FAEF1B7DFD812F03, 8BA1B81C8403CB0C14DC0324, 495B651999E0FB4F9083AD7D, 42EA34C6ECFCE42F92660961, AD9591BDFA60D099223B47C0, AAC0E783E0C96CD357571C3A, 97692E42EDF93461B88F974D, EA25EFFF37512F49AA373C1E, A3EA35E9A5FC0F5E6626DB73, 488AEAABCB58BDF6648E7D8C, 52665B028EF0001230FDDACE, 6307478DFD29FFDB63AF933C, 3F6DE9FC30D4231394533AC7, 1CC711C2311551CEC4E08209, CD7747483F37EB05DC7A7D81, 43E2533A705E76AB0A3B6A84, 4A0B27B908FDC09D43426988, C0F482E2A0C86816756F2E39, EECE4B01A7BE12BCBB2F5C4D, 0B20F113C316872095F54AD5, 2ADA30EC2190C0DF03803C48, 05756E52AEB1EDA4D22D5BEC, 828EAC79E9DF1114054BDDE4); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXFileReference section */
+/* Begin PBXBuildFile section */
+		CBEADF474FFD7759ADBA6A52 = { isa = PBXBuildFile; fileRef = 3182DB257E7C3ECB6EB1BB60; };
+		F6AA2B9DBC602298817EB966 = { isa = PBXBuildFile; fileRef = 10C93EB853D258DF0880345F; };
+		49AF9B906E5FD9FB0F2C0BB9 = { isa = PBXBuildFile; fileRef = 474AB69F433BEC26BA999173; };
+		9913374C831A7D3DAFDB8C72 = { isa = PBXBuildFile; fileRef = 8043A1A6467C8F9B5AFFBD8B; };
+		224DA985FAEF1B7DFD812F03 = { isa = PBXBuildFile; fileRef = 91AD49D57A612C94A0D4CF4C; };
+		8BA1B81C8403CB0C14DC0324 = { isa = PBXBuildFile; fileRef = E832CAB1202AA5C1F4FAEDA6; };
+		495B651999E0FB4F9083AD7D = { isa = PBXBuildFile; fileRef = 0344CA8D7416CA01CE2E494F; };
+		42EA34C6ECFCE42F92660961 = { isa = PBXBuildFile; fileRef = 262A696119CB8E2AC7948B61; };
+		AD9591BDFA60D099223B47C0 = { isa = PBXBuildFile; fileRef = C44072CA8026D913F2AD72A1; };
+		AAC0E783E0C96CD357571C3A = { isa = PBXBuildFile; fileRef = D725E1F4F407590EFD202455; };
+		97692E42EDF93461B88F974D = { isa = PBXBuildFile; fileRef = 0128B9EFC9C4A554F1E4D06C; };
+		EA25EFFF37512F49AA373C1E = { isa = PBXBuildFile; fileRef = DB0B26138A5EFEF35CBF271C; };
+		A3EA35E9A5FC0F5E6626DB73 = { isa = PBXBuildFile; fileRef = 85C35BBFA370844AC3C05B75; };
+		488AEAABCB58BDF6648E7D8C = { isa = PBXBuildFile; fileRef = CCFE4F48D13BDBD55934D8A4; };
+		52665B028EF0001230FDDACE = { isa = PBXBuildFile; fileRef = 04A8B517719D8768DD470929; };
+		6307478DFD29FFDB63AF933C = { isa = PBXBuildFile; fileRef = 90285E8E8C7AE5B94B36D615; };
+		3F6DE9FC30D4231394533AC7 = { isa = PBXBuildFile; fileRef = 696DBD96EAFD1CC823F3713B; };
+		1CC711C2311551CEC4E08209 = { isa = PBXBuildFile; fileRef = 4CDA842425B257F10A9B1D0A; };
+		CD7747483F37EB05DC7A7D81 = { isa = PBXBuildFile; fileRef = 81FD5CA09D181A9E6FC8AA11; };
+		43E2533A705E76AB0A3B6A84 = { isa = PBXBuildFile; fileRef = 247632DD1E5AD8B8F7E863B0; };
+		4A0B27B908FDC09D43426988 = { isa = PBXBuildFile; fileRef = 5E08E0391DF483B4F176E525; };
+		C0F482E2A0C86816756F2E39 = { isa = PBXBuildFile; fileRef = 7507F75F9212BD57CA39C003; };
+		EECE4B01A7BE12BCBB2F5C4D = { isa = PBXBuildFile; fileRef = 3E380133695FDCC5C4E2B534; };
+		0B20F113C316872095F54AD5 = { isa = PBXBuildFile; fileRef = E805FDED7BCCE871E2426416; };
+		2ADA30EC2190C0DF03803C48 = { isa = PBXBuildFile; fileRef = CA6D262D3810BE4E05E3CCBB; };
+		05756E52AEB1EDA4D22D5BEC = { isa = PBXBuildFile; fileRef = B8347BAED82278C4B3280A3B; };
+		828EAC79E9DF1114054BDDE4 = { isa = PBXBuildFile; fileRef = E41FC0C7B9A5EED359492A48; };
+		4EC6D5EEECAD7569DC721895 = { isa = PBXBuildFile; fileRef = 7260C3C6270E9EB67CDE6FBB; };
+		5FEA75B8D480D0297A8F0142 = { isa = PBXBuildFile; fileRef = 566916AA059098F9676E3E4E; };
+		EB6DC6E0FFF1E1D3C259718E = { isa = PBXBuildFile; fileRef = 1F5B62FD7DAAF834AE01CB3B; };
+		03860F065BDACB45B25D0111 = { isa = PBXBuildFile; fileRef = 93D69BC808AB5F102090BC3E; };
+		F149AB04F422F727FB1B2338 = { isa = PBXBuildFile; fileRef = 8C81D726C4BBED9782AA5CC0; };
+		034080182CE5EEEFE89FBCBF = { isa = PBXBuildFile; fileRef = E0D72A33BD551F4420EE4299; };
+		F35633A02464A3AD59F2A7F3 = { isa = PBXBuildFile; fileRef = AEA64A094D14123CCC0D4E88; };
+		60B279BE15A78749CF31E5D3 = { isa = PBXBuildFile; fileRef = 59400EC17CF7BBFB5C770A5B; };
+		8D8E06C44DD7B93DC2A43B10 = { isa = PBXBuildFile; fileRef = 8D3BEBE8676FAE98D349AADE; };
+		8B9BB17067524F6DEEA75EB5 = { isa = PBXBuildFile; fileRef = EB941DAE4D7CFE6029AC53F8; };
+/* End PBXBuildFile section */
+/* Begin PBXGroup section */
+		085ED06E573690BA3A56BC1E = { isa = PBXGroup; children = (3182DB257E7C3ECB6EB1BB60 /* ref:THS/App/AppStore.swift */, 10C93EB853D258DF0880345F /* ref:THS/App/DemoData.swift */, 474AB69F433BEC26BA999173 /* ref:THS/App/THSApp.swift */, 8043A1A6467C8F9B5AFFBD8B /* ref:THS/App/TradingStore.swift */, 91AD49D57A612C94A0D4CF4C /* ref:THS/Models/CandleViewport.swift */, E832CAB1202AA5C1F4FAEDA6 /* ref:THS/Models/ChartAnalytics.swift */, 0344CA8D7416CA01CE2E494F /* ref:THS/Models/MarketStatistics.swift */, 262A696119CB8E2AC7948B61 /* ref:THS/Models/OrderModels.swift */, C44072CA8026D913F2AD72A1 /* ref:THS/Models/OrderSizing.swift */, D725E1F4F407590EFD202455 /* ref:THS/Models/PreparedOrder.swift */, 0128B9EFC9C4A554F1E4D06C /* ref:THS/Models/PriceHistory.swift */, DB0B26138A5EFEF35CBF271C /* ref:THS/Models/TradingModels.swift */, 85C35BBFA370844AC3C05B75 /* ref:THS/Services/KeychainVault.swift */, CCFE4F48D13BDBD55934D8A4 /* ref:THS/Services/PersonalSchwabConfiguration.swift */, 04A8B517719D8768DD470929 /* ref:THS/Services/SchwabClient.swift */, 90285E8E8C7AE5B94B36D615 /* ref:THS/Views/AccountsView.swift */, 696DBD96EAFD1CC823F3713B /* ref:THS/Views/CandleGestureSurface.swift */, 4CDA842425B257F10A9B1D0A /* ref:THS/Views/ConnectionView.swift */, 81FD5CA09D181A9E6FC8AA11 /* ref:THS/Views/InlineCancelPanel.swift */, 247632DD1E5AD8B8F7E863B0 /* ref:THS/Views/InlineTradePanel.swift */, 5E08E0391DF483B4F176E525 /* ref:THS/Views/MarketChartView.swift */, 7507F75F9212BD57CA39C003 /* ref:THS/Views/MarketTheme.swift */, 3E380133695FDCC5C4E2B534 /* ref:THS/Views/OrdersView.swift */, E805FDED7BCCE871E2426416 /* ref:THS/Views/RootView.swift */, CA6D262D3810BE4E05E3CCBB /* ref:THS/Views/StockDetailView.swift */, B8347BAED82278C4B3280A3B /* ref:THS/Views/TradeView.swift */, E41FC0C7B9A5EED359492A48 /* ref:THS/Views/WatchlistView.swift */, 349560ECA33779BF460B04C4 /* ref:plist */,); name = THS; sourceTree = "<group>"; };
+		D60409337774CCE94860379A = { isa = PBXGroup; children = (7260C3C6270E9EB67CDE6FBB /* ref:THSTests/AppStoreTradingTests.swift */, 566916AA059098F9676E3E4E /* ref:THSTests/CandleViewportTests.swift */, 1F5B62FD7DAAF834AE01CB3B /* ref:THSTests/ChartAnalyticsTests.swift */, 93D69BC808AB5F102090BC3E /* ref:THSTests/MarketStatisticsTests.swift */, 8C81D726C4BBED9782AA5CC0 /* ref:THSTests/MinuteCandleTests.swift */, E0D72A33BD551F4420EE4299 /* ref:THSTests/OrderSizingTests.swift */, AEA64A094D14123CCC0D4E88 /* ref:THSTests/PersonalConfigurationTests.swift */, 59400EC17CF7BBFB5C770A5B /* ref:THSTests/SchwabCoreTests.swift */, 8D3BEBE8676FAE98D349AADE /* ref:THSTests/SchwabTradingTests.swift */,); name = THSTests; sourceTree = "<group>"; };
+		2676C1C3130EC43A71AB56D8 = { isa = PBXGroup; children = (EB941DAE4D7CFE6029AC53F8 /* ref:THSUITests/TradingFlowTests.swift */,); name = THSUITests; sourceTree = "<group>"; };
+		6F7199ED7B63CDA338A0FB82 = { isa = PBXGroup; children = (81F31879437340D5CD6ED968 /* product:app */, 70F09BF32F6D77A92FF191B4 /* product:tests */, 1E72342EF5FEED24ED965995 /* product:uitests */,); name = Products; sourceTree = "<group>"; };
+		CC5D242D023A9271190EA7C6 = { isa = PBXGroup; children = (085ED06E573690BA3A56BC1E /* group:app */, D60409337774CCE94860379A /* group:tests */, 2676C1C3130EC43A71AB56D8 /* group:uitests */, 6F7199ED7B63CDA338A0FB82 /* group:products */,); sourceTree = "<group>"; };
+/* End PBXGroup section */
+/* Begin PBXSourcesBuildPhase section */
+		17655138DE091C505416ABEA = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (CBEADF474FFD7759ADBA6A52 /* build:THS/App/AppStore.swift */, F6AA2B9DBC602298817EB966 /* build:THS/App/DemoData.swift */, 49AF9B906E5FD9FB0F2C0BB9 /* build:THS/App/THSApp.swift */, 9913374C831A7D3DAFDB8C72 /* build:THS/App/TradingStore.swift */, 224DA985FAEF1B7DFD812F03 /* build:THS/Models/CandleViewport.swift */, 8BA1B81C8403CB0C14DC0324 /* build:THS/Models/ChartAnalytics.swift */, 495B651999E0FB4F9083AD7D /* build:THS/Models/MarketStatistics.swift */, 42EA34C6ECFCE42F92660961 /* build:THS/Models/OrderModels.swift */, AD9591BDFA60D099223B47C0 /* build:THS/Models/OrderSizing.swift */, AAC0E783E0C96CD357571C3A /* build:THS/Models/PreparedOrder.swift */, 97692E42EDF93461B88F974D /* build:THS/Models/PriceHistory.swift */, EA25EFFF37512F49AA373C1E /* build:THS/Models/TradingModels.swift */, A3EA35E9A5FC0F5E6626DB73 /* build:THS/Services/KeychainVault.swift */, 488AEAABCB58BDF6648E7D8C /* build:THS/Services/PersonalSchwabConfiguration.swift */, 52665B028EF0001230FDDACE /* build:THS/Services/SchwabClient.swift */, 6307478DFD29FFDB63AF933C /* build:THS/Views/AccountsView.swift */, 3F6DE9FC30D4231394533AC7 /* build:THS/Views/CandleGestureSurface.swift */, 1CC711C2311551CEC4E08209 /* build:THS/Views/ConnectionView.swift */, CD7747483F37EB05DC7A7D81 /* build:THS/Views/InlineCancelPanel.swift */, 43E2533A705E76AB0A3B6A84 /* build:THS/Views/InlineTradePanel.swift */, 4A0B27B908FDC09D43426988 /* build:THS/Views/MarketChartView.swift */, C0F482E2A0C86816756F2E39 /* build:THS/Views/MarketTheme.swift */, EECE4B01A7BE12BCBB2F5C4D /* build:THS/Views/OrdersView.swift */, 0B20F113C316872095F54AD5 /* build:THS/Views/RootView.swift */, 2ADA30EC2190C0DF03803C48 /* build:THS/Views/StockDetailView.swift */, 05756E52AEB1EDA4D22D5BEC /* build:THS/Views/TradeView.swift */, 828EAC79E9DF1114054BDDE4 /* build:THS/Views/WatchlistView.swift */,); runOnlyForDeploymentPostprocessing = 0; };
+		D7934D1E5431E43D00EE518B = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (4EC6D5EEECAD7569DC721895 /* build:THSTests/AppStoreTradingTests.swift */, 5FEA75B8D480D0297A8F0142 /* build:THSTests/CandleViewportTests.swift */, EB6DC6E0FFF1E1D3C259718E /* build:THSTests/ChartAnalyticsTests.swift */, 03860F065BDACB45B25D0111 /* build:THSTests/MarketStatisticsTests.swift */, F149AB04F422F727FB1B2338 /* build:THSTests/MinuteCandleTests.swift */, 034080182CE5EEEFE89FBCBF /* build:THSTests/OrderSizingTests.swift */, F35633A02464A3AD59F2A7F3 /* build:THSTests/PersonalConfigurationTests.swift */, 60B279BE15A78749CF31E5D3 /* build:THSTests/SchwabCoreTests.swift */, 8D8E06C44DD7B93DC2A43B10 /* build:THSTests/SchwabTradingTests.swift */,); runOnlyForDeploymentPostprocessing = 0; };
+		035A2650D89409D75900625B = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (8B9BB17067524F6DEEA75EB5 /* build:THSUITests/TradingFlowTests.swift */,); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXSourcesBuildPhase section */
+/* Begin PBXFrameworksBuildPhase section */
 		1B85B821D2F93F337F70D49F = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
-		D18FD5E61A9286359343951E = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
-		D7934D1E5431E43D00EE518B = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (4EC6D5EEECAD7569DC721895, 5FEA75B8D480D0297A8F0142, EB6DC6E0FFF1E1D3C259718E, 03860F065BDACB45B25D0111, F149AB04F422F727FB1B2338, 034080182CE5EEEFE89FBCBF, F35633A02464A3AD59F2A7F3, 60B279BE15A78749CF31E5D3, 8D8E06C44DD7B93DC2A43B10); runOnlyForDeploymentPostprocessing = 0; };
 		EEA7B40FF0F394BC78EAA36E = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
-		9F6A4E941DE57E85FA5BABF0 = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
-		035A2650D89409D75900625B = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (8B9BB17067524F6DEEA75EB5); runOnlyForDeploymentPostprocessing = 0; };
 		B4AAE37E91367A0352ED125A = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXFrameworksBuildPhase section */
+/* Begin PBXResourcesBuildPhase section */
+		D18FD5E61A9286359343951E = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		9F6A4E941DE57E85FA5BABF0 = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		A11987F2667993A1DF446326 = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXResourcesBuildPhase section */
+/* Begin PBXContainerItemProxy section */
 		8619E39B688A33CB92F66F7B = { isa = PBXContainerItemProxy; containerPortal = 244210E48437B6556980A702; proxyType = 1; remoteGlobalIDString = 8C1A045E96B998B40533C7FF; remoteInfo = THS; };
+/* End PBXContainerItemProxy section */
+/* Begin PBXTargetDependency section */
 		B1F33F0DF5D562F7B2106E58 = { isa = PBXTargetDependency; target = 8C1A045E96B998B40533C7FF; targetProxy = 8619E39B688A33CB92F66F7B; };
-		8C1A045E96B998B40533C7FF = { isa = PBXNativeTarget; buildConfigurationList = 7FA7C6DD60DC323C7F3FA76C; buildPhases = (17655138DE091C505416ABEA, 1B85B821D2F93F337F70D49F, D18FD5E61A9286359343951E); buildRules = (); dependencies = (); name = THS; productName = THS; productReference = 81F31879437340D5CD6ED968; productType = "com.apple.product-type.application"; };
-		2ADDEE89B29C55E11126D89F = { isa = PBXNativeTarget; buildConfigurationList = 3AC24B37B5C6634D049790CE; buildPhases = (D7934D1E5431E43D00EE518B, EEA7B40FF0F394BC78EAA36E, 9F6A4E941DE57E85FA5BABF0); buildRules = (); dependencies = (B1F33F0DF5D562F7B2106E58); name = THSTests; productName = THSTests; productReference = 70F09BF32F6D77A92FF191B4; productType = "com.apple.product-type.bundle.unit-test"; };
-		129964AA630C5970DF325D9E = { isa = PBXNativeTarget; buildConfigurationList = FC8117D147693B7C06502BEC; buildPhases = (035A2650D89409D75900625B, B4AAE37E91367A0352ED125A, A11987F2667993A1DF446326); buildRules = (); dependencies = (B1F33F0DF5D562F7B2106E58); name = THSUITests; productName = THSUITests; productReference = 1E72342EF5FEED24ED965995; productType = "com.apple.product-type.bundle.ui-testing"; };
+/* End PBXTargetDependency section */
+/* Begin PBXNativeTarget section */
+		8C1A045E96B998B40533C7FF = { isa = PBXNativeTarget; buildConfigurationList = 7FA7C6DD60DC323C7F3FA76C; buildPhases = (17655138DE091C505416ABEA /* sources:app */, 1B85B821D2F93F337F70D49F /* frameworks:app */, D18FD5E61A9286359343951E /* resources:app */,); buildRules = (); dependencies = (); name = THS; productName = THS; productReference = 81F31879437340D5CD6ED968; productType = "com.apple.product-type.application"; };
+		2ADDEE89B29C55E11126D89F = { isa = PBXNativeTarget; buildConfigurationList = 3AC24B37B5C6634D049790CE; buildPhases = (D7934D1E5431E43D00EE518B /* sources:tests */, EEA7B40FF0F394BC78EAA36E /* frameworks:tests */, 9F6A4E941DE57E85FA5BABF0 /* resources:tests */,); buildRules = (); dependencies = (B1F33F0DF5D562F7B2106E58 /* dependency:app */,); name = THSTests; productName = THSTests; productReference = 70F09BF32F6D77A92FF191B4; productType = "com.apple.product-type.bundle.unit-test"; };
+		129964AA630C5970DF325D9E = { isa = PBXNativeTarget; buildConfigurationList = FC8117D147693B7C06502BEC; buildPhases = (035A2650D89409D75900625B /* sources:uitests */, B4AAE37E91367A0352ED125A /* frameworks:uitests */, A11987F2667993A1DF446326 /* resources:uitests */,); buildRules = (); dependencies = (B1F33F0DF5D562F7B2106E58 /* dependency:app */,); name = THSUITests; productName = THSUITests; productReference = 1E72342EF5FEED24ED965995; productType = "com.apple.product-type.bundle.ui-testing"; };
+/* End PBXNativeTarget section */
+/* Begin XCBuildConfiguration section */
 		184B519F8E1416CCE38CFFD7 = { isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SDKROOT = iphoneos; SWIFT_VERSION = 5.0; SWIFT_STRICT_CONCURRENCY = targeted; DEBUG_INFORMATION_FORMAT = dwarf; ENABLE_TESTABILITY = YES; GCC_PREPROCESSOR_DEFINITIONS = ("DEBUG=1", "$(inherited)"); ONLY_ACTIVE_ARCH = YES; SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; }; name = Debug; };
 		0D9B6C467828201280D620A8 = { isa = XCBuildConfiguration; buildSettings = { CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 6; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = THS/Info.plist; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks"); MARKETING_VERSION = 0.4.2; PRODUCT_BUNDLE_IDENTIFIER = app.personal.ths; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SUPPORTS_MACCATALYST = NO; TARGETED_DEVICE_FAMILY = 1; }; name = Debug; };
 		2D78CCEA355AAA4DECA10BA5 = { isa = XCBuildConfiguration; buildSettings = { BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = app.personal.ths.tests; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; TARGETED_DEVICE_FAMILY = 1; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/THS.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/THS"; }; name = Debug; };
@@ -109,11 +128,16 @@
 		E532E4CDC1E6865CE523475E = { isa = XCBuildConfiguration; buildSettings = { CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 6; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = THS/Info.plist; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks"); MARKETING_VERSION = 0.4.2; PRODUCT_BUNDLE_IDENTIFIER = app.personal.ths; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SUPPORTS_MACCATALYST = NO; TARGETED_DEVICE_FAMILY = 1; }; name = Release; };
 		F1D4FEDE61515AFDB9B202CA = { isa = XCBuildConfiguration; buildSettings = { BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = app.personal.ths.tests; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; TARGETED_DEVICE_FAMILY = 1; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/THS.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/THS"; }; name = Release; };
 		48330A47DEBAFA29DCBC86F2 = { isa = XCBuildConfiguration; buildSettings = { CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = app.personal.ths.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; TARGETED_DEVICE_FAMILY = 1; TEST_TARGET_NAME = THS; }; name = Release; };
-		1922B098E983995960BE56B0 = { isa = XCConfigurationList; buildConfigurations = (184B519F8E1416CCE38CFFD7, A824290273A346217D9BE6F4); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
-		7FA7C6DD60DC323C7F3FA76C = { isa = XCConfigurationList; buildConfigurations = (0D9B6C467828201280D620A8, E532E4CDC1E6865CE523475E); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
-		3AC24B37B5C6634D049790CE = { isa = XCConfigurationList; buildConfigurations = (2D78CCEA355AAA4DECA10BA5, F1D4FEDE61515AFDB9B202CA); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
-		FC8117D147693B7C06502BEC = { isa = XCConfigurationList; buildConfigurations = (23FA874E24FFFEFDE74C709B, 48330A47DEBAFA29DCBC86F2); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
-		244210E48437B6556980A702 = { isa = PBXProject; attributes = { BuildIndependentTargetsInParallel = YES; LastUpgradeCheck = 2600; TargetAttributes = { 8C1A045E96B998B40533C7FF = { CreatedOnToolsVersion = 26.0; }; 2ADDEE89B29C55E11126D89F = { CreatedOnToolsVersion = 26.0; TestTargetID = 8C1A045E96B998B40533C7FF; }; 129964AA630C5970DF325D9E = { CreatedOnToolsVersion = 26.0; TestTargetID = 8C1A045E96B998B40533C7FF; }; }; }; buildConfigurationList = 1922B098E983995960BE56B0; compatibilityVersion = "Xcode 14.0"; developmentRegion = zh_CN; hasScannedForEncodings = 0; knownRegions = (en, Base, zh_CN); mainGroup = CC5D242D023A9271190EA7C6; productRefGroup = 6F7199ED7B63CDA338A0FB82; projectDirPath = ""; projectRoot = ""; targets = (8C1A045E96B998B40533C7FF, 2ADDEE89B29C55E11126D89F, 129964AA630C5970DF325D9E); };
+/* End XCBuildConfiguration section */
+/* Begin XCConfigurationList section */
+		1922B098E983995960BE56B0 = { isa = XCConfigurationList; buildConfigurations = (184B519F8E1416CCE38CFFD7 /* config:project:Debug */, A824290273A346217D9BE6F4 /* config:project:Release */,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		7FA7C6DD60DC323C7F3FA76C = { isa = XCConfigurationList; buildConfigurations = (0D9B6C467828201280D620A8 /* config:app:Debug */, E532E4CDC1E6865CE523475E /* config:app:Release */,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		3AC24B37B5C6634D049790CE = { isa = XCConfigurationList; buildConfigurations = (2D78CCEA355AAA4DECA10BA5 /* config:tests:Debug */, F1D4FEDE61515AFDB9B202CA /* config:tests:Release */,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		FC8117D147693B7C06502BEC = { isa = XCConfigurationList; buildConfigurations = (23FA874E24FFFEFDE74C709B /* config:uitests:Debug */, 48330A47DEBAFA29DCBC86F2 /* config:uitests:Release */,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+/* End XCConfigurationList section */
+/* Begin PBXProject section */
+		244210E48437B6556980A702 = { isa = PBXProject; attributes = { BuildIndependentTargetsInParallel = YES; LastUpgradeCheck = 2600; TargetAttributes = { 8C1A045E96B998B40533C7FF = { CreatedOnToolsVersion = 26.0; }; 2ADDEE89B29C55E11126D89F = { CreatedOnToolsVersion = 26.0; TestTargetID = 8C1A045E96B998B40533C7FF; }; 129964AA630C5970DF325D9E = { CreatedOnToolsVersion = 26.0; TestTargetID = 8C1A045E96B998B40533C7FF; }; }; }; buildConfigurationList = 1922B098E983995960BE56B0; compatibilityVersion = "Xcode 14.0"; developmentRegion = zh_CN; hasScannedForEncodings = 0; knownRegions = (en, Base, zh_CN,); mainGroup = CC5D242D023A9271190EA7C6; productRefGroup = 6F7199ED7B63CDA338A0FB82; projectDirPath = ""; projectRoot = ""; targets = (8C1A045E96B998B40533C7FF /* target:app */, 2ADDEE89B29C55E11126D89F /* target:tests */, 129964AA630C5970DF325D9E /* target:uitests */,); };
+/* End PBXProject section */
 	};
 	rootObject = 244210E48437B6556980A702;
 }

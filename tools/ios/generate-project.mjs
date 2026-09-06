@@ -6,9 +6,15 @@ import path from 'node:path';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const ios = path.join(root, 'ios');
 const check = process.argv.includes('--check');
-const id = (name) => createHash('sha256').update(name).digest('hex').slice(0, 24).toUpperCase();
+const idLabels = new Map();
+const id = (name) => {
+  const value = createHash('sha256').update(name).digest('hex').slice(0, 24).toUpperCase();
+  idLabels.set(value, name);
+  return value;
+};
 const quote = (value) => JSON.stringify(value);
-const list = (values) => `(${values.join(', ')})`;
+// EAS expects commented UUID references; a final comma also keeps ")" out of literal values.
+const list = (values) => `(${values.map(value => `${value}${idLabels.has(value) ? ` /* ${idLabels.get(value)} */` : ''},`).join(' ')})`;
 async function swiftFiles(directory) {
   const result = [];
   for (const item of await readdir(path.join(ios, directory), { withFileTypes: true })) {
@@ -23,8 +29,13 @@ const appFiles = await swiftFiles('THS');
 const testFiles = await swiftFiles('THSTests');
 const uiTestFiles = await swiftFiles('THSUITests');
 if (!appFiles.length || !testFiles.length) throw new Error('App and test Swift sources must exist before project generation.');
-const objects = [];
-const add = (name, body) => { objects.push(`\t\t${id(name)} = { ${body} };`); return id(name); };
+const objects = new Map();
+const add = (name, body) => {
+  const section = body.match(/^isa = (\w+);/)[1];
+  if (!objects.has(section)) objects.set(section, []);
+  objects.get(section).push(`\t\t${id(name)} = { ${body} };`);
+  return id(name);
+};
 for (const file of [...appFiles, ...testFiles, ...uiTestFiles]) {
   add(`ref:${file}`, `isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ${quote(file)}; sourceTree = SOURCE_ROOT;`);
   add(`build:${file}`, `isa = PBXBuildFile; fileRef = ${id(`ref:${file}`)};`);
@@ -47,8 +58,8 @@ for (const [target, files] of [['app', appFiles], ['tests', testFiles], ['uitest
 add('proxy:app', `isa = PBXContainerItemProxy; containerPortal = ${id('project')}; proxyType = 1; remoteGlobalIDString = ${id('target:app')}; remoteInfo = THS;`);
 add('dependency:app', `isa = PBXTargetDependency; target = ${id('target:app')}; targetProxy = ${id('proxy:app')};`);
 add('target:app', `isa = PBXNativeTarget; buildConfigurationList = ${id('configs:app')}; buildPhases = ${list(['sources:app','frameworks:app','resources:app'].map(id))}; buildRules = (); dependencies = (); name = THS; productName = THS; productReference = ${id('product:app')}; productType = "com.apple.product-type.application";`);
-add('target:tests', `isa = PBXNativeTarget; buildConfigurationList = ${id('configs:tests')}; buildPhases = ${list(['sources:tests','frameworks:tests','resources:tests'].map(id))}; buildRules = (); dependencies = (${id('dependency:app')}); name = THSTests; productName = THSTests; productReference = ${id('product:tests')}; productType = "com.apple.product-type.bundle.unit-test";`);
-add('target:uitests', `isa = PBXNativeTarget; buildConfigurationList = ${id('configs:uitests')}; buildPhases = ${list(['sources:uitests','frameworks:uitests','resources:uitests'].map(id))}; buildRules = (); dependencies = (${id('dependency:app')}); name = THSUITests; productName = THSUITests; productReference = ${id('product:uitests')}; productType = "com.apple.product-type.bundle.ui-testing";`);
+add('target:tests', `isa = PBXNativeTarget; buildConfigurationList = ${id('configs:tests')}; buildPhases = ${list(['sources:tests','frameworks:tests','resources:tests'].map(id))}; buildRules = (); dependencies = ${list([id('dependency:app')])}; name = THSTests; productName = THSTests; productReference = ${id('product:tests')}; productType = "com.apple.product-type.bundle.unit-test";`);
+add('target:uitests', `isa = PBXNativeTarget; buildConfigurationList = ${id('configs:uitests')}; buildPhases = ${list(['sources:uitests','frameworks:uitests','resources:uitests'].map(id))}; buildRules = (); dependencies = ${list([id('dependency:app')])}; name = THSUITests; productName = THSUITests; productReference = ${id('product:uitests')}; productType = "com.apple.product-type.bundle.ui-testing";`);
 const common = 'CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SDKROOT = iphoneos; SWIFT_VERSION = 5.0; SWIFT_STRICT_CONCURRENCY = targeted;';
 for (const name of ['Debug', 'Release']) {
   add(`config:project:${name}`, `isa = XCBuildConfiguration; buildSettings = { ${common} ${name === 'Debug' ? 'DEBUG_INFORMATION_FORMAT = dwarf; ENABLE_TESTABILITY = YES; GCC_PREPROCESSOR_DEFINITIONS = ("DEBUG=1", "$(inherited)"); ONLY_ACTIVE_ARCH = YES; SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG; SWIFT_OPTIMIZATION_LEVEL = "-Onone";' : 'DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym"; SWIFT_COMPILATION_MODE = wholemodule; SWIFT_OPTIMIZATION_LEVEL = "-O"; VALIDATE_PRODUCT = YES;'} }; name = ${name};`);
@@ -59,8 +70,10 @@ for (const name of ['Debug', 'Release']) {
 for (const target of ['project','app','tests','uitests']) {
   add(`configs:${target}`, `isa = XCConfigurationList; buildConfigurations = ${list(['Debug','Release'].map(name => id(`config:${target}:${name}`)))}; defaultConfigurationIsVisible = 0; defaultConfigurationName = Release;`);
 }
-add('project', `isa = PBXProject; attributes = { BuildIndependentTargetsInParallel = YES; LastUpgradeCheck = 2600; TargetAttributes = { ${id('target:app')} = { CreatedOnToolsVersion = 26.0; }; ${id('target:tests')} = { CreatedOnToolsVersion = 26.0; TestTargetID = ${id('target:app')}; }; ${id('target:uitests')} = { CreatedOnToolsVersion = 26.0; TestTargetID = ${id('target:app')}; }; }; }; buildConfigurationList = ${id('configs:project')}; compatibilityVersion = "Xcode 14.0"; developmentRegion = zh_CN; hasScannedForEncodings = 0; knownRegions = (en, Base, zh_CN); mainGroup = ${id('group:root')}; productRefGroup = ${id('group:products')}; projectDirPath = ""; projectRoot = ""; targets = ${list([id('target:app'),id('target:tests'),id('target:uitests')])};`);
-const project = `// !$*UTF8*$!\n{\n\tarchiveVersion = 1;\n\tclasses = {};\n\tobjectVersion = 56;\n\tobjects = {\n${objects.join('\n')}\n\t};\n\trootObject = ${id('project')};\n}\n`;
+add('project', `isa = PBXProject; attributes = { BuildIndependentTargetsInParallel = YES; LastUpgradeCheck = 2600; TargetAttributes = { ${id('target:app')} = { CreatedOnToolsVersion = 26.0; }; ${id('target:tests')} = { CreatedOnToolsVersion = 26.0; TestTargetID = ${id('target:app')}; }; ${id('target:uitests')} = { CreatedOnToolsVersion = 26.0; TestTargetID = ${id('target:app')}; }; }; }; buildConfigurationList = ${id('configs:project')}; compatibilityVersion = "Xcode 14.0"; developmentRegion = zh_CN; hasScannedForEncodings = 0; knownRegions = ${list(['en', 'Base', 'zh_CN'])}; mainGroup = ${id('group:root')}; productRefGroup = ${id('group:products')}; projectDirPath = ""; projectRoot = ""; targets = ${list([id('target:app'),id('target:tests'),id('target:uitests')])};`);
+// node-xcode uses these standard comments to expose PBXNativeTarget and other sections.
+const sections = [...objects].map(([name, entries]) => `/* Begin ${name} section */\n${entries.join('\n')}\n/* End ${name} section */`).join('\n');
+const project = `// !$*UTF8*$!\n{\n\tarchiveVersion = 1;\n\tclasses = {};\n\tobjectVersion = 56;\n\tobjects = {\n${sections}\n\t};\n\trootObject = ${id('project')};\n}\n`;
 const ref = (target, name) => `<BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="${id(`target:${target}`)}" BuildableName="${name}" BlueprintName="${{app:'THS',tests:'THSTests',uitests:'THSUITests'}[target]}" ReferencedContainer="container:THS.xcodeproj"/>`;
 const scheme = `<?xml version="1.0" encoding="UTF-8"?>
 <Scheme LastUpgradeVersion="2600" version="1.3">

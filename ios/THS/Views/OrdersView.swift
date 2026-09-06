@@ -269,7 +269,7 @@ private struct OrderDetailView: View {
         } catch {
             guard !Task.isCancelled, key == sessionKey, request == requestID else { return }
             order = nil
-            error = DisplayFormat.message(error)
+            self.error = DisplayFormat.message(error)
         }
     }
 }

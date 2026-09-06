@@ -157,19 +157,19 @@ struct StockDetailView: View {
 
     private func statisticsSection(_ quote: StockQuote) -> some View {
         Section("报价与统计 · USD") {
-            HStack(spacing: 12) {
+            MetricRow {
                 MetricCell(title: "买价 Bid", value: DisplayFormat.price(quote.bidPrice))
                 MetricCell(title: "卖价 Ask", value: DisplayFormat.price(quote.askPrice))
             }.padding(.vertical, 3)
-            HStack(spacing: 12) {
+            MetricRow {
                 MetricCell(title: "开盘", value: DisplayFormat.price(quote.openPrice))
                 MetricCell(title: "昨收", value: DisplayFormat.price(quote.closePrice))
             }.padding(.vertical, 3)
-            HStack(spacing: 12) {
+            MetricRow {
                 MetricCell(title: "最高", value: DisplayFormat.price(quote.highPrice))
                 MetricCell(title: "最低", value: DisplayFormat.price(quote.lowPrice))
             }.padding(.vertical, 3)
-            HStack(spacing: 12) {
+            MetricRow {
                 MetricCell(title: "52 周最高", value: DisplayFormat.price(quote.high52Week))
                 MetricCell(title: "52 周最低", value: DisplayFormat.price(quote.low52Week))
             }.padding(.vertical, 3)
@@ -182,11 +182,11 @@ struct StockDetailView: View {
 
     private func holdingSection(_ holding: Position) -> some View {
         Section("当前账户持仓") {
-            HStack(spacing: 12) {
+            MetricRow {
                 MetricCell(title: "持有股数", value: DisplayFormat.quantity(holding.quantity))
                 MetricCell(title: "平均成本", value: DisplayFormat.price(holding.averagePrice))
             }
-            HStack(spacing: 12) {
+            MetricRow {
                 MetricCell(title: "持仓市值", value: DisplayFormat.money(holding.marketValue))
                 MetricCell(title: "当日盈亏", value: DisplayFormat.signedMoney(holding.dayProfitLoss), color: DisplayFormat.changeColor(holding.dayProfitLoss))
             }

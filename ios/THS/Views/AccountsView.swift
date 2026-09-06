@@ -39,7 +39,7 @@ struct AccountsView: View {
                         .font(.system(.largeTitle, design: .rounded, weight: .semibold))
                         .monospacedDigit().lineLimit(1).minimumScaleFactor(0.55)
                         .accessibilityIdentifier("account.netValue")
-                    HStack(spacing: 16) {
+                    MetricRow {
                         MetricCell(title: "现金余额", value: DisplayFormat.money(account.cashBalance))
                         MetricCell(title: "购买力", value: DisplayFormat.money(account.buyingPower))
                     }

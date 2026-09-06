@@ -153,7 +153,7 @@ private struct TradeTicketView: View {
                         Spacer()
                         Text(DisplayFormat.price(quote.lastPrice)).font(.headline).monospacedDigit()
                     }
-                    HStack(spacing: 16) {
+                    MetricRow {
                         MetricCell(title: "买价 Bid", value: DisplayFormat.price(quote.bidPrice))
                         MetricCell(title: "卖价 Ask", value: DisplayFormat.price(quote.askPrice))
                         MetricCell(title: "涨跌幅", value: DisplayFormat.signedPercent(quote.netPercentChange), color: DisplayFormat.changeColor(quote.netPercentChange))

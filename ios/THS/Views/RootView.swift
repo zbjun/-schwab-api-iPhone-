@@ -206,6 +206,20 @@ struct AccountSelector: View {
     }
 }
 
+struct MetricRow<Content: View>: View {
+    @Environment(\.dynamicTypeSize) private var typeSize
+    private let content: Content
+
+    init(@ViewBuilder content: () -> Content) { self.content = content() }
+
+    var body: some View {
+        let layout = typeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 14))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: 16))
+        layout { content }
+    }
+}
+
 struct MetricCell: View {
     let title: String
     let value: String

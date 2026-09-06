@@ -107,6 +107,7 @@ enum DemoData {
             throw TradingWorkflowError.message("当前代码没有演示走势图。")
         }
         let dates = historyDates(range: range, endingAt: end)
+        let usesMinuteBars = range.isIntraday || range.minuteInterval != nil
         let rising = (quote.netChange ?? 0) >= 0
         let startingPrice = range == .intraday ? (quote.openPrice ?? price) : price * (rising ? 0.8 : 1.16)
         var previous = startingPrice
@@ -114,16 +115,19 @@ enum DemoData {
             let progress = Double(index) / Double(dates.count - 1)
             let trend = startingPrice + (price - startingPrice) * progress
             let wave = sin(Double(index) * 0.22) * 0.65 + sin(Double(index) * 0.057) * 0.35
-            let amplitude = range.isIntraday ? 0.007 : 0.08
+            let amplitude = usesMinuteBars ? 0.007 : 0.08
             let close = index == dates.count - 1 ? price : trend + price * wave * amplitude * sin(.pi * progress)
-            let open = range.isIntraday ? previous : previous * (1 + sin(Double(index) * 1.7) * 0.009)
-            let wick = range.isIntraday ? 0.0005 : 0.003 + abs(sin(Double(index) * 0.8)) * 0.018
+            let open = usesMinuteBars ? previous : previous * (1 + sin(Double(index) * 1.7) * 0.009)
+            let wick = usesMinuteBars ? 0.0005 : 0.003 + abs(sin(Double(index) * 0.8)) * 0.018
             previous = close
             return PriceCandle(time: date, open: open,
                 high: max(open, close) * (1 + wick), low: min(open, close) * (1 - wick), close: close,
-                volume: Double(100_000 + (index * 7_919) % 300_000) * (range.isIntraday ? 1 : 100))
+                volume: Double(100_000 + (index * 7_919) % 300_000) * (usesMinuteBars ? 1 : 100))
         }
-        return PriceHistory(symbol: symbol, candles: candles, previousClose: quote.closePrice)
+        let displayedCandles = range.minuteInterval.map {
+            ChartAnalytics.minuteCandles(candles, interval: $0, asOf: end)
+        } ?? candles
+        return PriceHistory(symbol: symbol, candles: displayedCandles, previousClose: quote.closePrice)
     }
 
     private static func historyDates(range: HistoryRange, endingAt end: Date) -> [Date] {
@@ -135,8 +139,8 @@ enum DemoData {
         while [1, 7].contains(calendar.component(.weekday, from: lastDay)) {
             lastDay = calendar.date(byAdding: .day, value: -1, to: lastDay)!
         }
-        if range.isIntraday || range == .daily {
-            let sessionCount = range == .fiveDay ? 5 : (range == .daily ? 120 : 1)
+        if range.isIntraday || range == .daily || range.minuteInterval != nil {
+            let sessionCount = range.minuteInterval != nil ? 10 : (range == .fiveDay ? 5 : (range == .daily ? 120 : 1))
             var days: [Date] = []
             var candidate = lastDay
             while days.count < sessionCount {

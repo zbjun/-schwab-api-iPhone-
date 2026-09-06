@@ -14,7 +14,7 @@ struct StockDetailView: View {
     @State private var historyRequestID = UUID()
     @State private var historyCache: [HistoryRange: PriceHistory] = [:]
     @State private var cachedSession = ""
-    @State private var editorSide: OrderSide?
+    @State private var editorAction: InlineTradeAction?
     @State private var showsMetricNotes = false
     @State private var fundamentals: StockFundamentals?
     @State private var metricRequestID = UUID()
@@ -36,13 +36,20 @@ struct StockDetailView: View {
     var body: some View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
-                if let side = editorSide {
+                if let action = editorAction {
                     quoteSummary(compact: true).frame(height: 72)
                     chartSection(height: min(320, max(180, (geometry.size.height - 72) * 0.44)))
                     Rectangle().fill(MarketTheme.separator).frame(height: 1)
-                    InlineTradePanel(symbol: symbol, initialSide: side, quote: quote) { editorSide = nil }
-                        .id("\(symbol)|\(side.rawValue)")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    Group {
+                        if action == .cancel {
+                            InlineCancelPanel(symbol: symbol, onAction: { editorAction = $0 }, onClose: { editorAction = nil })
+                        } else {
+                            InlineTradePanel(symbol: symbol, initialSide: action == .buy ? .buy : .sell, quote: quote,
+                                             onCancel: { editorAction = .cancel }, onClose: { editorAction = nil })
+                        }
+                    }
+                    .id("\(symbol)|\(action.rawValue)")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ScrollView {
                         VStack(spacing: 0) {
@@ -77,7 +84,7 @@ struct StockDetailView: View {
                     Label(store.watchlist.contains(symbol) ? "移除自选" : "加入自选",
                           systemImage: store.watchlist.contains(symbol) ? "star.fill" : "star")
                 }
-                .foregroundStyle(store.watchlist.contains(symbol) ? MarketTheme.average : .white)
+                .foregroundStyle(store.watchlist.contains(symbol) ? MarketTheme.average : MarketTheme.primary)
                 .disabled(store.isBusy || store.isSubmittingOrder).accessibilityIdentifier("detail.watchlist")
                 Button { Task { await refreshDetail() } } label: { Label("刷新", systemImage: "arrow.clockwise") }
                     .disabled(isLoadingQuote || isLoadingHistory || store.isSubmittingOrder)
@@ -87,11 +94,11 @@ struct StockDetailView: View {
         .toolbar(.hidden, for: .tabBar)
         .toolbarBackground(MarketTheme.background, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
-        .preferredColorScheme(.dark).tint(.white)
+        .tint(MarketTheme.primary)
         .task(id: sessionKey) { await loadQuote() }
         .task(id: sessionKey) { await loadMetrics() }
         .task(id: historyKey) { await loadHistory() }
-        .onChange(of: sessionKey) { _, _ in editorSide = nil }
+        .onChange(of: sessionKey) { _, _ in editorAction = nil }
     }
 
     private func quoteSummary(compact: Bool) -> some View {
@@ -180,7 +187,7 @@ struct StockDetailView: View {
         HStack(spacing: 5) {
             Text(title).foregroundStyle(MarketTheme.secondary)
             Spacer(minLength: 0)
-            Text(value).foregroundStyle(.white).monospacedDigit().lineLimit(1).minimumScaleFactor(0.65)
+            Text(value).foregroundStyle(MarketTheme.primary).monospacedDigit().lineLimit(1).minimumScaleFactor(0.65)
         }
         .font(.system(size: 11)).frame(maxWidth: .infinity)
         .accessibilityElement(children: .combine)
@@ -189,7 +196,7 @@ struct StockDetailView: View {
     private func chartSection(height: CGFloat) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
-                ForEach(HistoryRange.allCases, id: \.self) { item in
+                ForEach(HistoryRange.primaryCases, id: \.self) { item in
                     Button {
                         range = item
                     } label: {
@@ -198,10 +205,32 @@ struct StockDetailView: View {
                             Capsule().fill(range == item ? MarketTheme.rise : .clear).frame(width: 18, height: 3)
                         }.frame(maxWidth: .infinity).padding(.top, 9)
                     }
-                    .buttonStyle(.plain).foregroundStyle(range == item ? .white : MarketTheme.secondary)
+                    .buttonStyle(.plain).foregroundStyle(range == item ? MarketTheme.primary : MarketTheme.secondary)
                     .disabled(store.isSubmittingOrder).accessibilityIdentifier("history.\(item.rawValue)")
                     .accessibilityAddTraits(range == item ? .isSelected : [])
                 }
+                Menu {
+                    ForEach(HistoryRange.minuteCases, id: \.self) { item in
+                        Button { range = item } label: {
+                            if range == item { Label(item.title, systemImage: "checkmark") }
+                            else { Text(item.title) }
+                        }
+                        .accessibilityIdentifier("history.\(item.rawValue)")
+                    }
+                } label: {
+                    VStack(spacing: 6) {
+                        HStack(spacing: 2) {
+                            Text(range.minuteInterval.map { "\($0)分" } ?? "更多")
+                                .font(.system(size: 14, weight: range.minuteInterval == nil ? .regular : .semibold))
+                            Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
+                        }
+                        Capsule().fill(range.minuteInterval != nil ? MarketTheme.rise : .clear).frame(width: 18, height: 3)
+                    }.frame(maxWidth: .infinity).padding(.top, 9)
+                }
+                .foregroundStyle(range.minuteInterval != nil ? MarketTheme.primary : MarketTheme.secondary)
+                .disabled(store.isSubmittingOrder).accessibilityIdentifier("history.more")
+                .accessibilityLabel("更多K线周期")
+                .accessibilityValue(range.minuteInterval.map { "\($0)分钟" } ?? "未选择分钟周期")
             }.frame(height: 38)
             Group {
                 if let history, !history.candles.isEmpty {
@@ -269,18 +298,27 @@ struct StockDetailView: View {
 
     private var tradeBar: some View {
         HStack(spacing: 12) {
-            Button { editorSide = .buy } label: {
-                Text("买入").font(.headline).frame(maxWidth: .infinity).frame(height: 43)
+            Button { editorAction = .buy } label: {
+                Text("买").font(.headline).frame(maxWidth: .infinity).frame(height: 43)
                     .background(MarketTheme.rise, in: RoundedRectangle(cornerRadius: 8))
-            }.buttonStyle(.plain).accessibilityIdentifier("detail.buy")
-            Button { editorSide = .sell } label: {
-                Text("卖出").font(.headline).frame(maxWidth: .infinity).frame(height: 43)
+            }.buttonStyle(.plain).disabled(!canTrade)
+                .accessibilityLabel("买入").accessibilityIdentifier("detail.buy")
+            Button { editorAction = .sell } label: {
+                Text("卖").font(.headline).frame(maxWidth: .infinity).frame(height: 43)
                     .background(MarketTheme.ma30.opacity(0.85), in: RoundedRectangle(cornerRadius: 8))
             }
-            .buttonStyle(.plain).disabled((holding?.quantity ?? 0) < 1).accessibilityIdentifier("detail.sell")
+            .buttonStyle(.plain).disabled(!canTrade || (holding?.quantity ?? 0) < 1)
+            .accessibilityLabel("卖出").accessibilityIdentifier("detail.sell")
+            Button { editorAction = .cancel } label: {
+                Text("撤").font(.headline).foregroundStyle(MarketTheme.primary)
+                    .frame(maxWidth: .infinity).frame(height: 43)
+                    .background(MarketTheme.elevated, in: RoundedRectangle(cornerRadius: 8))
+            }
+            .buttonStyle(.plain).disabled((!store.isDemo && !store.isAuthenticated) || store.selectedAccount == nil)
+            .accessibilityLabel("撤单").accessibilityIdentifier("detail.cancel")
         }
         .foregroundStyle(.white)
-        .disabled(!canTrade || store.isBusy || store.isSubmittingOrder)
+        .disabled(store.isBusy || store.isSubmittingOrder)
         .padding(.horizontal, 16).padding(.vertical, 10)
         .background(MarketTheme.surface)
         .overlay(alignment: .top) { Rectangle().fill(MarketTheme.separator).frame(height: 1) }

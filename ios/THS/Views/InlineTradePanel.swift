@@ -1,10 +1,23 @@
 import SwiftUI
 
+enum InlineTradeAction: String, CaseIterable {
+    case buy, sell, cancel
+
+    var title: String {
+        switch self {
+        case .buy: return "买"
+        case .sell: return "卖"
+        case .cancel: return "撤"
+        }
+    }
+}
+
 struct InlineTradePanel: View {
     @Environment(AppStore.self) private var store
     let symbol: String
     let initialSide: OrderSide
     let quote: StockQuote?
+    let onCancel: () -> Void
     let onClose: () -> Void
     @State private var side: OrderSide = .buy
     @State private var kind: OrderKind = .limit
@@ -22,7 +35,7 @@ struct InlineTradePanel: View {
     private enum Field: Hashable { case price, stop, quantity, amount }
 
     private var locked: Bool { store.isBusy || store.isSubmittingOrder }
-    private var color: Color { side == .buy ? .red : .green }
+    private var color: Color { side == .buy ? MarketTheme.rise : MarketTheme.ma30 }
     private var needsLimit: Bool { kind == .limit || kind == .stopLimit }
     private var needsStop: Bool { kind == .stop || kind == .stopLimit }
     private var chosenPrice: Decimal? {
@@ -95,7 +108,7 @@ struct InlineTradePanel: View {
             .accessibilityIdentifier(review == nil ? "inline.review" : "inline.confirm")
             .padding(.horizontal, 12).padding(.bottom, 6)
         }
-        .background(Color(red: 0.075, green: 0.08, blue: 0.095))
+        .background(MarketTheme.surface)
         .accessibilityElement(children: .contain).accessibilityIdentifier("detail.tradePanel")
         .task(id: context) {
             if !initialized {
@@ -141,9 +154,17 @@ struct InlineTradePanel: View {
     private var editor: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 10) {
-                Picker("方向", selection: $side) {
-                    Text("买入").tag(OrderSide.buy)
-                    Text("卖出").tag(OrderSide.sell)
+                Picker("买卖撤", selection: Binding(
+                    get: { side == .buy ? InlineTradeAction.buy : .sell },
+                    set: { action in
+                        if action == .cancel {
+                            input = nil
+                            store.clearTradePreparation()
+                            onCancel()
+                        } else { side = action == .buy ? .buy : .sell }
+                    }
+                )) {
+                    ForEach(InlineTradeAction.allCases, id: \.self) { Text($0.title).tag($0) }
                 }.pickerStyle(.segmented).accessibilityIdentifier("inline.side")
                 Picker("类型", selection: $kind) {
                     ForEach([OrderKind.market, .limit, .stop, .stopLimit], id: \.self) { Text($0.title).tag($0) }
@@ -163,7 +184,7 @@ struct InlineTradePanel: View {
                     TextField(amountMode ? "输入金额" : "整股数量", text: amountMode ? $amount : $quantity)
                         .keyboardType(amountMode ? .decimalPad : .numberPad).focused($input, equals: amountMode ? .amount : .quantity)
                         .font(.headline).monospacedDigit().padding(.horizontal, 10).frame(height: 34)
-                        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 5))
+                        .background(MarketTheme.elevated, in: RoundedRectangle(cornerRadius: 5))
                         .accessibilityIdentifier(amountMode ? "inline.amount" : "inline.quantity")
                 }.frame(maxWidth: .infinity).id(amountMode ? Field.amount : Field.quantity)
             }
@@ -200,7 +221,7 @@ struct InlineTradePanel: View {
             Text(title).font(.caption).foregroundStyle(.secondary)
             TextField("输入价格", text: text).keyboardType(.decimalPad).focused($input, equals: field)
                 .font(.headline).monospacedDigit().padding(.horizontal, 10).frame(height: 34)
-                .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 5))
+                .background(MarketTheme.elevated, in: RoundedRectangle(cornerRadius: 5))
                 .accessibilityIdentifier(id)
         }.frame(maxWidth: .infinity).id(field)
     }

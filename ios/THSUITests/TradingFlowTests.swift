@@ -3,11 +3,14 @@ import XCTest
 @MainActor
 final class TradingFlowTests: XCTestCase {
     private var app: XCUIApplication!
+    private var originalAppearance = XCUIDevice.Appearance.unspecified
 
     override func setUp() {
         super.setUp()
         continueAfterFailure = false
         executionTimeAllowance = 240
+        originalAppearance = XCUIDevice.shared.appearance
+        XCUIDevice.shared.appearance = .light
         app = XCUIApplication()
     }
 
@@ -19,6 +22,7 @@ final class TradingFlowTests: XCTestCase {
             hierarchy.lifetime = .keepAlways
             add(hierarchy)
         }
+        XCUIDevice.shared.appearance = originalAppearance
         super.tearDown()
     }
 
@@ -194,6 +198,99 @@ final class TradingFlowTests: XCTestCase {
         XCTAssertTrue(element("order.row.910002").exists)
     }
 
+    func testMarketScreensFollowSystemAppearanceWhileOpen() {
+        launch(tab: "watchlist")
+        XCTAssertTrue(element("watchlist.symbol.AAPL").waitForExistence(timeout: 5))
+        XCUIDevice.shared.appearance = .dark
+        XCTAssertEqual(XCUIDevice.shared.appearance, .dark)
+        XCTAssertTrue(element("watchlist.symbol.AAPL").isHittable)
+        capture("19-watchlist-dark")
+        element("watchlist.symbol.AAPL").tap()
+        element("history.daily").tap()
+        XCTAssertTrue(element("chart.movingAverages").waitForExistence(timeout: 5))
+        capture("20-detail-dark")
+        XCUIDevice.shared.appearance = .light
+        XCTAssertEqual(XCUIDevice.shared.appearance, .light)
+        XCTAssertTrue(element("chart.movingAverages").exists)
+        XCTAssertTrue(element("detail.buy").isHittable)
+        capture("21-detail-light")
+    }
+
+    func testMoreMenuSelectsAllSixMinuteCandlesWithMovingAverages() {
+        executionTimeAllowance = 420
+        launch(tab: "watchlist")
+        element("watchlist.symbol.AAPL").tap()
+        XCTAssertTrue(element("history.more").waitForExistence(timeout: 5))
+        for (minute, screenshot) in [(1, "23-minute-1"), (5, "24-minute-5"), (15, "25-minute-15"),
+                                     (30, "26-minute-30"), (60, "27-minute-60"), (120, "28-minute-120")] {
+            element("history.more").tap()
+            let choice = app.buttons["history.minute\(minute)"]
+            XCTAssertTrue(choice.waitForExistence(timeout: 5))
+            if minute == 1 { capture("22-minute-menu") }
+            choice.tap()
+            XCTAssertEqual(element("history.more").value as? String, "\(minute)分钟")
+            let averages = element("chart.movingAverages")
+            XCTAssertTrue(averages.waitForExistence(timeout: 5))
+            for period in [5, 10, 20, 30] { XCTAssertTrue(averages.label.contains("MA\(period)")) }
+            XCTAssertFalse(averages.label.contains("—"))
+            XCTAssertFalse(element("chart.average").exists)
+            XCTAssertTrue(element("chart.window").label.contains("最近"))
+            XCTAssertTrue(element("detail.chart.volume").exists)
+            capture(screenshot)
+        }
+        element("history.intraday").tap()
+        XCTAssertTrue(element("chart.average").waitForExistence(timeout: 5))
+        XCTAssertEqual(element("history.more").value as? String, "未选择分钟周期")
+    }
+
+    func testInlineCancelFiltersSymbolAndConfirmsOneOrderBelowChart() {
+        executionTimeAllowance = 420
+        launch(tab: "watchlist")
+        element("watchlist.symbol.SPY").tap()
+        element("detail.cancel").tap()
+        XCTAssertTrue(element("inline.cancel.empty").waitForExistence(timeout: 5))
+        XCTAssertFalse(element("inline.cancel.order.910001").exists)
+        element("inline.close").tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+
+        element("watchlist.symbol.AAPL").tap()
+        element("history.daily").tap()
+        element("detail.buy").tap()
+        let actions = app.segmentedControls["inline.side"]
+        XCTAssertTrue(actions.waitForExistence(timeout: 5))
+        XCTAssertTrue(actions.buttons["买"].exists)
+        XCTAssertTrue(actions.buttons["卖"].exists)
+        actions.buttons["撤"].tap()
+        let pendingOrder = element("inline.cancel.order.910001")
+        XCTAssertTrue(pendingOrder.waitForExistence(timeout: 5))
+        XCTAssertFalse(element("inline.cancel.order.910002").exists)
+        assertChartAboveTradePanel()
+        capture("29-inline-cancel-orders")
+        pendingOrder.tap()
+        XCTAssertTrue(element("inline.cancel.review").waitForExistence(timeout: 5))
+        element("inline.cancel.back").tap()
+        XCTAssertTrue(pendingOrder.exists)
+        pendingOrder.tap()
+        XCTAssertTrue(element("inline.cancel.review").waitForExistence(timeout: 5))
+        XCTAssertEqual(element("inline.cancel.confirm").label, "确认模拟撤单")
+        XCTAssertFalse(app.sheets.firstMatch.exists)
+        assertChartAboveTradePanel()
+        capture("30-inline-cancel-review")
+        element("inline.cancel.confirm").tap()
+        waitForLabel("inline.cancel.notice", containing: "演示订单已撤销")
+        XCTAssertFalse(pendingOrder.exists)
+        XCTAssertTrue(element("inline.cancel.empty").exists)
+        assertChartAboveTradePanel()
+        capture("31-inline-cancel-result")
+        element("inline.close").tap()
+        XCTAssertTrue(element("detail.cancel").isEnabled)
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.tabBars.buttons["订单"].tap()
+        let canceled = element("order.row.910001")
+        XCTAssertTrue(canceled.waitForExistence(timeout: 5))
+        XCTAssertTrue(canceled.label.contains("已撤销"))
+    }
+
     private func launch(tab: String? = nil) {
         app.launchArguments = ["--uitesting-demo", "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
         if let tab { app.launchArguments += ["--snapshot-tab", tab] }
@@ -208,7 +305,8 @@ final class TradingFlowTests: XCTestCase {
             return app.textFields[identifier]
         }
         if identifier.hasPrefix("history.") || identifier.hasPrefix("order.row.") || identifier.hasPrefix("watchlist.symbol.") ||
-            ["detail.buy", "detail.sell", "watchlist.lookup", "trade.review", "order.review.confirm", "order.cancel", "order.modify"].contains(identifier) {
+            identifier.hasPrefix("inline.cancel.order.") ||
+            ["detail.buy", "detail.sell", "detail.cancel", "watchlist.lookup", "trade.review", "order.review.confirm", "order.cancel", "order.modify"].contains(identifier) {
             return app.buttons[identifier]
         }
         return app.descendants(matching: .any).matching(identifier: identifier).firstMatch

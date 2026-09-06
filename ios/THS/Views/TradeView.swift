@@ -16,7 +16,6 @@ struct TradeView: View {
             .navigationBarTitleDisplayMode(.inline)
             .accessibilityIdentifier("screen.trade")
         }
-        .preferredColorScheme(.dark)
     }
 }
 

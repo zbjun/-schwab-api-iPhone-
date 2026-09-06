@@ -491,7 +491,10 @@ final class SchwabTradingTests: XCTestCase {
         let requests = await transport.recorded()
         let expected = [["day", "1", "minute", "1"], ["year", "1", "daily", "1"],
                         ["year", "2", "weekly", "1"], ["year", "5", "monthly", "1"],
-                        ["day", "5", "minute", "5"]]
+                        ["day", "5", "minute", "5"], ["day", "10", "minute", "1"],
+                        ["day", "10", "minute", "5"], ["day", "10", "minute", "15"],
+                        ["day", "10", "minute", "30"], ["day", "", "minute", "1"],
+                        ["day", "", "minute", "1"]]
         XCTAssertEqual(requests.count, expected.count + 1)
         for (index, request) in requests.dropFirst().enumerated() {
             XCTAssertEqual(request.httpMethod, "GET")
@@ -503,19 +506,114 @@ final class SchwabTradingTests: XCTestCase {
             XCTAssertEqual(values["symbol"], "AAPL")
             XCTAssertEqual(values["needExtendedHoursData"], "false")
             XCTAssertEqual(values["needPreviousClose"], "true")
-            XCTAssertNil(values["startDate"])
+            if HistoryRange.allCases[index] == .minute60 || HistoryRange.allCases[index] == .minute120 {
+                XCTAssertNil(values["period"])
+                XCTAssertEqual(values["startDate"], "1797408000000")
+                let start = try XCTUnwrap(Int64(try XCTUnwrap(values["startDate"])))
+                let end = try XCTUnwrap(Int64(try XCTUnwrap(values["endDate"])))
+                XCTAssertEqual(end - start, 30 * 24 * 60 * 60 * 1_000)
+            } else { XCTAssertNil(values["startDate"]) }
             XCTAssertNoThrow(try DirectSchwabTransport.validateRequest(request))
             var invalid = request
             var badComponents = components
             badComponents.queryItems?.append(URLQueryItem(name: "symbol", value: "MSFT"))
             invalid.url = badComponents.url
             XCTAssertThrowsError(try DirectSchwabTransport.validateRequest(invalid))
-            badComponents = components
-            badComponents.queryItems?.removeAll { $0.name == "frequency" }
-            badComponents.queryItems?.append(URLQueryItem(name: "frequency", value: "60"))
-            invalid.url = badComponents.url
+            for unsupportedFrequency in ["60", "120"] {
+                badComponents = components
+                badComponents.queryItems?.removeAll { $0.name == "frequency" }
+                badComponents.queryItems?.append(URLQueryItem(name: "frequency", value: unsupportedFrequency))
+                invalid.url = badComponents.url
+                XCTAssertThrowsError(try DirectSchwabTransport.validateRequest(invalid))
+            }
+        }
+    }
+
+    func testLongMinuteHistoryAggregatesOneMinuteReadAndPreservesMetadata() async throws {
+        let start = try XCTUnwrap(ISO8601DateFormatter().date(from: "2027-01-14T14:30:00Z"))
+        let candles: [[String: Any]] = (0..<390).map { index in
+            ["datetime": Int64(start.addingTimeInterval(Double(index) * 60).timeIntervalSince1970 * 1_000),
+             "open": 10, "high": 12, "low": 9, "close": 11, "volume": 100]
+        }
+        let payload: [String: Any] = ["symbol": "AAPL", "empty": false, "previousClose": 9.5, "candles": candles]
+        let body = String(decoding: try JSONSerialization.data(withJSONObject: payload), as: UTF8.self)
+        let transport = TradingTransport([.response(200, tradingToken), .response(200, body), .response(200, body)])
+        let client = try await authorizedClient(transport)
+        for range in [HistoryRange.minute60, .minute120] {
+            let response = try await client.fetchPriceHistory(symbol: "AAPL", range: range)
+            XCTAssertEqual(response.value.symbol, "AAPL")
+            XCTAssertEqual(response.value.previousClose, 9.5)
+            XCTAssertEqual(response.elapsedMilliseconds, 42)
+            XCTAssertEqual(response.value.candles.count, range == .minute60 ? 7 : 4)
+            XCTAssertEqual(response.value.candles.first?.time, start)
+            XCTAssertEqual(response.value.candles.last?.time, start.addingTimeInterval(360 * 60))
+            XCTAssertEqual(response.value.candles.last?.volume, 3_000)
+        }
+        let requests = await transport.recorded()
+        XCTAssertEqual(requests.count, 3)
+        for request in requests.dropFirst() {
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.url?.path, "/marketdata/v1/pricehistory")
+            XCTAssertNil(request.httpBody)
+            let items = try XCTUnwrap(URLComponents(url: XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?.queryItems)
+            XCTAssertEqual(items.first { $0.name == "frequency" }?.value, "1")
+            XCTAssertNoThrow(try DirectSchwabTransport.validateRequest(request))
+        }
+    }
+
+    func testMinuteHistoryWindowAllowsOnlyOrderedIntegerDatesWithinThirtyDays() throws {
+        func boundedRequest(start: String = "1797408000000", end: String = "1800000000000") throws -> URLRequest {
+            var components = try XCTUnwrap(URLComponents(string: "https://api.schwabapi.com/marketdata/v1/pricehistory"))
+            components.queryItems = [URLQueryItem(name: "symbol", value: "AAPL"),
+                URLQueryItem(name: "periodType", value: "day"), URLQueryItem(name: "frequencyType", value: "minute"),
+                URLQueryItem(name: "frequency", value: "1"), URLQueryItem(name: "startDate", value: start),
+                URLQueryItem(name: "endDate", value: end), URLQueryItem(name: "needExtendedHoursData", value: "false"),
+                URLQueryItem(name: "needPreviousClose", value: "true")]
+            return try request(XCTUnwrap(components.url).absoluteString)
+        }
+        let valid = try boundedRequest()
+        XCTAssertNoThrow(try DirectSchwabTransport.validateRequest(valid))
+        XCTAssertNoThrow(try DirectSchwabTransport.validateRequest(boundedRequest(start: "0", end: "2592000000")))
+        XCTAssertNoThrow(try DirectSchwabTransport.validateRequest(boundedRequest(start: "1799999999999")))
+        for bad in ["", "-1", "+1", "1.5", "NaN", "1e12", "1800000000000\n", "9223372036854775808"] {
+            XCTAssertThrowsError(try DirectSchwabTransport.validateRequest(boundedRequest(start: bad)))
+            XCTAssertThrowsError(try DirectSchwabTransport.validateRequest(boundedRequest(end: bad)))
+        }
+        for start in ["1800000000000", "1800000000001", "1797407999999"] {
+            XCTAssertThrowsError(try DirectSchwabTransport.validateRequest(boundedRequest(start: start)))
+        }
+        XCTAssertThrowsError(try DirectSchwabTransport.validateRequest(boundedRequest(start: "32503679999999", end: "32503680000000")))
+        let components = try XCTUnwrap(URLComponents(url: XCTUnwrap(valid.url), resolvingAgainstBaseURL: false))
+        for addition in [URLQueryItem(name: "period", value: "10"), URLQueryItem(name: "startDate", value: "1797408000000"),
+                         URLQueryItem(name: "endDate", value: "1800000000000"), URLQueryItem(name: "symbol", value: "AAPL"),
+                         URLQueryItem(name: "extra", value: "1")] {
+            var changed = components
+            changed.queryItems?.append(addition)
+            var invalid = valid
+            invalid.url = changed.url
             XCTAssertThrowsError(try DirectSchwabTransport.validateRequest(invalid))
         }
+        for (name, value) in [("periodType", "month"), ("frequencyType", "daily"), ("frequency", "5"),
+                              ("frequency", "60"), ("needExtendedHoursData", "true")] {
+            var changed = components
+            changed.queryItems?.removeAll { $0.name == name }
+            changed.queryItems?.append(URLQueryItem(name: name, value: value))
+            var invalid = valid
+            invalid.url = changed.url
+            XCTAssertThrowsError(try DirectSchwabTransport.validateRequest(invalid))
+        }
+    }
+
+    func testLongMinuteHistoryRejectsUnrepresentableWindowsBeforeNetworking() async throws {
+        let transport = TradingTransport([])
+        for timestamp in [0.0, 30 * 86_400 - 0.001, -1, Double.nan, Double.infinity, 32_503_680_000] {
+            let client = SchwabClient(store: TradingVault(), transport: transport, now: { Date(timeIntervalSince1970: timestamp) })
+            for range in [HistoryRange.minute60, .minute120] {
+                try await assertError(.invalidDateRange) { _ = try await client.fetchPriceHistory(symbol: "AAPL", range: range) }
+            }
+        }
+        let requests = await transport.recorded()
+        XCTAssertTrue(requests.isEmpty)
     }
 
     func testQuoteDetailFieldsPreserveOptionalValuesAndBrokerSecurityStatus() throws {

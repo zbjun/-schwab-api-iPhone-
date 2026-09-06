@@ -220,6 +220,8 @@ private enum SchwabRequestPolicy {
         return validDateRange(from: from, to: to)
     }
 
+    private static let minuteHistoryWindowMilliseconds: Int64 = 30 * 24 * 60 * 60 * 1_000
+
     static func historyQuery(symbol: String, range: HistoryRange, end: Date) throws -> [URLQueryItem] {
         guard OrderDraft.isValidSymbol(symbol) else { throw SchwabClientError.invalidSymbols }
         let milliseconds = end.timeIntervalSince1970 * 1_000
@@ -227,7 +229,7 @@ private enum SchwabRequestPolicy {
             throw SchwabClientError.invalidDateRange
         }
         let periodType: String
-        let period: String
+        let period: String?
         let frequencyType: String
         let frequency: String
         switch range {
@@ -236,28 +238,49 @@ private enum SchwabRequestPolicy {
         case .weekly: (periodType, period, frequencyType, frequency) = ("year", "2", "weekly", "1")
         case .monthly: (periodType, period, frequencyType, frequency) = ("year", "5", "monthly", "1")
         case .fiveDay: (periodType, period, frequencyType, frequency) = ("day", "5", "minute", "5")
+        case .minute1: (periodType, period, frequencyType, frequency) = ("day", "10", "minute", "1")
+        case .minute60, .minute120: (periodType, period, frequencyType, frequency) = ("day", nil, "minute", "1")
+        case .minute5: (periodType, period, frequencyType, frequency) = ("day", "10", "minute", "5")
+        case .minute15: (periodType, period, frequencyType, frequency) = ("day", "10", "minute", "15")
+        case .minute30: (periodType, period, frequencyType, frequency) = ("day", "10", "minute", "30")
         }
-        return [URLQueryItem(name: "symbol", value: symbol),
-                URLQueryItem(name: "periodType", value: periodType), URLQueryItem(name: "period", value: period),
-                URLQueryItem(name: "frequencyType", value: frequencyType), URLQueryItem(name: "frequency", value: frequency),
-                URLQueryItem(name: "endDate", value: String(Int64(milliseconds))),
-                URLQueryItem(name: "needExtendedHoursData", value: "false"),
-                URLQueryItem(name: "needPreviousClose", value: "true")]
+        let endMilliseconds = Int64(milliseconds)
+        var items = [URLQueryItem(name: "symbol", value: symbol), URLQueryItem(name: "periodType", value: periodType),
+                     URLQueryItem(name: "frequencyType", value: frequencyType), URLQueryItem(name: "frequency", value: frequency),
+                     URLQueryItem(name: "endDate", value: String(endMilliseconds)),
+                     URLQueryItem(name: "needExtendedHoursData", value: "false"),
+                     URLQueryItem(name: "needPreviousClose", value: "true")]
+        if let period {
+            items.append(URLQueryItem(name: "period", value: period))
+        } else {
+            guard endMilliseconds >= minuteHistoryWindowMilliseconds else { throw SchwabClientError.invalidDateRange }
+            items.append(URLQueryItem(name: "startDate", value: String(endMilliseconds - minuteHistoryWindowMilliseconds)))
+        }
+        return items
     }
 
     static func validHistoryQuery(_ items: [URLQueryItem]) -> Bool {
-        let names: Set<String> = ["symbol", "periodType", "period", "frequencyType", "frequency", "endDate",
-                                  "needExtendedHoursData", "needPreviousClose"]
+        let boundedMinutes = items.contains { $0.name == "startDate" }
+        let names: Set<String> = ["symbol", "periodType", boundedMinutes ? "startDate" : "period",
+                                  "frequencyType", "frequency", "endDate", "needExtendedHoursData", "needPreviousClose"]
         guard items.count == names.count, Set(items.map(\.name)) == names else { return false }
         let values = Dictionary(uniqueKeysWithValues: items.map { ($0.name, $0.value ?? "") })
         guard let symbol = values["symbol"], OrderDraft.isValidSymbol(symbol),
               values["needExtendedHoursData"] == "false", values["needPreviousClose"] == "true",
               let endRaw = values["endDate"], endRaw.range(of: "\\A[0-9]+\\z", options: .regularExpression) != nil,
               let end = Int64(endRaw), end >= 0, end < 32_503_680_000_000 else { return false }
+        if boundedMinutes {
+            guard values["periodType"] == "day", values["frequencyType"] == "minute", values["frequency"] == "1",
+                  let startRaw = values["startDate"], startRaw.range(of: "\\A[0-9]+\\z", options: .regularExpression) != nil,
+                  let start = Int64(startRaw), start >= 0, start < end else { return false }
+            return end - start <= minuteHistoryWindowMilliseconds
+        }
         let combination = [values["periodType"], values["period"], values["frequencyType"], values["frequency"]]
         return combination == ["day", "1", "minute", "1"] || combination == ["day", "5", "minute", "5"]
             || combination == ["year", "1", "daily", "1"] || combination == ["year", "2", "weekly", "1"]
             || combination == ["year", "5", "monthly", "1"]
+            || combination == ["day", "10", "minute", "1"] || combination == ["day", "10", "minute", "5"]
+            || combination == ["day", "10", "minute", "15"] || combination == ["day", "10", "minute", "30"]
     }
 }
 
@@ -465,10 +488,17 @@ actor SchwabClient {
 
     func fetchPriceHistory(symbol: String, range: HistoryRange) async throws -> APIResponse<PriceHistory> {
         let symbol = symbol.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        let query = try SchwabRequestPolicy.historyQuery(symbol: symbol, range: range, end: now())
+        let end = now()
+        let query = try SchwabRequestPolicy.historyQuery(symbol: symbol, range: range, end: end)
         let response = try await read(path: "/marketdata/v1/pricehistory", query: query)
-        return APIResponse(value: try Self.decodePriceHistory(response.data, symbol: symbol),
-                           elapsedMilliseconds: response.elapsedMilliseconds)
+        let history = try Self.decodePriceHistory(response.data, symbol: symbol)
+        if let interval = range.minuteInterval, interval > 30 {
+            let candles = ChartAnalytics.minuteCandles(history.candles, interval: interval, asOf: end)
+            return APIResponse(value: PriceHistory(symbol: history.symbol, candles: candles,
+                                                  previousClose: history.previousClose),
+                               elapsedMilliseconds: response.elapsedMilliseconds)
+        }
+        return APIResponse(value: history, elapsedMilliseconds: response.elapsedMilliseconds)
     }
 
     func disconnect() async throws {

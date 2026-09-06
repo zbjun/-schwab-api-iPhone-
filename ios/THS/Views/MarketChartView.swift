@@ -5,6 +5,7 @@ struct MarketChartView: View {
     let history: PriceHistory
     let range: HistoryRange
     let compact: Bool
+    private let candles: [PriceCandle]
     private let samples: [MarketChartSample]
     private let averageValues: [Double?]
     private let averages: [MarketAverageSeries]
@@ -15,18 +16,24 @@ struct MarketChartView: View {
         self.history = history
         self.range = range
         self.compact = compact
+        let windowStart = range.minuteInterval == nil ? 0 : max(0, history.candles.count - 120)
+        let visibleCandles = Array(history.candles.dropFirst(windowStart))
+        candles = visibleCandles
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "America/New_York") ?? .gmt
-        samples = history.candles.enumerated().map { index, candle in
+        samples = visibleCandles.enumerated().map { index, candle in
             MarketChartSample(index: index, candle: candle,
                               session: calendar.startOfDay(for: candle.time).timeIntervalSince1970)
         }
         averageValues = range.isIntraday && !compact ? ChartAnalytics.sessionAverage(history.candles) : []
         averages = range.isIntraday || compact ? [] : [5, 10, 20, 30].map {
-            MarketAverageSeries(period: $0, values: ChartAnalytics.movingAverage(history.candles, period: $0))
+            // Calculate on full history so the first visible minute bar keeps its preceding MA samples.
+            let fullValues = ChartAnalytics.movingAverage(history.candles, period: $0)
+            return MarketAverageSeries(period: $0, values: Array(fullValues.dropFirst(windowStart)))
         }
-        var values = history.candles.flatMap { range.isIntraday || compact ? [$0.close] : [$0.low, $0.high] }.filter(\.isFinite)
+        var values = visibleCandles.flatMap { range.isIntraday || compact ? [$0.close] : [$0.low, $0.high] }.filter(\.isFinite)
         values.append(contentsOf: averageValues.compactMap { $0 }.filter(\.isFinite))
+        values.append(contentsOf: averages.flatMap(\.values).compactMap { $0 }.filter(\.isFinite))
         if (range.isIntraday || compact), let close = history.previousClose, close.isFinite { values.append(close) }
         if let low = values.min(), let high = values.max() {
             let padding = max((high - low) * 0.08, max(abs(high) * 0.0005, 0.01))
@@ -35,19 +42,19 @@ struct MarketChartView: View {
     }
 
     private var activeIndex: Int {
-        guard !history.candles.isEmpty else { return 0 }
-        return min(history.candles.count - 1, max(0, Int((selectedIndex ?? Double(history.candles.count - 1)).rounded())))
+        guard !candles.isEmpty else { return 0 }
+        return min(candles.count - 1, max(0, Int((selectedIndex ?? Double(candles.count - 1)).rounded())))
     }
-    private var xDomain: ClosedRange<Double> { -0.6...max(0.6, Double(history.candles.count) - 0.4) }
+    private var xDomain: ClosedRange<Double> { -0.6...max(0.6, Double(candles.count) - 0.4) }
     private var directionColor: Color {
-        MarketTheme.change((history.candles.last?.close ?? 0) - (history.previousClose ?? history.candles.first?.open ?? 0))
+        MarketTheme.change((candles.last?.close ?? 0) - (history.previousClose ?? candles.first?.open ?? 0))
     }
 
     var body: some View {
         if compact {
             sparkline
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(history.symbol) 分时走势，\(history.candles.count) 个数据点")
+                .accessibilityLabel("\(history.symbol) 分时走势，\(candles.count) 个数据点")
         } else {
             GeometryReader { geometry in
                 VStack(alignment: .leading, spacing: 4) {
@@ -55,11 +62,15 @@ struct MarketChartView: View {
                     priceChart
                         .frame(maxHeight: .infinity)
                     if geometry.size.height >= 180 {
-                        HStack {
+                        HStack(spacing: 8) {
                             Text("成交量")
+                            if range.minuteInterval != nil {
+                                Text("最近\(candles.count)根 · 美东时间")
+                                    .font(.system(size: 9)).accessibilityIdentifier("chart.window")
+                            }
                             Spacer()
-                            if history.candles.indices.contains(activeIndex) {
-                                Text(DisplayFormat.volume(history.candles[activeIndex].volume)).monospacedDigit()
+                            if candles.indices.contains(activeIndex) {
+                                Text(DisplayFormat.volume(candles[activeIndex].volume)).monospacedDigit()
                             }
                         }.font(.system(size: 10)).foregroundStyle(MarketTheme.secondary)
                         volumeChart.frame(height: min(68, max(24, geometry.size.height * 0.17)))
@@ -80,8 +91,8 @@ struct MarketChartView: View {
                 HStack(spacing: 12) {
                     Text("均价估算 \(MarketTheme.number(averageValues.indices.contains(activeIndex) ? averageValues[activeIndex] : nil))")
                         .foregroundStyle(MarketTheme.average)
-                    if history.candles.indices.contains(activeIndex) {
-                        Text("价格 \(MarketTheme.number(history.candles[activeIndex].close))").foregroundStyle(.white)
+                    if candles.indices.contains(activeIndex) {
+                        Text("价格 \(MarketTheme.number(candles[activeIndex].close))").foregroundStyle(MarketTheme.primary)
                     }
                     Spacer(minLength: 0)
                 }
@@ -116,11 +127,11 @@ struct MarketChartView: View {
                 RuleMark(y: .value("昨收", previousClose))
                     .foregroundStyle(MarketTheme.secondary.opacity(0.6)).lineStyle(StrokeStyle(lineWidth: 0.7, dash: [4, 4]))
             }
-            if selectedIndex != nil, history.candles.indices.contains(activeIndex) {
+            if selectedIndex != nil, candles.indices.contains(activeIndex) {
                 RuleMark(x: .value("所选时间", Double(activeIndex)))
-                    .foregroundStyle(.white.opacity(0.55)).lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                PointMark(x: .value("序号", Double(activeIndex)), y: .value("价格", history.candles[activeIndex].close))
-                    .foregroundStyle(.white).symbolSize(20)
+                    .foregroundStyle(MarketTheme.primary.opacity(0.55)).lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                PointMark(x: .value("序号", Double(activeIndex)), y: .value("价格", candles[activeIndex].close))
+                    .foregroundStyle(MarketTheme.primary).symbolSize(20)
             }
         }
         .chartXScale(domain: xDomain)
@@ -147,13 +158,13 @@ struct MarketChartView: View {
             }
         }
         .chartXSelection(value: $selectedIndex)
-        .accessibilityLabel("\(history.symbol) \(range.title)，\(history.candles.count) 个价格点")
+        .accessibilityLabel("\(history.symbol) \(range.title)，\(candles.count) 个价格点")
     }
 
     @ChartContentBuilder private var intradayMarks: some ChartContent {
         ForEach(samples) { sample in
             LineMark(x: .value("序号", Double(sample.index)), y: .value("价格", sample.candle.close), series: .value("线", "价格"))
-                .foregroundStyle(.white.opacity(0.95)).lineStyle(StrokeStyle(lineWidth: 1.5))
+                .foregroundStyle(MarketTheme.primary.opacity(0.95)).lineStyle(StrokeStyle(lineWidth: 1.5))
             if averageValues.indices.contains(sample.index), let average = averageValues[sample.index] {
                 LineMark(x: .value("序号", Double(sample.index)), y: .value("均价估算", average),
                          series: .value("均价交易日", "均价\(sample.session)"))
@@ -217,22 +228,27 @@ struct MarketChartView: View {
     }
 
     private var axisIndices: [Double] {
-        guard history.candles.count > 1 else { return [0] }
-        return (0...4).map { Double(Int(Double(history.candles.count - 1) * Double($0) / 4)) }
+        guard candles.count > 1 else { return [0] }
+        let intervals = range.minuteInterval == nil ? 4 : 2
+        return (0...intervals).map { Double(Int(Double(candles.count - 1) * Double($0) / Double(intervals))) }
     }
 
     private func axisLabel(_ index: Double) -> String {
         let position = Int(index.rounded())
-        guard history.candles.indices.contains(position) else { return "" }
+        guard candles.indices.contains(position) else { return "" }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "America/New_York")
         switch range {
         case .intraday: formatter.dateFormat = "HH:mm"
+        case .minute1, .minute5, .minute15, .minute30, .minute60, .minute120:
+            let spansSessions = samples.first?.session != samples.last?.session
+            let isEndpoint = position == 0 || position == candles.count - 1
+            formatter.dateFormat = spansSessions && isEndpoint ? "MM/dd HH:mm" : "HH:mm"
         case .fiveDay, .daily: formatter.dateFormat = "MM/dd"
         case .weekly, .monthly: formatter.dateFormat = "yy/MM"
         }
-        return formatter.string(from: history.candles[position].time)
+        return formatter.string(from: candles[position].time)
     }
 }
 

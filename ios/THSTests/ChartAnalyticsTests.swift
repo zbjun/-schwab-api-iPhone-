@@ -97,7 +97,10 @@ final class ChartAnalyticsTests: XCTestCase {
         let end = date("2026-09-06T12:00:00Z")
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "America/New_York")!
-        XCTAssertEqual(HistoryRange.allCases.map(\.title), ["分时", "日K", "周K", "月K", "五日"])
+        XCTAssertEqual(HistoryRange.primaryCases.map(\.title), ["分时", "日K", "周K", "月K", "五日"])
+        XCTAssertEqual(HistoryRange.minuteCases.compactMap(\.minuteInterval), [1, 5, 15, 30, 60, 120])
+        XCTAssertEqual(HistoryRange.allCases, HistoryRange.primaryCases + HistoryRange.minuteCases)
+        XCTAssertTrue(HistoryRange.primaryCases.allSatisfy { $0.minuteInterval == nil })
         XCTAssertEqual(HistoryRange.allCases.filter(\.isIntraday), [.intraday, .fiveDay])
         XCTAssertEqual(Set(DemoData.quotes.map(\.symbol)), ["AAPL", "MSFT", "SPY", "QQQ", "NVDA", "AMD", "TSLA", "IWM"])
         for range in HistoryRange.allCases {
@@ -112,8 +115,11 @@ final class ChartAnalyticsTests: XCTestCase {
                 XCTAssertEqual(dates.count, range == .fiveDay ? 5 : 1)
                 XCTAssertTrue(ChartAnalytics.sessionAverage(history.candles).allSatisfy { $0 != nil })
             } else {
-                XCTAssertGreaterThanOrEqual(history.candles.count, 60)
+                XCTAssertGreaterThanOrEqual(history.candles.count, range.minuteInterval == nil ? 60 : 30)
                 XCTAssertNotNil(ChartAnalytics.movingAverage(history.candles, period: 30).last!)
+                if let interval = range.minuteInterval {
+                    XCTAssertEqual(history.candles.count, 10 * Int(ceil(390.0 / Double(interval))))
+                }
             }
         }
     }

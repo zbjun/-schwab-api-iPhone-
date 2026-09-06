@@ -94,7 +94,7 @@ struct WatchlistView: View {
             .onDisappear(perform: cancelHistoryTasks)
             .accessibilityIdentifier("screen.watchlist")
         }
-        .preferredColorScheme(.dark).tint(.white)
+        .tint(MarketTheme.primary)
     }
 
     private var searchRow: some View {
@@ -129,7 +129,7 @@ struct WatchlistView: View {
                             .font(.system(size: 15, weight: .medium)).frame(width: 40, height: 30)
                             .background(mode == item ? MarketTheme.elevated : .clear, in: RoundedRectangle(cornerRadius: 7))
                     }
-                    .buttonStyle(.plain).foregroundStyle(mode == item ? .white : MarketTheme.secondary)
+                    .buttonStyle(.plain).foregroundStyle(mode == item ? MarketTheme.primary : MarketTheme.secondary)
                     .accessibilityLabel(item == .quotes ? "行情列表" : "多股同列")
                     .accessibilityIdentifier("watchlist.mode.\(item.rawValue)")
                     .accessibilityAddTraits(mode == item ? .isSelected : [])
@@ -294,7 +294,7 @@ private struct WatchlistQuoteRow: View {
             HStack(spacing: 0) {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(quote?.description ?? symbol)
-                        .font(.system(size: 15, weight: .medium)).foregroundStyle(.white)
+                        .font(.system(size: 15, weight: .medium)).foregroundStyle(MarketTheme.primary)
                         .lineLimit(1).minimumScaleFactor(0.8)
                     HStack(spacing: 4) {
                         Text("US").font(.system(size: 9, weight: .medium))

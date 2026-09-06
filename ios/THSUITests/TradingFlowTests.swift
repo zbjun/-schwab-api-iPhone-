@@ -11,7 +11,7 @@ final class TradingFlowTests: XCTestCase {
     }
 
     override func tearDown() {
-        if testRun?.hasSucceeded == false {
+        if (testRun?.failureCount ?? 0) > 0 {
             capture("failure-screen")
             let hierarchy = XCTAttachment(string: app.debugDescription)
             hierarchy.name = "failure-accessibility-tree"
@@ -148,13 +148,55 @@ final class TradingFlowTests: XCTestCase {
 
     private func reveal(_ identifier: String, file: StaticString = #filePath, line: UInt = #line) -> XCUIElement {
         let target = element(identifier)
+        let list = contentList(for: identifier)
+        XCTAssertTrue(list.waitForExistence(timeout: 5), file: file, line: line)
         for _ in 0..<7 {
-            if target.exists && target.isHittable { return target }
-            dismissKeyboard()
-            app.swipeUp()
+            let visible = visibleContent(in: list)
+            if target.exists && target.isHittable && visible.contains(target.frame.insetBy(dx: 0, dy: -8)) {
+                return target
+            }
+            if app.keyboards.firstMatch.exists {
+                dismissKeyboard()
+                continue
+            }
+            let movingDown = target.exists && target.frame.minY < visible.minY
+            let upperY = visible.minY + visible.height * 0.25
+            let lowerY = visible.minY + visible.height * 0.80
+            let origin = list.coordinate(withNormalizedOffset: .zero)
+            let start = origin.withOffset(CGVector(dx: list.frame.width / 2,
+                                                   dy: (movingDown ? upperY : lowerY) - list.frame.minY))
+            let end = origin.withOffset(CGVector(dx: list.frame.width / 2,
+                                                 dy: (movingDown ? lowerY : upperY) - list.frame.minY))
+            start.press(forDuration: 0.05, thenDragTo: end)
         }
         XCTFail("Element is not reachable: \(identifier)", file: file, line: line)
         return target
+    }
+
+    private func contentList(for identifier: String) -> XCUIElement {
+        let screen: String
+        if identifier.hasPrefix("trade.") { screen = "screen.trade" }
+        else if identifier.hasPrefix("watchlist.") { screen = "screen.watchlist" }
+        else { screen = "screen.orderDetail" }
+        return app.collectionViews[screen]
+    }
+
+    private func visibleContent(in list: XCUIElement) -> CGRect {
+        let frame = list.frame.intersection(app.frame)
+        var top = frame.minY
+        var bottom = frame.maxY
+        let navigation = app.navigationBars.firstMatch
+        if navigation.exists { top = max(top, navigation.frame.maxY) }
+        let tabs = app.tabBars.firstMatch
+        if tabs.exists { bottom = min(bottom, tabs.frame.minY) }
+        let keyboard = app.keyboards.firstMatch
+        if keyboard.exists {
+            bottom = min(bottom, keyboard.frame.minY)
+            for toolbar in app.toolbars.allElementsBoundByIndex where toolbar.frame.minY > top {
+                bottom = min(bottom, toolbar.frame.minY)
+            }
+        }
+        return CGRect(x: frame.minX, y: top + 12, width: frame.width, height: max(0, bottom - top - 24))
     }
 
     private func tapRevealing(_ identifier: String) { reveal(identifier).tap() }
@@ -165,6 +207,13 @@ final class TradingFlowTests: XCTestCase {
         let previousText = value == field.placeholderValue ? "" : value
         field.tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        if !previousText.isEmpty {
+            let editable = reveal(identifier)
+            // These inputs align values to the trailing edge. Reposition only after the keyboard has settled.
+            editable.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5))
+                .withOffset(CGVector(dx: -1, dy: 0)).tap()
+            XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        }
         let activeField = app.textFields[identifier]
         XCTAssertTrue(activeField.waitForExistence(timeout: 5))
         activeField.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: previousText.count) + text)

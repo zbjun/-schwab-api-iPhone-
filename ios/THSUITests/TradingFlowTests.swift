@@ -304,16 +304,28 @@ final class TradingFlowTests: XCTestCase {
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
         if !previousText.isEmpty {
             let editable = reveal(identifier)
-            // The inline inputs include horizontal padding; tap within their editable content.
-            let trailingInset: CGFloat = identifier.hasPrefix("inline.") ? 16 : 1
-            editable.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5))
-                .withOffset(CGVector(dx: -trailingInset, dy: 0)).tap()
+            if identifier.hasPrefix("inline.") {
+                // Select the whole value rather than guessing a caret position in a padded field.
+                editable.press(forDuration: 1.1)
+                let selectAll = app.menuItems.matching(NSPredicate(format: "label IN %@", ["全选", "Select All"])).firstMatch
+                if selectAll.waitForExistence(timeout: 2) { selectAll.tap() }
+                else {
+                    let action = app.buttons.matching(NSPredicate(format: "label IN %@", ["全选", "Select All"])).firstMatch
+                    XCTAssertTrue(action.waitForExistence(timeout: 3))
+                    action.tap()
+                }
+            } else {
+                editable.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5))
+                    .withOffset(CGVector(dx: -1, dy: 0)).tap()
+            }
             XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
         }
         let activeField = app.textFields[identifier]
         XCTAssertTrue(activeField.waitForExistence(timeout: 5))
-        activeField.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: previousText.count) + text)
-        XCTAssertEqual(activeField.value as? String, text)
+        let deletes = identifier.hasPrefix("inline.") ? "" : String(repeating: XCUIKeyboardKey.delete.rawValue, count: previousText.count)
+        activeField.typeText(deletes + text)
+        let updated = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", text), object: activeField)
+        XCTAssertEqual(XCTWaiter.wait(for: [updated], timeout: 5), .completed)
     }
 
     private func dismissKeyboard() {

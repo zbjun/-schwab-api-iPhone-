@@ -126,6 +126,7 @@ final class TradingFlowTests: XCTestCase {
         if let tab { app.launchArguments += ["--snapshot-tab", tab] }
         app.launch()
         XCTAssertTrue(app.tabBars.buttons["账户"].waitForExistence(timeout: 10))
+        XCTAssertFalse(element("reconciliation.orders").exists)
     }
 
     private func element(_ identifier: String) -> XCUIElement {

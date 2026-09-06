@@ -4,6 +4,23 @@ import XCTest
 
 @MainActor
 final class AppStoreTradingTests: XCTestCase {
+    func testUITestLaunchIsIsolatedFromDeviceSessionAndPendingOperation() async throws {
+        let app = THSApp.makeStore(arguments: ["--uitesting-demo"])
+        XCTAssertFalse(app.unresolvedOrderOperation)
+        XCTAssertNil(app.tradeError)
+        let session = try await app.client.sessionStatus()
+        XCTAssertFalse(session.configured)
+        XCTAssertFalse(session.authenticated)
+        await app.loadUITestDemo(tab: "trade")
+        XCTAssertTrue(app.isDemo)
+        XCTAssertEqual(app.activeTab, .trade)
+        let prepared = await app.prepareOrder(draft())
+        XCTAssertTrue(prepared)
+        let sent = await app.submitPreparedOrder()
+        XCTAssertTrue(sent)
+        XCTAssertFalse(app.unresolvedOrderOperation)
+    }
+
     func testDemoCreateReplaceCancelUsesNoNetworkOrLiveMarker() async throws {
         let transport = StoreFixtureTransport()
         let marker = OperationFixtureVault()

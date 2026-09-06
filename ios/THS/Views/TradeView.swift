@@ -156,8 +156,13 @@ private struct TradeTicketView: View {
                     MetricRow {
                         MetricCell(title: "买价 Bid", value: DisplayFormat.price(quote.bidPrice))
                         MetricCell(title: "卖价 Ask", value: DisplayFormat.price(quote.askPrice))
-                        MetricCell(title: "涨跌幅", value: DisplayFormat.signedPercent(quote.netPercentChange), color: DisplayFormat.changeColor(quote.netPercentChange))
                     }
+                    LabeledContent("涨跌幅") {
+                        Text(DisplayFormat.signedPercent(quote.netPercentChange))
+                            .font(.subheadline.weight(.semibold)).monospacedDigit()
+                            .foregroundStyle(DisplayFormat.changeColor(quote.netPercentChange))
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
                     QuoteTimeLabel(quote: quote, isDemo: store.isDemo)
                 }.padding(.vertical, 3)
             }

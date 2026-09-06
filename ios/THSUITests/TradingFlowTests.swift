@@ -29,8 +29,10 @@ final class TradingFlowTests: XCTestCase {
 
     func testFiveMainScreensHaveDemoContextAndScreenshots() {
         launch()
-        for (tab, name) in [("账户", "01-accounts"), ("自选", "02-watchlist"), ("交易", "03-trade"), ("订单", "04-orders"), ("连接", "05-connection")] {
-            app.tabBars.buttons[tab].tap()
+        for (identifier, tab, name) in [("tab.accounts", "账户", "01-accounts"), ("tab.watchlist", "自选", "02-watchlist"),
+                                        ("tab.trade", "交易", "03-trade"), ("tab.orders", "订单", "04-orders"),
+                                        ("tab.connection", "连接", "05-connection")] {
+            selectTab(identifier)
             XCTAssertTrue(app.navigationBars[tab].waitForExistence(timeout: 5))
             if tab == "连接" {
                 XCTAssertTrue(element("connection.demo").exists)
@@ -194,7 +196,7 @@ final class TradingFlowTests: XCTestCase {
         XCTAssertTrue(element("trade.error").label.contains("整股数量"))
         XCTAssertFalse(element("order.review.confirm").exists)
         capture("10-invalid-quantity")
-        app.tabBars.buttons["订单"].tap()
+        selectTab("tab.orders")
         XCTAssertTrue(element("order.row.910001").waitForExistence(timeout: 5))
         XCTAssertTrue(element("order.row.910002").exists)
     }
@@ -286,7 +288,7 @@ final class TradingFlowTests: XCTestCase {
         element("inline.close").tap()
         XCTAssertTrue(element("detail.cancel").isEnabled)
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        app.tabBars.buttons["订单"].tap()
+        selectTab("tab.orders")
         let canceled = element("order.row.910001")
         XCTAssertTrue(canceled.waitForExistence(timeout: 5))
         XCTAssertTrue(canceled.label.contains("已撤销"))
@@ -298,6 +300,35 @@ final class TradingFlowTests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.tabBars.buttons["账户"].waitForExistence(timeout: 10))
         XCTAssertFalse(element("reconciliation.orders").exists)
+    }
+
+    private func selectTab(_ identifier: String, file: StaticString = #filePath, line: UInt = #line) {
+        let tabs = app.tabBars.buttons
+        let target = tabs[identifier]
+        guard target.waitForExistence(timeout: 5) else {
+            XCTFail("Missing tab \(identifier)", file: file, line: line)
+            return
+        }
+        func waitForSelection() -> Bool {
+            let selected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "selected == true"), object: target)
+            return XCTWaiter.wait(for: [selected], timeout: 5) == .completed
+        }
+
+        if !target.isSelected {
+            let current = tabs.matching(NSPredicate(format: "selected == true")).firstMatch
+            let previousIdentifier = current.exists ? current.identifier : nil
+            target.tap()
+            if !waitForSelection(), let previousIdentifier, previousIdentifier != identifier {
+                let previous = tabs[previousIdentifier]
+                if previous.exists && previous.isSelected && !target.isSelected {
+                    // Retry navigation only when the first tap left the original tab selected.
+                    print("Retrying tab navigation once: \(previousIdentifier) remains selected after tapping \(identifier).")
+                    target.tap()
+                    _ = waitForSelection()
+                }
+            }
+        }
+        XCTAssertTrue(target.isSelected, "Expected \(identifier) to be selected after tab navigation", file: file, line: line)
     }
 
     private func element(_ identifier: String) -> XCUIElement {

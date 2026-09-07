@@ -250,7 +250,7 @@ private enum SchwabRequestPolicy {
         var items = [URLQueryItem(name: "symbol", value: symbol), URLQueryItem(name: "periodType", value: periodType),
                      URLQueryItem(name: "frequencyType", value: frequencyType), URLQueryItem(name: "frequency", value: frequency),
                      URLQueryItem(name: "endDate", value: String(endMilliseconds)),
-                     URLQueryItem(name: "needExtendedHoursData", value: "false"),
+                     URLQueryItem(name: "needExtendedHoursData", value: range.includesExtendedHours ? "true" : "false"),
                      URLQueryItem(name: "needPreviousClose", value: "true")]
         if let period {
             items.append(URLQueryItem(name: "period", value: period))
@@ -268,7 +268,8 @@ private enum SchwabRequestPolicy {
         guard items.count == names.count, Set(items.map(\.name)) == names else { return false }
         let values = Dictionary(uniqueKeysWithValues: items.map { ($0.name, $0.value ?? "") })
         guard let symbol = values["symbol"], OrderDraft.isValidSymbol(symbol),
-              values["needExtendedHoursData"] == "false", values["needPreviousClose"] == "true",
+              values["needExtendedHoursData"] == (values["frequencyType"] == "minute" ? "true" : "false"),
+              values["needPreviousClose"] == "true",
               let endRaw = values["endDate"], endRaw.range(of: "\\A[0-9]+\\z", options: .regularExpression) != nil,
               let end = Int64(endRaw), end >= 0, end < 32_503_680_000_000 else { return false }
         if boundedMinutes {
@@ -499,7 +500,8 @@ actor SchwabClient {
         let response = try await read(path: "/marketdata/v1/pricehistory", query: query)
         let history = try Self.decodePriceHistory(response.data, symbol: symbol)
         if let interval = range.minuteInterval, interval > 30 {
-            let candles = ChartAnalytics.minuteCandles(history.candles, interval: interval, asOf: end)
+            let candles = ChartAnalytics.minuteCandles(history.candles, interval: interval, asOf: end,
+                                                       includeExtendedHours: range.includesExtendedHours)
             return APIResponse(value: PriceHistory(symbol: history.symbol, candles: candles,
                                                   previousClose: history.previousClose),
                                elapsedMilliseconds: response.elapsedMilliseconds)

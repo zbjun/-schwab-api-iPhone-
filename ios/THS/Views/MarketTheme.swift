@@ -13,6 +13,8 @@ enum MarketTheme {
     static let average = adaptive(light: 0x966300, dark: 0xFFC233)
     static let ma10 = adaptive(light: 0xB42A86, dark: 0xEF5CB8)
     static let ma30 = adaptive(light: 0x1175AD, dark: 0x3DADEB)
+    static let premarket = adaptive(light: 0xB87815, dark: 0xE3B84E)
+    static let postmarket = adaptive(light: 0x3475C7, dark: 0x7299E8)
 
     private static func adaptive(light: UInt32, dark: UInt32) -> Color {
         Color(uiColor: UIColor { traits in
@@ -44,6 +46,14 @@ enum MarketTheme {
         case 10: return ma10
         case 20: return average
         default: return ma30
+        }
+    }
+
+    static func sessionColor(_ session: EquityTradingSession) -> Color {
+        switch session {
+        case .premarket: return premarket
+        case .regular: return secondary
+        case .postmarket: return postmarket
         }
     }
 }

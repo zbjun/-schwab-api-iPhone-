@@ -3,6 +3,171 @@ import XCTest
 @testable import THS
 
 final class MinuteCandleTests: XCTestCase {
+    func testPublishedEarlyClosesAndHolidaysUseTheirActualBoundaries() throws {
+        for day in ["2026-11-27", "2026-12-24", "2027-11-26", "2028-11-24"] {
+            XCTAssertEqual(EquityTradingSession.at(date(day + "T17:59:59Z")), .regular)
+            XCTAssertEqual(EquityTradingSession.at(date(day + "T18:00:00Z")), .postmarket)
+            XCTAssertEqual(EquityTradingSession.bounds(containing: date(day + "T18:00:00Z"))?.end,
+                           date(day + "T22:00:00Z"))
+            XCTAssertNil(EquityTradingSession.at(date(day + "T22:00:00Z")))
+        }
+        XCTAssertEqual(EquityTradingSession.at(date("2028-07-03T17:00:00Z")), .postmarket)
+        XCTAssertNil(EquityTradingSession.at(date("2028-07-03T21:00:00Z")))
+        for day in ["2026-07-03", "2026-09-07", "2026-11-26", "2027-12-24", "2028-07-04"] {
+            XCTAssertTrue(EquityTradingSession.windows(on: date(day + "T14:00:00Z")).isEmpty)
+        }
+        XCTAssertEqual(EquityTradingSession.at(date("2027-12-31T19:00:00Z")), .regular)
+        let start = date("2026-11-27T14:30:00Z")
+        let source = minutes(start: start, count: 210)
+        let bars = ChartAnalytics.minuteCandles(source, interval: 60,
+            asOf: date("2026-11-27T22:00:00Z"), includeExtendedHours: true)
+        XCTAssertEqual(bars.count, 4)
+        XCTAssertEqual(bars.last?.volume, 3_000)
+        XCTAssertEqual(bars.last?.close, source.last?.close)
+    }
+
+    func testTradingSessionBoundariesAreHalfOpenAndUseNewYorkTime() throws {
+        XCTAssertEqual(EquityTradingSession.allCases.map(\.title), ["盘前", "盘中", "盘后"])
+        let cases: [(String, EquityTradingSession?)] = [
+            ("2026-09-04T07:59:59Z", nil), ("2026-09-04T08:00:00Z", .premarket),
+            ("2026-09-04T13:29:59Z", .premarket), ("2026-09-04T13:30:00Z", .regular),
+            ("2026-09-04T19:59:59Z", .regular), ("2026-09-04T20:00:00Z", .postmarket),
+            ("2026-09-04T23:59:59Z", .postmarket), ("2026-09-05T00:00:00Z", nil),
+            ("2026-09-05T14:00:00Z", nil), ("2026-09-06T14:00:00Z", nil)
+        ]
+        for (timestamp, expected) in cases {
+            let point = date(timestamp)
+            XCTAssertEqual(EquityTradingSession.at(point), expected, timestamp)
+            if expected != nil {
+                let bounds = try XCTUnwrap(EquityTradingSession.bounds(containing: point))
+                XCTAssertTrue(point >= bounds.start && point < bounds.end)
+            } else { XCTAssertNil(EquityTradingSession.bounds(containing: point)) }
+        }
+        for timestamp in [Double.nan, Double.infinity, -1, 32_503_680_000] {
+            XCTAssertNil(EquityTradingSession.at(Date(timeIntervalSince1970: timestamp)))
+            XCTAssertNil(EquityTradingSession.bounds(containing: Date(timeIntervalSince1970: timestamp)))
+        }
+    }
+
+    func testAllThreeTradingSessionWindowsFollowBothDSTChanges() throws {
+        let rows = [
+            ["2026-03-06T09:00:00Z", "2026-03-06T14:30:00Z", "2026-03-06T21:00:00Z", "2026-03-07T01:00:00Z"],
+            ["2026-03-09T08:00:00Z", "2026-03-09T13:30:00Z", "2026-03-09T20:00:00Z", "2026-03-10T00:00:00Z"],
+            ["2026-10-30T08:00:00Z", "2026-10-30T13:30:00Z", "2026-10-30T20:00:00Z", "2026-10-31T00:00:00Z"],
+            ["2026-11-02T09:00:00Z", "2026-11-02T14:30:00Z", "2026-11-02T21:00:00Z", "2026-11-03T01:00:00Z"]
+        ]
+        for row in rows {
+            let times = row.map(date)
+            for (index, session) in EquityTradingSession.allCases.enumerated() {
+                XCTAssertEqual(EquityTradingSession.at(times[index]), session)
+                let bounds = try XCTUnwrap(EquityTradingSession.bounds(containing: times[index]))
+                XCTAssertEqual(bounds.start, times[index])
+                XCTAssertEqual(bounds.end, times[index + 1])
+            }
+            XCTAssertNil(EquityTradingSession.at(times[3]))
+        }
+    }
+
+    func testHistoryRangeExtendedHoursMatchesTheMinuteBasedChartsOnly() {
+        XCTAssertEqual(HistoryRange.allCases.filter(\.includesExtendedHours),
+                       [.intraday, .fiveDay, .minute1, .minute5, .minute15, .minute30, .minute60, .minute120])
+        for range in [HistoryRange.daily, .weekly, .monthly] { XCTAssertFalse(range.includesExtendedHours) }
+    }
+
+    func testExtendedAggregationNeverCrossesTheOpenCloseOrTradingDate() throws {
+        let premarket = date("2026-09-04T08:00:00Z")
+        let regular = date("2026-09-04T13:30:00Z")
+        let postmarket = date("2026-09-04T20:00:00Z")
+        let source = minutes(start: premarket, count: 330) + minutes(start: regular, count: 390)
+            + minutes(start: postmarket, count: 240)
+        for interval in [60, 120] {
+            let bars = ChartAnalytics.minuteCandles(source, interval: interval,
+                asOf: date("2026-09-05T00:00:00Z"), includeExtendedHours: true)
+            let pre = bars.filter { EquityTradingSession.at($0.time) == .premarket }
+            let main = bars.filter { EquityTradingSession.at($0.time) == .regular }
+            let post = bars.filter { EquityTradingSession.at($0.time) == .postmarket }
+            XCTAssertEqual(pre.count, interval == 60 ? 6 : 3)
+            XCTAssertEqual(main.count, interval == 60 ? 7 : 4)
+            XCTAssertEqual(post.count, interval == 60 ? 4 : 2)
+            XCTAssertEqual(pre.last?.close, 429.5)
+            XCTAssertEqual(pre.last?.volume, interval == 60 ? 3_000 : 9_000)
+            XCTAssertEqual(main.first?.time, regular)
+            XCTAssertEqual(main.first?.open, 100)
+            XCTAssertEqual(main.last?.volume, 3_000)
+            XCTAssertEqual(post.first?.time, postmarket)
+            XCTAssertEqual(post.first?.open, 100)
+            XCTAssertEqual(bars.compactMap(\.volume).reduce(0, +), 96_000)
+        }
+    }
+
+    func testSparseExtendedMinutesProduceOnlyObservedOHLCAndVolume() throws {
+        let times = ["2026-09-04T08:05:00Z", "2026-09-04T08:37:00Z", "2026-09-04T09:04:00Z",
+                     "2026-09-04T13:29:00Z", "2026-09-04T20:01:00Z", "2026-09-04T20:43:00Z",
+                     "2026-09-04T22:31:00Z"].map(date)
+        let source = times.enumerated().map { index, time in
+            PriceCandle(time: time, open: Double(100 + index), high: Double(102 + index),
+                        low: Double(99 + index), close: Double(101 + index), volume: Double(10 + index))
+        }
+        let asOf = date("2026-09-05T00:00:00Z")
+        let hourly = ChartAnalytics.minuteCandles(Array(source.reversed()), interval: 60,
+                                                  asOf: asOf, includeExtendedHours: true)
+        XCTAssertEqual(hourly.map(\.time), [times[0], times[2], times[3], times[4], times[6]])
+        let first = try XCTUnwrap(hourly.first)
+        XCTAssertEqual(first.open, 100)
+        XCTAssertEqual(first.high, 103)
+        XCTAssertEqual(first.low, 99)
+        XCTAssertEqual(first.close, 102)
+        XCTAssertEqual(hourly.map(\.volume), [21, 12, 13, 29, 16])
+        let twoHourly = ChartAnalytics.minuteCandles(source, interval: 120,
+                                                     asOf: asOf, includeExtendedHours: true)
+        XCTAssertEqual(twoHourly.map(\.time), [times[0], times[3], times[4], times[6]])
+        XCTAssertEqual(twoHourly.map(\.volume), [33, 13, 29, 16])
+        XCTAssertTrue(ChartAnalytics.minuteCandles(source, interval: 60, asOf: asOf).isEmpty)
+    }
+
+    func testExtendedOptInDoesNotWeakenRegularMinuteCompleteness() {
+        let regular = date("2026-09-04T13:30:00Z")
+        let source = minutes(start: date("2026-09-04T08:10:00Z"), count: 1)
+            + minutes(start: regular, count: 60).enumerated().compactMap { $0.offset == 20 ? nil : $0.element }
+            + minutes(start: date("2026-09-04T20:10:00Z"), count: 1)
+        let bars = ChartAnalytics.minuteCandles(source, interval: 60,
+            asOf: date("2026-09-05T00:00:00Z"), includeExtendedHours: true)
+        XCTAssertEqual(bars.count, 2)
+        XCTAssertEqual(bars.compactMap { EquityTradingSession.at($0.time) }, [.premarket, .postmarket])
+        XCTAssertEqual(bars.map(\.volume), [100, 100])
+    }
+
+    func testSparseExtendedCurrentBucketsExcludeFormingAndFutureMinutes() throws {
+        for start in [date("2026-09-04T08:00:00Z"), date("2026-09-04T20:00:00Z")] {
+            let source = [0, 7, 30].flatMap { minutes(start: start.addingTimeInterval(Double($0) * 60), count: 1) }
+            let forming = ChartAnalytics.minuteCandles(source, interval: 60,
+                asOf: start.addingTimeInterval(7 * 60 + 30), includeExtendedHours: true)
+            XCTAssertEqual(forming.count, 1)
+            XCTAssertEqual(forming.first?.volume, 100)
+            let completed = ChartAnalytics.minuteCandles(source, interval: 60,
+                asOf: start.addingTimeInterval(8 * 60), includeExtendedHours: true)
+            XCTAssertEqual(completed.count, 1)
+            XCTAssertEqual(completed.first?.volume, 200)
+            XCTAssertTrue(ChartAnalytics.minuteCandles(source, interval: 60,
+                asOf: start.addingTimeInterval(59), includeExtendedHours: true).isEmpty)
+        }
+    }
+
+    func testSparseExtendedUnknownVolumeAndDuplicateMinutesAreNotInvented() {
+        let first = date("2026-09-04T08:10:00Z")
+        let nextDay = date("2026-09-08T08:10:00Z")
+        var source = minutes(start: first, count: 1) + minutes(start: first.addingTimeInterval(30 * 60), count: 1)
+            + minutes(start: nextDay, count: 1)
+        source.append(changingVolume(source[0], to: nil))
+        let bars = ChartAnalytics.minuteCandles(source, interval: 60,
+            asOf: date("2026-09-09T00:00:00Z"), includeExtendedHours: true)
+        XCTAssertEqual(bars.map(\.time), [first, nextDay])
+        XCTAssertNil(bars[0].volume)
+        XCTAssertEqual(bars[1].volume, 100)
+        XCTAssertEqual(bars[0].close, 100.5)
+        XCTAssertEqual(bars[1].close, 100.5)
+    }
+
     func testHourlyAndTwoHourlyBarsStartAt0930AndKeepTheFinalThirtyMinutes() throws {
         let start = date("2026-09-04T13:30:00Z")
         let source = minutes(start: start, count: 390)

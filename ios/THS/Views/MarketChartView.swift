@@ -36,7 +36,7 @@ struct MarketChartView: View {
         calendar.timeZone = TimeZone(identifier: "America/New_York") ?? .gmt
         return visibleIndices.map { index in
             MarketChartSample(index: index, candle: candles[index],
-                              session: calendar.startOfDay(for: candles[index].time).timeIntervalSince1970)
+                              sessionDay: calendar.startOfDay(for: candles[index].time).timeIntervalSince1970)
         }
     }
     private var domain: ClosedRange<Double> {
@@ -74,6 +74,7 @@ struct MarketChartView: View {
             GeometryReader { geometry in
                 VStack(alignment: .leading, spacing: 4) {
                     legend
+                    if range.includesExtendedHours { sessionLegend }
                     if !range.isIntraday { viewportControls }
                     priceChart
                         .frame(maxHeight: .infinity)
@@ -117,6 +118,94 @@ struct MarketChartView: View {
             .accessibilityLabel("回到最新K线").accessibilityIdentifier("chart.latest")
         }
         .font(.system(size: 10)).foregroundStyle(MarketTheme.secondary)
+    }
+
+    private var sessionSegments: [MarketSessionSegment] {
+        guard range.includesExtendedHours else { return [] }
+        var result: [MarketSessionSegment] = []
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/New_York")!
+        var dayWindows: [Date: [(session: EquityTradingSession, bounds: DateInterval)]] = [:]
+        for index in visibleIndices {
+            let time = candles[index].time
+            let day = calendar.startOfDay(for: time)
+            if dayWindows[day] == nil { dayWindows[day] = EquityTradingSession.windows(on: day) }
+            guard let window = dayWindows[day]?.first(where: { time >= $0.bounds.start && time < $0.bounds.end }) else { continue }
+            let session = window.session
+            let bounds = window.bounds
+            if let last = result.last, last.session == session, last.start == bounds.start,
+               last.lastIndex + 1 == index {
+                result[result.count - 1].lastIndex = index
+            } else {
+                result.append(MarketSessionSegment(session: session, start: bounds.start,
+                                                   firstIndex: index, lastIndex: index))
+            }
+        }
+        return result
+    }
+
+    private func sessionColor(_ session: EquityTradingSession) -> Color {
+        MarketTheme.sessionColor(session)
+    }
+
+    private var sessionLegend: some View {
+        let segments = sessionSegments
+        let visible = EquityTradingSession.allCases.filter { session in
+            segments.contains { $0.session == session }
+        }.map(\.title).joined(separator: "、")
+        return HStack(spacing: 6) {
+            HStack(spacing: 6) {
+                ForEach(EquityTradingSession.allCases, id: \.self) { session in
+                    HStack(spacing: 2) {
+                        Circle().fill(sessionColor(session)).frame(width: 5, height: 5)
+                        Text(session.title)
+                    }
+                }
+                Text("美东时间")
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("chart.sessionLegend")
+            Spacer(minLength: 0)
+            Text(visible.isEmpty ? "暂无时段数据" : "可见：\(visible)")
+                .accessibilityIdentifier("chart.sessionPeriods")
+        }
+        .font(.system(size: 9)).foregroundStyle(MarketTheme.secondary)
+        .lineLimit(1).minimumScaleFactor(0.8)
+    }
+
+    private func sessionBackground(proxy: ChartProxy, showLabels: Bool) -> some View {
+        GeometryReader { geometry in
+            if range.includesExtendedHours, let anchor = proxy.plotFrame {
+                let frame = geometry[anchor]
+                ZStack(alignment: .topLeading) {
+                    ForEach(sessionSegments) { segment in
+                        let left = max(xDomain.lowerBound, Double(segment.firstIndex) - 0.5)
+                        let right = min(xDomain.upperBound, Double(segment.lastIndex) + 0.5)
+                        if right > left, let x1 = proxy.position(forX: left), let x2 = proxy.position(forX: right) {
+                            let width = max(0, min(frame.width, x2) - max(0, x1))
+                            ZStack(alignment: .top) {
+                                if segment.session != .regular {
+                                    Rectangle().fill(sessionColor(segment.session).opacity(0.13))
+                                }
+                                if showLabels, width >= 28 {
+                                    Text(segment.session.title)
+                                        .font(.system(size: 9, weight: .medium))
+                                        .foregroundStyle(MarketTheme.primary.opacity(0.8))
+                                        .padding(.horizontal, 3).padding(.vertical, 1)
+                                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 3))
+                                        .padding(.top, 3)
+                                }
+                            }
+                            .frame(width: width, height: max(0, frame.height), alignment: .top)
+                            .offset(x: max(0, x1), y: 0)
+                        }
+                    }
+                }
+                .frame(width: max(0, frame.width), height: max(0, frame.height), alignment: .topLeading)
+                .clipped().position(x: frame.midX, y: frame.midY)
+            }
+        }
+        .allowsHitTesting(false).accessibilityHidden(true)
     }
 
     private var legend: some View {
@@ -180,6 +269,7 @@ struct MarketChartView: View {
         }
         .chartXScale(domain: xDomain)
         .chartYScale(domain: domain)
+        .chartBackground { proxy in sessionBackground(proxy: proxy, showLabels: true) }
         .chartPlotStyle { plot in plot.clipped() }
         .chartLegend(.hidden)
         .chartXAxis {
@@ -212,7 +302,7 @@ struct MarketChartView: View {
                 .foregroundStyle(MarketTheme.primary.opacity(0.95)).lineStyle(StrokeStyle(lineWidth: 1.5))
             if averageValues.indices.contains(sample.index), let average = averageValues[sample.index] {
                 LineMark(x: .value("序号", Double(sample.index)), y: .value("均价估算", average),
-                         series: .value("均价交易日", "均价\(sample.session)"))
+                         series: .value("均价交易日", "均价\(sample.sessionDay)"))
                     .foregroundStyle(MarketTheme.average).lineStyle(StrokeStyle(lineWidth: 1.4))
             }
         }
@@ -253,6 +343,7 @@ struct MarketChartView: View {
             }
         }
         .chartXScale(domain: xDomain).chartXAxis(.hidden)
+        .chartBackground { proxy in sessionBackground(proxy: proxy, showLabels: false) }
         .chartPlotStyle { plot in plot.clipped() }
         .chartYAxis {
             AxisMarks(position: .trailing, values: [0.0]) {
@@ -336,7 +427,7 @@ struct MarketChartView: View {
         switch range {
         case .intraday: formatter.dateFormat = "HH:mm"
         case .minute1, .minute5, .minute15, .minute30, .minute60, .minute120:
-            let spansSessions = samples.first?.session != samples.last?.session
+            let spansSessions = samples.first?.sessionDay != samples.last?.sessionDay
             let isEndpoint = index == axisIndices.first || index == axisIndices.last
             formatter.dateFormat = spansSessions && isEndpoint ? "MM/dd HH:mm" : "HH:mm"
         case .fiveDay, .daily: formatter.dateFormat = "MM/dd"
@@ -349,12 +440,21 @@ struct MarketChartView: View {
 private struct MarketChartSample: Identifiable {
     let index: Int
     let candle: PriceCandle
-    let session: TimeInterval
+    let sessionDay: TimeInterval
     var id: Int { index }
 }
+
 
 private struct MarketAverageSeries: Identifiable {
     let period: Int
     let values: [Double?]
     var id: Int { period }
+}
+
+private struct MarketSessionSegment: Identifiable {
+    let session: EquityTradingSession
+    let start: Date
+    let firstIndex: Int
+    var lastIndex: Int
+    var id: Int { firstIndex }
 }

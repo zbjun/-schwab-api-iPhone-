@@ -1,18 +1,25 @@
 import Foundation
 
 enum ChartAnalytics {
-    /// Combines one-minute bars using New York regular-session boundaries, not UTC hours.
-    /// Every completed source minute in a bucket must be present. Today's forming bucket
-    /// can contain fewer minutes; the currently forming source minute is excluded.
-    /// A normal session ends at 16:00, so 60/120-minute series both end with a 30-minute bar.
-    /// Without an exchange calendar, a half-day's incomplete final bucket is not synthesized.
-    static func minuteCandles(_ candles: [PriceCandle], interval: Int, asOf: Date) -> [PriceCandle] {
+    private struct MinuteSession {
+        let bounds: DateInterval
+        var minutes: [Int: PriceCandle] = [:]
+    }
+
+    /// Anchors buckets to each New York session, never across the open, close, or date.
+    /// Regular-session buckets require every completed source minute. Extended sessions
+    /// may be sparse: aggregate only actual observations, never fabricate prices or volume.
+    /// A forming source minute is excluded in every session. The output starts at the
+    /// first observed minute of each bucket.
+    static func minuteCandles(_ candles: [PriceCandle], interval: Int, asOf: Date,
+                              includeExtendedHours: Bool = false) -> [PriceCandle] {
         guard [1, 5, 15, 30, 60, 120].contains(interval),
               asOf.timeIntervalSince1970.isFinite, asOf.timeIntervalSince1970 >= 0,
               asOf.timeIntervalSince1970 < 32_503_680_000 else { return [] }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "America/New_York")!
-        var sessions: [Date: [Int: PriceCandle]] = [:]
+        var dayWindows: [Date: [(session: EquityTradingSession, bounds: DateInterval)]] = [:]
+        var sessions: [Date: MinuteSession] = [:]
         for candle in candles {
             let timestamp = candle.time.timeIntervalSince1970
             guard timestamp.isFinite, timestamp >= 0, timestamp < 32_503_680_000,
@@ -21,24 +28,33 @@ enum ChartAnalytics {
                   candle.high >= max(candle.open, candle.close),
                   candle.low <= min(candle.open, candle.close) else { continue }
             let day = calendar.startOfDay(for: candle.time)
-            guard ![1, 7].contains(calendar.component(.weekday, from: day)),
-                  let open = calendar.date(bySettingHour: 9, minute: 30, second: 0, of: day) else { continue }
-            let offset = candle.time.timeIntervalSince(open)
-            guard offset >= 0, offset < 390 * 60, offset.truncatingRemainder(dividingBy: 60) == 0 else { continue }
+            let windows: [(session: EquityTradingSession, bounds: DateInterval)]
+            if let cached = dayWindows[day] { windows = cached }
+            else {
+                windows = EquityTradingSession.windows(on: day)
+                dayWindows[day] = windows
+            }
+            guard let window = windows.first(where: { candle.time >= $0.bounds.start && candle.time < $0.bounds.end }),
+                  includeExtendedHours || window.session == .regular else { continue }
+            let bounds = window.bounds
+            let offset = candle.time.timeIntervalSince(bounds.start)
+            guard offset >= 0, offset < bounds.duration,
+                  offset.truncatingRemainder(dividingBy: 60) == 0 else { continue }
             // Match the history decoder: the last valid observation at a timestamp wins.
             // Repeated observations never count as additional minutes or volume.
-            sessions[day, default: [:]][Int(offset / 60)] = candle
+            sessions[bounds.start, default: MinuteSession(bounds: bounds)].minutes[Int(offset / 60)] = candle
         }
 
         var result: [PriceCandle] = []
-        for (day, minutes) in sessions.sorted(by: { $0.key < $1.key }) {
-            guard let open = calendar.date(bySettingHour: 9, minute: 30, second: 0, of: day) else { continue }
-            let availableMinutes = min(390, Int(floor(asOf.timeIntervalSince(open) / 60)))
+        for (_, session) in sessions.sorted(by: { $0.key < $1.key }) {
+            let availableMinutes = min(Int(session.bounds.duration / 60),
+                                       Int(floor(asOf.timeIntervalSince(session.bounds.start) / 60)))
             guard availableMinutes > 0 else { continue }
             for offset in stride(from: 0, to: availableMinutes, by: interval) {
                 let expectedCount = min(interval, availableMinutes - offset)
-                let bars = (offset..<(offset + expectedCount)).compactMap { minutes[$0] }
-                guard bars.count == expectedCount, let first = bars.first, let last = bars.last else { continue }
+                let bars = (offset..<(offset + expectedCount)).compactMap { session.minutes[$0] }
+                guard session.kind != .regular || bars.count == expectedCount,
+                      let first = bars.first, let last = bars.last else { continue }
                 var volume: Double? = 0
                 for bar in bars {
                     guard let value = bar.volume, value.isFinite, value >= 0,

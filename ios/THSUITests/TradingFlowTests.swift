@@ -94,7 +94,7 @@ final class TradingFlowTests: XCTestCase {
         XCTAssertFalse(element("detail.chart").exists)
         for symbol in ["AAPL", "MSFT", "SPY", "QQQ"] {
             let row = element("watchlist.symbol.\(symbol)")
-            let loaded = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "分时走势，390"), object: row)
+            let loaded = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "分时走势，960"), object: row)
             XCTAssertEqual(XCTWaiter.wait(for: [loaded], timeout: 5), .completed)
         }
         capture("15-watchlist-charts")
@@ -255,6 +255,67 @@ final class TradingFlowTests: XCTestCase {
         element("history.intraday").tap()
         XCTAssertTrue(element("chart.average").waitForExistence(timeout: 5))
         XCTAssertEqual(element("history.more").value as? String, "未选择分钟周期")
+    }
+
+    func testExtendedHoursStayVisibleInIntradayAndZoomedMinuteCandles() throws {
+        executionTimeAllowance = 420
+        launch(tab: "watchlist")
+        let apple = element("watchlist.symbol.AAPL")
+        XCTAssertTrue(apple.waitForExistence(timeout: 5))
+        apple.tap()
+        XCTAssertTrue(element("chart.average").waitForExistence(timeout: 5))
+
+        func assertAllSessions(file: StaticString = #filePath, line: UInt = #line) {
+            let legend = element("chart.sessionLegend")
+            XCTAssertTrue(legend.waitForExistence(timeout: 5), file: file, line: line)
+            for label in ["盘前", "盘中", "盘后", "美东时间"] {
+                XCTAssertTrue(legend.label.contains(label), file: file, line: line)
+            }
+            let periods = element("chart.sessionPeriods")
+            XCTAssertTrue(periods.waitForExistence(timeout: 5), file: file, line: line)
+            let actualSessions = XCTNSPredicateExpectation(predicate: NSPredicate { object, _ in
+                guard let summary = object as? XCUIElement else { return false }
+                let text = summary.label + " " + (summary.value as? String ?? "")
+                return ["盘前", "盘中", "盘后"].allSatisfy { text.contains($0) }
+            }, object: periods)
+            XCTAssertEqual(XCTWaiter.wait(for: [actualSessions], timeout: 5), .completed,
+                           "The visible data must contain all three sessions, beyond the static legend", file: file, line: line)
+        }
+
+        assertAllSessions()
+        capture("37-extended-intraday")
+        element("history.more").tap()
+        let thirtyMinutes = app.buttons["history.minute30"]
+        XCTAssertTrue(thirtyMinutes.waitForExistence(timeout: 5))
+        thirtyMinutes.tap()
+        XCTAssertEqual(element("history.more").value as? String, "30分钟")
+        let averages = element("chart.movingAverages")
+        XCTAssertTrue(averages.waitForExistence(timeout: 5))
+        for period in [5, 10, 20, 30] { XCTAssertTrue(averages.label.contains("MA\(period)")) }
+        XCTAssertFalse(averages.label.contains("—"))
+        assertAllSessions()
+
+        let initial = try chartWindow()
+        let plot = element("chart.interaction.price")
+        XCTAssertTrue(plot.waitForExistence(timeout: 5))
+        XCTAssertTrue(plot.isHittable)
+        plot.pinch(withScale: 1.3, velocity: 1)
+        _ = try waitForChartWindow { $0.count < initial.count && $0.total == initial.total }
+        assertAllSessions()
+        XCTAssertTrue(element("detail.chart.volume").exists)
+        capture("38-extended-candles")
+
+        element("detail.buy").tap()
+        XCTAssertTrue(element("detail.tradePanel").waitForExistence(timeout: 5))
+        assertChartAboveTradePanel()
+        assertAllSessions()
+        element("inline.close").tap()
+        for range in ["daily", "weekly", "monthly"] {
+            element("history.\(range)").tap()
+            XCTAssertTrue(element("chart.movingAverages").waitForExistence(timeout: 5))
+            XCTAssertFalse(element("chart.sessionLegend").exists)
+            XCTAssertFalse(element("chart.sessionPeriods").exists)
+        }
     }
 
     func testInlineCancelFiltersSymbolAndConfirmsOneOrderBelowChart() {

@@ -35,7 +35,7 @@ PAGES = {
     "24-minute-5": ("5 分钟 K 线", "五分钟 OHLC 蜡烛与四条均线、成交量。"),
     "25-minute-15": ("15 分钟 K 线", "十五分钟蜡烛，均线按当前周期计算。"),
     "26-minute-30": ("30 分钟 K 线", "三十分钟蜡烛与 MA5/10/20/30。"),
-    "27-minute-60": ("60 分钟 K 线", "按美东常规交易时段合成小时蜡烛，跨交易日重新分组。"),
+    "27-minute-60": ("60 分钟 K 线", "盘前、盘中、盘后分别合成小时蜡烛，不跨时段混合。"),
     "28-minute-120": ("120 分钟 K 线", "两小时蜡烛与四条均线；每日收盘前的不足周期单独保留。"),
     "29-inline-cancel-orders": ("图下撤单", "买 / 卖 / 撤并列，撤单区只列出当前账户、当前股票的可撤委托。"),
     "30-inline-cancel-review": ("撤单核对", "核对选中的一笔委托，确认区仍位于主图下方。"),
@@ -45,6 +45,8 @@ PAGES = {
     "34-chart-minute-panned": ("分钟 K 线拖动", "分钟主图与成交量共用时间窗口，可拖动已读取的历史。"),
     "35-chart-inline-zoomed": ("交易时缩放 K 线", "图下买卖展开后仍可双指缩放和左右拖动，上方主图保持可见。"),
     "36-personal-first-launch": ("个人版首次启动", "自动读取并保存应用配置，直接显示 Schwab 登录入口；截图使用虚构配置。"),
+    "37-extended-intraday": ("盘前盘后分时", "橙色盘前、蓝色盘后；分时价格、均价估算与成交量共用时段背景。"),
+    "38-extended-candles": ("延长时段 K 线", "分钟蜡烛、MA5/10/20/30 与时段标记在双指缩放后保持同步。"),
 }
 
 
@@ -79,7 +81,7 @@ def main():
     missing = sorted(PAGES.keys() - pages.keys())
     if missing:
         raise SystemExit("Missing native screenshots: " + ", ".join(missing))
-    order = ["36-personal-first-launch", "02-watchlist", "32-chart-zoomed", "33-chart-panned", "34-chart-minute-panned", "35-chart-inline-zoomed",
+    order = ["37-extended-intraday", "38-extended-candles", "36-personal-first-launch", "02-watchlist", "32-chart-zoomed", "33-chart-panned", "34-chart-minute-panned", "35-chart-inline-zoomed",
              "19-watchlist-dark", "15-watchlist-charts", "06-stock-detail-chart", "11-daily-candles",
              "12-weekly-candles", "13-monthly-candles", "14-five-day-chart", "16-inline-buy",
              "22-minute-menu", "23-minute-1", "24-minute-5", "25-minute-15", "26-minute-30", "27-minute-60", "28-minute-120",
@@ -92,7 +94,7 @@ def main():
         if args.run.isdigit()
         else f"https://expo.dev/accounts/fried_chicken_cn/projects/ths-ios-personal/builds/{args.run}"
     )
-    metadata = dict(version="0.4.2", run=args.run, build_url=build_url, commit=args.commit, pages=ordered)
+    metadata = dict(version="0.4.3", run=args.run, build_url=build_url, commit=args.commit, pages=ordered)
     (output / "evidence.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     buttons = "\n".join(
         f'<button class="page-button" type="button" data-index="{index}" aria-pressed="false">'
@@ -126,7 +128,7 @@ dialog{border:0;background:#172435ed;border-radius:14px;padding:48px 12px 12px;m
 @media(max-width:620px){.shell{padding:24px 18px}h1{font-size:26px}main{display:flex;flex-direction:column;gap:22px}.nav{display:flex;overflow:auto;width:100%;padding-bottom:8px}.page-button{flex-shrink:0;padding:10px 12px}.number{display:none}.viewer{width:100%}#screen{height:65vh;max-width:100%}.details{display:block;width:100%}.context{display:none}footer{display:block}.badge{font-size:10px}header p{font-size:13px}}
 </style>
 <div class="shell">
-<header><div class="eyebrow">THS / PERSONAL TRADING</div><h1>你的 iPhone 交易 App<span class="badge">0.4.2</span></h1><p>股票 / ETF · iPhone 直连 Schwab · 以下为原生模拟器截图，展示的账户、行情、订单与连接配置均为测试数据。</p></header>
+<header><div class="eyebrow">THS / PERSONAL TRADING</div><h1>你的 iPhone 交易 App<span class="badge">0.4.3</span></h1><p>股票 / ETF · iPhone 直连 Schwab · 以下为原生模拟器截图，展示的账户、行情、订单与连接配置均为测试数据。</p></header>
 <main><nav class="nav" aria-label="选择页面">{{BUTTONS}}</nav>
 <section class="viewer" aria-label="原生页面截图"><button class="screenshot-button" type="button" aria-label="放大当前截图"><img id="screen" alt=""></button><p class="hint">点击图片放大 · 使用 ← → 切换页面</p></section>
 <aside class="details"><h2 id="title"></h2><p id="description"></p><div class="pager"><button id="previous" type="button" aria-label="上一页">← 上一页</button><button id="next" type="button" aria-label="下一页">下一页 →</button></div><div class="context">截图来自 <span id="device"></span><br>保留原始图像，未绘制替代界面。<br><br>本页用于查看界面，不能操作交易。<br>后续在你的 iPhone 16 Pro 上安装调试。</div></aside></main>

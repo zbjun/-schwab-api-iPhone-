@@ -125,7 +125,7 @@ enum DemoData {
                 volume: Double(100_000 + (index * 7_919) % 300_000) * (usesMinuteBars ? 1 : 100))
         }
         let displayedCandles = range.minuteInterval.map {
-            ChartAnalytics.minuteCandles(candles, interval: $0, asOf: end)
+            ChartAnalytics.minuteCandles(candles, interval: $0, asOf: end, includeExtendedHours: true)
         } ?? candles
         return PriceHistory(symbol: symbol, candles: displayedCandles, previousClose: quote.closePrice)
     }
@@ -134,9 +134,13 @@ enum DemoData {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "America/New_York")!
         var lastDay = calendar.startOfDay(for: end)
-        let close = calendar.date(bySettingHour: 16, minute: 0, second: 0, of: lastDay)!
+        let usesExtendedHours = range.isIntraday || range.minuteInterval != nil
+        let close = usesExtendedHours
+            ? (EquityTradingSession.windows(on: lastDay).last?.bounds.end ?? end.addingTimeInterval(1))
+            : calendar.date(bySettingHour: 16, minute: 0, second: 0, of: lastDay)!
         if close > end { lastDay = calendar.date(byAdding: .day, value: -1, to: lastDay)! }
-        while [1, 7].contains(calendar.component(.weekday, from: lastDay)) {
+        while usesExtendedHours ? EquityTradingSession.windows(on: lastDay).isEmpty
+            : [1, 7].contains(calendar.component(.weekday, from: lastDay)) {
             lastDay = calendar.date(byAdding: .day, value: -1, to: lastDay)!
         }
         if range.isIntraday || range == .daily || range.minuteInterval != nil {
@@ -144,16 +148,20 @@ enum DemoData {
             var days: [Date] = []
             var candidate = lastDay
             while days.count < sessionCount {
-                if ![1, 7].contains(calendar.component(.weekday, from: candidate)) { days.append(candidate) }
+                if usesExtendedHours ? !EquityTradingSession.windows(on: candidate).isEmpty
+                    : ![1, 7].contains(calendar.component(.weekday, from: candidate)) { days.append(candidate) }
                 candidate = calendar.date(byAdding: .day, value: -1, to: candidate)!
             }
             return days.reversed().flatMap { day in
                 if range == .daily {
                     return [calendar.date(bySettingHour: 16, minute: 0, second: 0, of: day)!]
                 }
-                let open = calendar.date(bySettingHour: 9, minute: 30, second: 0, of: day)!
                 let step = range == .fiveDay ? 5 : 1
-                return stride(from: 0, to: 390, by: step).map { open.addingTimeInterval(Double($0) * 60) }
+                return EquityTradingSession.windows(on: day).flatMap { window in
+                    stride(from: 0, to: Int(window.bounds.duration / 60), by: step).map {
+                        window.bounds.start.addingTimeInterval(Double($0) * 60)
+                    }
+                }
             }
         }
         let count = range == .weekly ? 104 : 60

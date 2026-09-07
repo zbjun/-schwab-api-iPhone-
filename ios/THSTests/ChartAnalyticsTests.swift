@@ -110,15 +110,20 @@ final class ChartAnalyticsTests: XCTestCase {
             XCTAssertEqual(Set(history.candles.map(\.time)).count, history.candles.count)
             XCTAssertTrue(history.candles.allSatisfy { $0.time <= end && $0.high >= max($0.open, $0.close) && $0.low <= min($0.open, $0.close) })
             if range.isIntraday {
-                XCTAssertEqual(history.candles.count, 390)
+                XCTAssertEqual(history.candles.count, 960)
                 let dates = Set(history.candles.map { calendar.startOfDay(for: $0.time) })
                 XCTAssertEqual(dates.count, range == .fiveDay ? 5 : 1)
+                XCTAssertEqual(Set(history.candles.compactMap { EquityTradingSession.at($0.time) }),
+                               Set(EquityTradingSession.allCases))
                 XCTAssertTrue(ChartAnalytics.sessionAverage(history.candles).allSatisfy { $0 != nil })
             } else {
                 XCTAssertGreaterThanOrEqual(history.candles.count, range.minuteInterval == nil ? 60 : 30)
                 XCTAssertNotNil(ChartAnalytics.movingAverage(history.candles, period: 30).last!)
                 if let interval = range.minuteInterval {
-                    XCTAssertEqual(history.candles.count, 10 * Int(ceil(390.0 / Double(interval))))
+                    let barsPerDay = [1: 960, 5: 192, 15: 64, 30: 32, 60: 17, 120: 9]
+                    XCTAssertEqual(history.candles.count, 10 * (try XCTUnwrap(barsPerDay[interval])))
+                    XCTAssertEqual(Set(history.candles.compactMap { EquityTradingSession.at($0.time) }),
+                                   Set(EquityTradingSession.allCases))
                 }
             }
         }

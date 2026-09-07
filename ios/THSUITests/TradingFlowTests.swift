@@ -612,7 +612,12 @@ final class TradingFlowTests: XCTestCase {
 
         init?(value: Any?) {
             guard let text = value as? String else { return nil }
-            let numbers = text.split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }
+            // SwiftUI localizes integer interpolation (for example 1,920 in zh-Hans).
+            // Group separators must not split one candle count into two numbers.
+            let ungrouped = text.replacingOccurrences(of: ",", with: "")
+                .replacingOccurrences(of: "\u{00A0}", with: "")
+                .replacingOccurrences(of: "\u{202F}", with: "")
+            let numbers = ungrouped.split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }
             guard numbers.count == 3, numbers[0] > 0, numbers[1] >= numbers[0], numbers[2] >= numbers[1] else { return nil }
             first = numbers[0]
             last = numbers[1]
@@ -623,7 +628,8 @@ final class TradingFlowTests: XCTestCase {
     private func chartWindow(file: StaticString = #filePath, line: UInt = #line) throws -> CandleWindow {
         let window = element("chart.window")
         XCTAssertTrue(window.waitForExistence(timeout: 5), file: file, line: line)
-        return try XCTUnwrap(CandleWindow(value: window.value), "Expected a candle window with first, last and total counts", file: file, line: line)
+        return try XCTUnwrap(CandleWindow(value: window.value),
+                             "Expected first, last and total counts; actual value: \(String(describing: window.value))", file: file, line: line)
     }
 
     private func waitForChartWindow(file: StaticString = #filePath, line: UInt = #line,

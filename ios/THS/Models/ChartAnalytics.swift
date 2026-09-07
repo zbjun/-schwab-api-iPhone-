@@ -2,6 +2,7 @@ import Foundation
 
 enum ChartAnalytics {
     private struct MinuteSession {
+        let kind: EquityTradingSession
         let bounds: DateInterval
         var minutes: [Int: PriceCandle] = [:]
     }
@@ -42,7 +43,7 @@ enum ChartAnalytics {
                   offset.truncatingRemainder(dividingBy: 60) == 0 else { continue }
             // Match the history decoder: the last valid observation at a timestamp wins.
             // Repeated observations never count as additional minutes or volume.
-            sessions[bounds.start, default: MinuteSession(bounds: bounds)].minutes[Int(offset / 60)] = candle
+            sessions[bounds.start, default: MinuteSession(kind: window.session, bounds: bounds)].minutes[Int(offset / 60)] = candle
         }
 
         var result: [PriceCandle] = []

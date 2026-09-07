@@ -2,7 +2,7 @@
 
 本配置把 Xcode 测试和打包移到 Expo EAS 的 Mac 构建机，保留现有 SwiftUI 代码。没有 Expo、React Native、CocoaPods 或其他运行依赖，也不支持用 Expo Go 打开此应用。`package.json` 和 `app.json` 只用于 EAS 项目识别；`package-lock.json` 记录零第三方依赖以满足 EAS 检查。App 的版本号仍由原生 Xcode 工程管理。
 
-2026-09-06 已登录并连接个人 Free 项目 `@fried_chicken_cn/ths-ios-personal`，关闭了内部构建的未登录访问。上传白名单为 50 个文件，构建上传约 118 KB，未包含本地应用凭据。[0.4.2 成功构建](https://expo.dev/accounts/fried_chicken_cn/projects/ths-ios-personal/builds/59d5b2ea-e199-4fac-b6dc-49656358e4d8) 已通过 160 项原生测试和 Release 归档；尚未进行真机验证。
+2026-09-06 已登录并连接个人 Free 项目 `@fried_chicken_cn/ths-ios-personal`，关闭了内部构建的未登录访问。上传白名单为 50 个文件，构建上传约 118 KB，未包含本地应用凭据。[0.4.3 成功构建](https://expo.dev/accounts/fried_chicken_cn/projects/ths-ios-personal/builds/359cd9dd-ec3d-4722-be2f-9088a870ab8c) 已于 2026-09-07 通过 171 项原生测试和 Release 归档；尚未进行真机验证。
 
 本地已检查 JSON/YAML 与 Bash 语法，并用 EAS 使用的 `ignore` 5.3.0 和 Windows 实际目录复制复演验证上传集合。临时模拟工具验证了非 Mac 主机、测试失败、附件导出失败、归档失败时的退出状态和诊断保留；这些仅验证构建脚本的失败处理，不计作原生测试通过。
 
@@ -20,7 +20,7 @@ npx eas-cli@23.2.0 login --browser
 npx eas-cli@23.2.0 init
 ```
 
-登录自己的 Expo 账户，确认使用 Free 方案。初始化时创建或选择自己的 `ths-ios-personal` 项目。CLI 会将真实的 `extra.eas.projectId` 写入 `app.json`，必要时补充 `owner`。仓库当前未预设这些字段，不要手工填入虚假的 ID。这个流程不需要 GitHub Actions、Apple 账号或签名证书。
+登录自己的 Expo 账户，确认使用 Free 方案。初始化时创建或选择自己的 `ths-ios-personal` 项目。CLI 会将真实的 `extra.eas.projectId` 写入 `app.json`，必要时补充 `owner`。仓库当前已关联上述个人项目；新用户应使用自己初始化得到的项目标识，不要填写虚假的 ID。这个流程不需要 GitHub Actions、Apple 账号或签名证书。
 
 创建项目后，先打开 Expo 项目设置，关闭 **Unauthenticated access to internal builds**，保存并核对后再上传或构建。EAS 的 internal 构建链接默认允许任何持有链接的人访问；关闭该选项后才要求有项目权限的 Expo 用户登录。`package.json` 的 `private: true` 只防止 npm 发布，不控制 Expo 权限。当前 app.json 和 `eas init` 没有这个隐私设置字段，不应填写旧的 `privacy: hidden`。只读 API 对应字段是 `internalDistributionBuildPrivacy`，关闭后的值应为 `PRIVATE`。
 

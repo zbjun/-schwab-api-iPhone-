@@ -1,16 +1,16 @@
 # THS 安装与后续真机调试
 
-当前交付 **0.4.2 / build 6 个人版**，首次安装无需填写 Client ID / Secret，包含双指缩放和单指拖动 K 线。已通过 160 项原生测试、Release 归档和安装包校验；真实 Schwab 连接与 iPhone 16 Pro 真机测试尚待安装后进行。
+当前交付 **0.4.3 / build 7 个人版**，首次安装无需填写 Client ID / Secret，包含盘前盘后行情标记、双指缩放和单指拖动 K 线。已通过 171 项原生测试、Release 归档和安装包校验；真实 Schwab 连接与 iPhone 16 Pro 真机测试尚待安装后进行。
 
 ## 安装文件
 
-使用 `artifacts/THS-0.4.2-personal-unsigned.ipa`，大小 764829 字节。SHA-256：
+使用 `artifacts/THS-0.4.3-personal-unsigned.ipa`，大小 783548 字节。SHA-256：
 
-`020604e932fbaa757110dd336e15ca5fa93cbf56e559689397885ad7b5f38a8e`
+`c510f0b502dc45931a417437476a218266d79eb0403d7159857c7da5e5183075`
 
-这是含本人应用配置的专用安装包，请仅在自己的设备上签名使用。`THS-0.4.2-unsigned.ipa` 是不含个人配置的通用包，首次打开仍需手动输入；不要拿错。旧 0.4.0 包继续保留。
+这是含本人应用配置的专用安装包，请仅在自己的设备上签名使用。`THS-0.4.3-unsigned.ipa` 是不含个人配置的通用包，首次打开仍需手动输入；不要拿错。旧 0.4.2 / 0.4.0 包继续保留。
 
-[原生构建与测试](https://expo.dev/accounts/fried_chicken_cn/projects/ths-ios-personal/builds/59d5b2ea-e199-4fac-b6dc-49656358e4d8) · [改动说明](UI-0.4.2.md)
+[原生构建与测试](https://expo.dev/accounts/fried_chicken_cn/projects/ths-ios-personal/builds/359cd9dd-ec3d-4722-be2f-9088a870ab8c) · [改动说明](UI-0.4.3.md)
 
 ## 签名与首次授权
 
@@ -26,6 +26,7 @@
 ## 真机调试顺序
 
 - 切换 iPhone 16 Pro 的系统明暗模式，核对自选与详情同步变化、左滑多股走势和返回导航。
+- 核对盘前 / 盘后底色、标签及真实返回时间，拖动和缩放后价格与成交量分区应保持一致。
 - 检查五个主图选项，以及“更多”中的六种分钟蜡烛和 MA5/10/20/30。
 - 展开图下买卖区，确认键盘出现后仍能看清主图；检查大字体、按金额换算和买卖预估数量。
 - 检查“买 / 卖 / 撤”切换，先用演示委托走通选单、保留订单返回和确认撤销，核对区不能遮挡主图。

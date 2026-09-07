@@ -1,6 +1,6 @@
 # 0.4.2 个人版首次连接
 
-当前为待原生编译验证的 0.4.2 / build 6 源码，包含 0.4.1 的 K 线手势。现有已验证的安装包和本地原生截图预览仍为 0.4.0，没有用旧二进制冒充新版。
+0.4.2 / build 6 已完成原生验证和个人 IPA 交付，包含 0.4.1 的 K 线手势。[成功构建](https://expo.dev/accounts/fried_chicken_cn/projects/ths-ios-personal/builds/59d5b2ea-e199-4fac-b6dc-49656358e4d8) 对应源码 `91185fe2203c2513dcf2e5710610e0616ddbf70f`，通过 147 项单元测试、13 项界面测试及 Release 归档。页签导航未触发补点，36 张截图均为该构建导出的原图。旧版文件保留。
 
 ## 首次使用和再次打开
 
@@ -23,6 +23,6 @@ SwiftUI 代码新增 `PersonalSchwabConfiguration`，读取约定的 `SchwabPers
 - Python 工具使用合成 ZIP、Mach-O 命令表和虚构配置，验证拒绝旧包、签名材料、异常路径、覆盖输出以及错误脱敏；这些检查不代表 iOS 程序已编译运行。
 - 原生测试覆盖首次导入、已保存会话优先、删除后的禁止导入、存储失败重试及格式验证。新增界面测试只用虚构配置，检查首次启动出现登录入口且没有 Client ID / Secret 输入框。
 - Release 包校验拒绝 UI 测试开关，并区分通用包与本机追加配置后的个人包。
-- 完整 XCTest、原生截图核对和 Release 归档仍待 EAS 的 Mac 构建机运行；本机 Windows 无 Xcode。没有进行真实账户请求或订单操作。
+- 完整 XCTest、原生截图核对和 Release 归档已通过；30 项 Python 工具测试通过。通用 IPA 的本地校验与云端报告一致，个人 IPA 在本机追加配置后也通过独立校验。没有进行真实账户请求、订单操作或 iPhone 真机验证。
 
-EAS 配置和免费构建步骤见 [EAS-BUILD.md](EAS-BUILD.md)，本地追加配置方式见 [个人 IPA 工具说明](../tools/ios/README-personal-ipa.md)。在新版通过检查前保留旧交付。
+EAS 配置和免费构建步骤见 [EAS-BUILD.md](EAS-BUILD.md)，本地追加配置方式见 [个人 IPA 工具说明](../tools/ios/README-personal-ipa.md)。0.4.2 个人包为 `artifacts/THS-0.4.2-personal-unsigned.ipa`（764829 字节）；校验记录为 `artifacts/THS-0.4.2-personal-verification.json`。旧交付仍保留。

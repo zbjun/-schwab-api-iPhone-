@@ -1,10 +1,10 @@
 # THS · 个人 iPhone 交易客户端
 
-原生 SwiftUI 项目，当前版本为 **0.4.0（build 4）**。系统明暗配色、六种分钟 K 线和图下撤单已完成，117 项原生测试及 iPhone Release 归档通过；下一阶段安装到 iPhone 16 Pro 调试。iPhone 直接访问 Schwab，不依赖自建服务器或域名。
+原生 SwiftUI 项目，当前交付 **0.4.2（build 6）个人版**。首次安装无需填写 Client ID / Secret，保存已有会话，并包含 K 线双指缩放、单指拖动与“最新”入口。iPhone 直接访问 Schwab，不依赖自建服务器或域名。
 
-**0.4.1（build 5）手势代码已提交，原生验证待恢复。** K线双指缩放、单指拖动及“最新”入口的实现与新增测试见 [手势改动记录](ios/UI-0.4.1.md)。GitHub 因账户付款或 Actions 支出上限未启动本轮构建；本地已交付的安装包和预览仍为上面验证过的 0.4.0。
+[Expo Free 原生构建](https://expo.dev/accounts/fried_chicken_cn/projects/ths-ios-personal/builds/59d5b2ea-e199-4fac-b6dc-49656358e4d8) 已通过 **147 项单元测试、13 项界面测试和 Release 归档**。通用包与本机追加配置后的个人包均已校验；36 张原生截图已更新，旧 0.4.0 交付保留。尚未在 iPhone 16 Pro 真机验证，也没有进行真实券商请求或订单操作。
 
-**0.4.2（build 6）正在验证个人版免填写配置。** 新源码支持首次启动从个人安装包导入应用配置，随后直接登录 Schwab；已保存的会话优先，存储失败可以重试。云端编译通用包，本机再加入个人配置，详见 [0.4.2 说明](ios/UI-0.4.2.md)。已连接 [EAS 免费构建项目](ios/EAS-BUILD.md)，上传文件检查通过，原生编译尚待执行，当前没有可替换旧版的新 IPA。
+个人配置仅在本机加入个人 IPA，未进入源码或云端构建。安装与授权见 [安装说明](ios/INSTALL.md)，改动与验证见 [0.4.2 说明](ios/UI-0.4.2.md)。本项目使用 EAS 云端 Xcode，仍为 SwiftUI；Expo Go 不能直接运行此项目，需要另行迁移到 Expo / React Native。
 
 ## 已实现的功能
 
@@ -37,16 +37,16 @@ node tools/ios/generate-project.mjs
 node tools/ios/generate-project.mjs --check
 ```
 
-工程包含 THS、THSTests、THSUITests，共享 Scheme 为 THS。本轮有 107 项单元测试和 10 项界面流程测试，使用虚构凭据、替身网络和显式演示模式。Windows 执行工程与静态检查；Swift 编译、原生测试和截图通过自己的 GitHub 私有仓库中的 macOS 工作流完成。
+工程包含 THS、THSTests、THSUITests，共享 Scheme 为 THS。本轮有 147 项单元测试和 13 项界面流程测试，使用虚构凭据、替身网络和显式演示模式。Windows 执行工程与静态检查；Swift 编译、原生测试和截图由 Expo Free 私有项目的 Mac 构建机完成。
 
 [源代码](https://github.com/zbjun/ths-ios-personal) · [构建工作流](https://github.com/zbjun/ths-ios-personal/actions/workflows/ios.yml)
 
 [0.4.0 验证构建](https://github.com/zbjun/ths-ios-personal/actions/runs/34030204345) 使用 Xcode 26.6 / iOS 26.5、iPhone 17 Pro 模拟器，通过全部 107 项单元测试及 10 项界面流程测试，完成 Release 真机归档。应用提交为 `5457759dd947b3532366000dc4576f2721faac8c`。系统明暗测试检查实际截图颜色，并保持当前页面；最终构建的页签切换未触发补点。开发期间没有发送真实订单，尚未进行 iPhone 16 Pro 真机验证。
 
-`artifacts` 已保存 0.4.0 签名资料包、未签名 IPA、包校验记录和 31 张原生截图预览。预览支持切换和放大，不执行交易；0.2.0 / 0.3.0 交付文件仍保留。完整证据见 [实现与验收](ios/IMPLEMENTATION.md)，文件改动与复用说明见 [0.4.0 改动记录](ios/UI-0.4.0.md)，后续步骤见 [安装说明](ios/INSTALL.md)。
+`artifacts` 已保存 0.4.2 个人未签名 IPA、通用 IPA、两份包校验记录及 36 张原生截图预览；旧 0.4.0 签名资料包和安装包仍保留。预览支持切换和放大，不执行交易；0.2.0 / 0.3.0 交付文件仍保留。完整证据见 [实现与验收](ios/IMPLEMENTATION.md)，文件改动与复用说明见 [0.4.0 改动记录](ios/UI-0.4.0.md)，后续步骤见 [安装说明](ios/INSTALL.md)。
 
 ## 首次连接
 
-Schwab Callback URL 为 `https://127.0.0.1`。在手机的“连接”页输入应用凭据，打开券商登录；授权后复制最终完整回调链接，回到 App 主动粘贴并完成连接。无自有域名版本使用手动回填，券商密码仅在券商页面输入。
+Schwab Callback URL 为 `https://127.0.0.1`。个人版首次启动自动保存应用配置，在“连接”页直接打开券商登录；通用包需手动填写应用凭据。授权后复制最终完整回调链接，回到 App 主动粘贴并完成连接。无自有域名版本使用手动回填，券商密码仅在券商页面输入。
 
 技术依据见 [接口资料](ios/API-REFERENCE.md) 和 [图表与统计依据](ios/UI-DATA-REFERENCE.md)，功能边界见 [开发契约](ios/FEATURE-CONTRACT.md)。Windows 原有诊断工具及测速报告仍保留在本地 tools/schwab-connect 和 reports 中，与手机授权互相独立。

@@ -2,7 +2,7 @@
 
 本配置把 Xcode 测试和打包移到 Expo EAS 的 Mac 构建机，保留现有 SwiftUI 代码。没有 Expo、React Native、CocoaPods 或其他运行依赖，也不支持用 Expo Go 打开此应用。`package.json` 和 `app.json` 只用于 EAS 项目识别；`package-lock.json` 记录零第三方依赖以满足 EAS 检查。App 的版本号仍由原生 Xcode 工程管理。
 
-2026-09-06 已登录并连接个人 Free 项目 `@fried_chicken_cn/ths-ios-personal`，关闭了内部构建的未登录访问。上传预检的 49 个文件符合白名单，未发现本地应用凭据。完整原生构建尚待执行；不能把这些检查视为 Xcode 编译或真机验证通过。
+2026-09-06 已登录并连接个人 Free 项目 `@fried_chicken_cn/ths-ios-personal`，关闭了内部构建的未登录访问。上传白名单为 50 个文件，构建上传约 118 KB，未包含本地应用凭据。[0.4.2 成功构建](https://expo.dev/accounts/fried_chicken_cn/projects/ths-ios-personal/builds/59d5b2ea-e199-4fac-b6dc-49656358e4d8) 已通过 160 项原生测试和 Release 归档；尚未进行真机验证。
 
 本地已检查 JSON/YAML 与 Bash 语法，并用 EAS 使用的 `ignore` 5.3.0 和 Windows 实际目录复制复演验证上传集合。临时模拟工具验证了非 Mac 主机、测试失败、附件导出失败、归档失败时的退出状态和诊断保留；这些仅验证构建脚本的失败处理，不计作原生测试通过。
 
@@ -60,7 +60,7 @@ npx eas-cli@23.2.0 build --platform ios --profile native-unsigned
 
 成功页面的应用产物是 `THS-unsigned.ipa`，Bundle ID 为 `app.personal.ths`。附加诊断产物含完整原生测试证据、截图、校验报告和 SHA-256。应先下载核对结果，再在本机注入用户自己的配置，最后使用自己的签名工具签名安装。私人配置在云端构建后添加，不应进入 Expo、GitHub 或通用 IPA。
 
-当前流程不改动已有的 0.4.0 包和本地预览。需要实际通过原生测试后，才能用新版本替换旧交付。
+0.4.2 已完成验证并更新本地预览，旧 0.4.0 包及截图目录保留。个人配置在下载后本地追加，不进入 Expo。
 
 ## 核实依据
 
@@ -68,4 +68,4 @@ npx eas-cli@23.2.0 build --platform ios --profile native-unsigned
 - [eas.json 配置](https://docs.expo.dev/eas/json/)：iOS `withoutCredentials`、`config`、`scheme`、本地版本号。
 - [EAS 构建机镜像](https://docs.expo.dev/build-reference/infrastructure/) 与 [当前免费方案](https://expo.dev/pricing)。
 - [内部构建下载权限](https://docs.expo.dev/build/internal-distribution/) 与 [源码归档私有存储](https://github.com/expo/fyi/blob/main/eas-build-archive.md)。
-- 核实的发布版为 EAS CLI `23.2.0`，npm 元数据中的源码 revision 是 `74292d2ace404759ab8936d5aa1369e15d4b4f9d`。其 [非 Expo 配置分支](https://github.com/expo/eas-cli/blob/74292d2ace404759ab8936d5aa1369e15d4b4f9d/packages/eas-cli/src/project/expoConfig.ts)、[可缺省的 React Native 版本](https://github.com/expo/eas-cli/blob/74292d2ace404759ab8936d5aa1369e15d4b4f9d/packages/eas-cli/src/build/metadata.ts) 与 [EAS 目录复制实现](https://github.com/expo/eas-cli/blob/74292d2ace404759ab8936d5aa1369e15d4b4f9d/packages/eas-cli/src/vcs/local.ts) 是无运行依赖和上传集合检查的依据。云端实际编译仍待首次运行验证。
+- 核实的发布版为 EAS CLI `23.2.0`，npm 元数据中的源码 revision 是 `74292d2ace404759ab8936d5aa1369e15d4b4f9d`。其 [非 Expo 配置分支](https://github.com/expo/eas-cli/blob/74292d2ace404759ab8936d5aa1369e15d4b4f9d/packages/eas-cli/src/project/expoConfig.ts)、[可缺省的 React Native 版本](https://github.com/expo/eas-cli/blob/74292d2ace404759ab8936d5aa1369e15d4b4f9d/packages/eas-cli/src/build/metadata.ts) 与 [EAS 目录复制实现](https://github.com/expo/eas-cli/blob/74292d2ace404759ab8936d5aa1369e15d4b4f9d/packages/eas-cli/src/vcs/local.ts) 是无运行依赖和上传集合检查的依据。云端实际编译、160 项原生测试和 Release 归档均已通过。

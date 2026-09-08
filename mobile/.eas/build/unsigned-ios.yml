@@ -1,0 +1,20 @@
+build:
+  name: Build standalone unsigned THS Expo for iPhone
+  steps:
+    - eas/checkout
+    - eas/install_node_modules
+    - run:
+        name: Verify and compile standalone Release app
+        command: bash scripts/build-unsigned-ios.sh
+    - eas/upload_artifact:
+        name: Preserve build diagnostics
+        if: ${ always() }
+        inputs:
+          type: build-artifact
+          path: build-output/diagnostics
+    - eas/upload_artifact:
+        name: Upload unsigned iPhone IPA
+        if: ${ success() }
+        inputs:
+          type: application-archive
+          path: build-output/THS-0.5.5-unsigned.ipa

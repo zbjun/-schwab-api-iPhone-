@@ -1,0 +1,21 @@
+{
+  "cli": { "version": "23.2.0", "appVersionSource": "local", "requireCommit": false },
+  "build": {
+    "unsigned": {
+      "distribution": "internal",
+      "environment": "preview",
+      "autoIncrement": false,
+      "node": "24.11.1",
+      "env": { "EXPO_NO_DOTENV": "1" },
+      "cache": { "disabled": true },
+      "ios": {
+        "withoutCredentials": true,
+        "scheme": "THS",
+        "buildConfiguration": "Release",
+        "resourceClass": "medium",
+        "image": "macos-tahoe-26.5-xcode-26.6",
+        "config": "unsigned-ios.yml"
+      }
+    }
+  }
+}

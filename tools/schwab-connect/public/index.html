@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta name="referrer" content="no-referrer">
+    <title>Schwab 连接助手 · 本地诊断</title>
+    <link rel="stylesheet" href="/style.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">跳转到主要内容</a>
+    <div class="page-shell">
+      <header class="site-header">
+        <div class="brand"><span class="brand-mark" aria-hidden="true">S</span><span>Schwab 连接助手</span></div>
+        <span class="local-tag"><span class="status-dot" aria-hidden="true"></span>本地诊断工具</span>
+      </header>
+
+      <main id="main">
+        <div class="hero">
+          <div>
+            <p class="eyebrow">连接验证 / 网络测速</p>
+            <h1>先连通，再看真实耗时。</h1>
+            <p class="hero-description">完成账户授权后，测量读取账户与持仓的实际响应时间，为 iPhone App 的连接方案提供依据。</p>
+          </div>
+          <div class="read-only-badge"><span aria-hidden="true">✓</span>只读测试 · 无下单功能</div>
+        </div>
+
+        <dl class="status-bar" aria-label="当前连接状态">
+          <div><dt>API 凭据</dt><dd id="config-status">正在检查…</dd></div>
+          <div><dt>账户授权</dt><dd id="auth-status">正在检查…</dd></div>
+          <div><dt>访问令牌</dt><dd id="expiry-status">—</dd></div>
+          <div class="status-actions"><button id="refresh-status" class="button button-quiet" type="button" disabled>刷新状态</button><button id="logout" class="button button-quiet" type="button" hidden>清除本地授权</button></div>
+        </dl>
+
+        <div id="message" class="message" role="status" aria-live="polite" hidden></div>
+
+        <div class="setup-grid">
+          <section class="card" aria-labelledby="setup-title">
+            <div class="section-heading"><span class="step-number" aria-hidden="true">01</span><div><p class="section-kicker">一次性设置</p><h2 id="setup-title">配置 API 与回调地址</h2></div></div>
+            <p class="body-copy">在 <a href="https://developer.schwab.com/" target="_blank" rel="noopener noreferrer">Schwab Developer Portal <span class="new-tab-hint">（新标签页）</span></a> 修改应用，将原来的示例地址替换为下面的完整地址，并确认应用状态为 <strong>Ready For Use</strong>。</p>
+            <div class="callback-display"><code id="registered-callback">https://127.0.0.1</code><button id="copy-callback" class="button button-small" type="button">复制</button></div>
+            <p class="field-hint">这是本次电脑诊断使用的回调地址，不是最终 iOS App 的回调配置。</p>
+
+            <div id="configured-summary" class="configured-summary" hidden><span>已保存 API 凭据，页面不会显示原值。</span><button id="edit-credentials" class="text-button" type="button">更换凭据</button></div>
+            <form id="config-form" class="form-stack" autocomplete="off">
+              <div class="field"><label for="client-id">Client ID</label><input id="client-id" name="clientId" type="text" autocapitalize="none" autocomplete="off" spellcheck="false" required placeholder="填写开发者页面中的 Client ID"></div>
+              <div class="field"><label for="client-secret">Client Secret</label><input id="client-secret" name="clientSecret" type="password" autocomplete="new-password" spellcheck="false" required placeholder="填写你的 Client Secret"><p class="field-hint">只在此本地页面配置，不必发到聊天。提交后会清空输入框。</p></div>
+              <div class="form-actions"><button id="save-config" class="button button-secondary" type="submit" disabled>保存本地配置</button><button id="cancel-config" class="button button-quiet" type="button" hidden>取消</button></div>
+            </form>
+          </section>
+
+          <section class="card" aria-labelledby="connect-title">
+            <div class="section-heading"><span class="step-number" aria-hidden="true">02</span><div><p class="section-kicker">在 Schwab 官方页面登录</p><h2 id="connect-title">授权并完成连接</h2></div></div>
+            <ol class="auth-steps">
+              <li><span>打开官方授权页</span><p>在新标签页中登录 Schwab，完成账户授权。</p></li>
+              <li><span>复制最终回调地址</span><p>授权后会跳转到 <code>https://127.0.0.1</code>。本工具没有 HTTPS 回调监听，因此显示“无法连接”是预期现象；直接复制地址栏里的完整 URL 即可。</p></li>
+              <li><span>粘贴到下方，完成连接</span><p>地址必须包含授权返回的参数。提交后，输入框会立即清空。</p></li>
+            </ol>
+            <button id="start-auth" class="button button-primary" type="button" disabled>打开 Schwab 授权页 <span aria-hidden="true">↗</span></button>
+            <p id="auth-link-wrap" class="field-hint" hidden>如果新标签页未打开，<a id="auth-link" target="_blank" rel="noopener noreferrer">点击继续官方授权</a>。</p>
+            <form id="callback-form" class="form-stack callback-form" autocomplete="off">
+              <div class="field"><label for="callback-url">最终回调地址</label><input id="callback-url" name="callbackUrl" type="password" inputmode="url" autocapitalize="none" autocomplete="off" spellcheck="false" required placeholder="粘贴 https://127.0.0.1/?code=…" aria-describedby="callback-hint"><p id="callback-hint" class="field-hint">完整复制浏览器地址栏；这是一次性授权信息，请勿分享。</p></div>
+              <button id="complete-auth" class="button button-secondary" type="submit" disabled>完成授权</button>
+            </form>
+          </section>
+        </div>
+
+        <section class="card" aria-labelledby="history-title">
+          <h2 id="history-title">SNDU 夜盘分钟 K 线诊断</h2>
+          <p class="body-copy">完成上面的授权后，直接读取 SNDU 最近 10 天的 1 分钟原始行情，并用 QQQ 对照。只显示美东各日期、各时段的数据根数，不读取或操作订单。</p>
+          <button id="run-history-probe" class="button button-primary" type="button" disabled>检查夜盘数据</button>
+          <pre id="history-probe-result" class="body-copy" aria-live="polite"></pre>
+        </section>
+        <section class="card measurement-card" aria-labelledby="benchmark-title">
+          <div class="measurement-heading"><div class="section-heading"><span class="step-number" aria-hidden="true">03</span><div><p class="section-kicker">已授权接口的响应时间</p><h2 id="benchmark-title">测试实际读取延迟</h2></div></div><span id="benchmark-state" class="subtle-tag">等待账户授权</span></div>
+          <p class="body-copy">测试读取账户与持仓；可选测试行情。对比直连与当前代理的常见耗时、慢请求和波动，结果不显示账户资产或持仓明细。</p>
+          <form id="benchmark-form" class="benchmark-controls">
+            <div class="field route-field"><label for="route">连接线路</label><select id="route" name="route" aria-describedby="route-description"><option value="direct" selected>直连</option><option id="proxy-route-option" value="proxy" disabled>当前代理</option><option id="compare-route-option" value="compare" disabled>直连与代理对比</option></select></div>
+            <div class="field sample-field"><label for="samples">每个接口、每条线路请求次数</label><select id="samples" name="samples"><option value="3">3 次 · 快速检查</option><option value="5" selected>5 次 · 标准测试</option><option value="10">10 次 · 更多样本</option><option id="extended-samples-option" value="20" disabled>20 次 · 对比波动</option></select></div>
+            <label class="checkbox-field" for="include-quotes"><input id="include-quotes" name="includeQuotes" type="checkbox"><span>同时测试行情<span class="field-hint">需开通 Market Data API</span></span></label>
+            <button id="run-benchmark" class="button button-primary" type="submit" disabled>开始只读测速</button>
+          </form>
+          <p id="route-description" class="field-hint benchmark-description">正在读取线路能力…</p>
+          <p id="benchmark-plan" class="field-hint benchmark-plan"></p>
+          <div class="measurement-note"><span class="note-marker" aria-hidden="true">i</span><p>未登录时返回的 <strong>401</strong> 只反映 API 入口响应，不能作为成功读取业务数据的延迟。本次测试不提交、修改或撤销订单。</p></div>
+
+          <div id="results-empty" class="empty-state"><span class="empty-chart" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span><p id="empty-title">完成账户授权后，即可开始测速</p><span id="empty-description">这里将显示各接口的中位耗时、P95 和单次请求明细。</span></div>
+          <div id="results" class="results" hidden>
+            <div class="results-heading"><h3>测速结果</h3><p id="measured-at"></p></div>
+            <p id="results-summary" class="results-summary"></p>
+            <div class="table-scroll" role="region" aria-label="测速结果汇总" tabindex="0"><table><thead><tr><th scope="col">接口 / 线路</th><th scope="col">成功请求</th><th scope="col">中位耗时</th><th scope="col">P95 · 慢尾</th><th scope="col">最慢请求</th><th scope="col">波动 · 标准差</th><th scope="col">超过 1 秒</th><th scope="col">失败</th><th scope="col">连接复用</th></tr></thead><tbody id="results-body"></tbody></table></div>
+            <p id="results-method" class="field-hint table-footnote"></p>
+            <p class="field-hint">仅 HTTP 2xx 且业务数据有效的请求计为成功。P95 用于观察较慢的一端，样本较少时易受单次波动影响；标准差越大，耗时越不稳定。本机结果不能代替 iPhone 网络测试，也不代表下单延迟。</p>
+            <div id="sample-details" class="sample-details"></div>
+          </div>
+        </section>
+      </main>
+      <footer class="site-footer"><span>本页不把凭据、令牌或回调地址写入浏览器存储。</span><span>个人连接诊断 · 非 Schwab 官方应用</span></footer>
+    </div>
+  </body>
+</html>

@@ -1,10 +1,12 @@
 # THS · 个人 iPhone 交易客户端
 
+**当前开发入口：Expo / React Native 0.5.5**，位于 [`mobile/`](mobile/README.md)。最新源码另含紧凑买卖撤布局与本机夜盘历史诊断工具，尚未重新打包 IPA。使用 Expo Go 在 iPhone 调试，界面与业务代码热更新不消耗 EAS 云端构建配额。原 SwiftUI 版本保留，以下记录原生 0.4.3 的已交付状态。
+
 原生 SwiftUI 项目，当前交付 **0.4.3（build 7）个人版**。首次安装无需填写 Client ID / Secret，保存已有会话，并包含盘前盘后行情、时段底色标记、K 线双指缩放、单指拖动与“最新”入口。iPhone 直接访问 Schwab，不依赖自建服务器或域名。
 
 [Expo Free 原生构建](https://expo.dev/accounts/fried_chicken_cn/projects/ths-ios-personal/builds/359cd9dd-ec3d-4722-be2f-9088a870ab8c) 已通过 **157 项单元测试、14 项界面测试和 Release 归档**。通用包与本机追加配置后的个人包均已校验；38 张原生截图已更新，旧 0.4.2 / 0.4.0 交付保留。尚未在 iPhone 16 Pro 真机验证，也没有进行真实券商请求或订单操作。
 
-个人配置仅在本机加入个人 IPA，未进入源码或云端构建。安装与授权见 [安装说明](ios/INSTALL.md)，改动与验证见 [0.4.3 说明](ios/UI-0.4.3.md)。本项目使用 EAS 云端 Xcode，仍为 SwiftUI；Expo Go 不能直接运行此项目，需要另行迁移到 Expo / React Native。
+个人配置仅在本机加入个人 IPA，未进入源码或云端构建。安装与授权见 [安装说明](ios/INSTALL.md)，改动与验证见 [0.4.3 说明](ios/UI-0.4.3.md)。本项目使用 EAS 云端 Xcode，仍为 SwiftUI；Expo Go 客户端已另行迁移到 `mobile/`，不直接运行 SwiftUI 源码。
 
 ## 已实现的功能
 

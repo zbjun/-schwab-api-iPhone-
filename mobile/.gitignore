@@ -1,0 +1,50 @@
+# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
+
+# dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+dist-ios/
+dist-restore-ios/
+dist-web/
+web-build/
+expo-env.d.ts
+
+# Native
+.kotlin/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Metro
+.metro-health-check*
+
+# debug
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# macOS
+.DS_Store
+*.pem
+
+# local env files
+.env*.local
+.env*
+build-output/
+
+# Keep the EAS workflow despite the repository-wide build/ ignore rule.
+!/.eas/build/
+!/.eas/build/unsigned-ios.yml
+
+# typescript
+*.tsbuildinfo
+
+# generated native folders
+/ios
+/android

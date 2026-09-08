@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "THS",
+    "slug": "ths-expo-personal",
+    "version": "0.5.5",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "app.personal.ths.expo",
+      "buildNumber": "6"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-secure-store"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "69d61a40-fdba-4cf6-8345-a0bf4f232794"
+      }
+    },
+    "owner": "fried_chicken_cn"
+  }
+}

@@ -1,5 +1,11 @@
 # 0.4.2 visual restoration in Expo · 2026-09-07
 
+## Authenticated overnight history coverage · 2026-09-08
+
+- Supersedes the earlier lack of authenticated evidence: three direct `pricehistory` GETs completed at 14:56 UTC, after local OAuth. SNDU/App parameters returned 8,281 valid unique bars; SNDU/explicit 10-calendar-day window returned 4,190; QQQ/App parameters returned 11,836. All HTTP 200, zero malformed or duplicate bars. Report contains only public-symbol date/session counts, no credentials or account information: [OVERNIGHT-DIAGNOSTIC.md](OVERNIGHT-DIAGNOSTIC.md).
+- SNDU has overnight bars on August 25–31, but zero on September 1–4 in both queries. QQQ has 453/453/442/224 overnight bars on those four dates. Both return zero overnight bars for September 8 as of the request. Thus this API can return overnight observations, while the tested recent SNDU data is absent upstream of the app decoder. The underlying coverage/schedule/correction cause is unverified; do not generalize this into API-wide lack of overnight support or assert trading eligibility.
+- No app behavior changed, no real order writes, no IPA build. Read-only diagnostic tests previously passed (19); documentation whitespace check passed. Earlier build notes remain chronological records.
+
 ## Compact inline trade ticket · 2026-09-08 (local only)
 
 - `src/TradePanel.tsx`: reduced inline padding/gaps and account header; moved session and duration onto one row and amount/share switch beside the quantity label. Kept actionable bid/ask prices, maximum quantity, order review and cancel flow. Removed growing space before submission; shortened repeated explanatory text. No dependencies or broker-write changes.

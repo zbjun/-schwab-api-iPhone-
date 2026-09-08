@@ -1,6 +1,6 @@
 # THS Expo / React Native · 0.5.5
 
-最新源码包含紧凑买卖撤面板：报价可点选填价，时段与有效期并排，按金额入口位于数量旁，图表按面板内容调整空间。这部分修改未重新生成 IPA。SNDU 1 分钟夜盘历史缺失尚待真实 API 响应核实；代码保留返回的夜盘数据不代表 API 一定提供完整夜盘历史。只读诊断工具见 [`../tools/schwab-connect/README.md`](../tools/schwab-connect/README.md)。
+最新源码包含紧凑买卖撤面板：报价可点选填价，时段与有效期并排，按金额入口位于数量旁，图表按面板内容调整空间。这部分修改未重新生成 IPA。2026-09-08 的真实 API 检查确认：SNDU 返回了较早的夜盘分钟线，但 9 月 1–4 日夜盘均为零根；同一参数下 QQQ 有对应夜盘数据。缺失段不能在客户端凭空补全，具体原因仍未确认；详见[原始数据覆盖检查](OVERNIGHT-DIAGNOSTIC.md)。只读诊断工具见 [`../tools/schwab-connect/README.md`](../tools/schwab-connect/README.md)。
 
 这是新的 Expo / React Native 客户端。Windows 上运行 Metro，iPhone 用 Expo Go 扫码；日常 JavaScript、TypeScript 和界面修改使用 Fast Refresh，不调用 EAS、不消耗 iOS 云端构建配额。原来的 `../ios/` SwiftUI 项目和 0.4.3 IPA 保留。
 

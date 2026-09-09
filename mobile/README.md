@@ -19,13 +19,17 @@
 
 ## 真实 Schwab 直连
 
-- 将本机生成的 `../artifacts/THS-Expo-personal-config.json` 私下传到 iPhone“文件”。在 App 的“连接 → Schwab 直连 → 从文件导入个人配置”选择它，无需逐项输入 Client ID / Secret。
+- 将本机生成的 `../artifacts/THS-Expo-personal-config.json` 私下传到 iPhone“文件”。在 App 的“设置 → Schwab 连接 → Schwab 直连 → 从文件导入个人配置”选择它，无需逐项输入 Client ID / Secret。
 - 此文件含个人应用凭据。它不进入 Git、Metro 代码或云端构建；导入后使用 SecureStore 保存到手机。手机重启 App 会恢复连接模式和已有配置。
 - 用开发者门户已登记的回调地址 `https://127.0.0.1`。点击“在浏览器登录 Schwab”，完成本人登录及授权。
 - 跳转到本机回调后，Safari 可能显示无法访问；复制地址栏完整网址，返回 App 粘贴并点击“完成授权”。Expo Go 不提供此项目的专属 URL scheme 自动回跳，因此沿用手动回调方式。
 - 真实读写由 iPhone 直接访问 `api.schwabapi.com`。无需自建域名或服务器。当前本机验证使用虚构数据，没有调用真实订单接口。
 
 ## 功能与边界
+
+底部连接入口已移入“设置 → Schwab 连接”。设置中的快速模式默认关闭，开关保存在本机。开启后，输入价格和股数，点买入/卖出即在后台核对并提交；单笔撤单按钮直接发送撤单请求，点订单行仍只查看详情。关闭时恢复原有核对页，修改订单仍需核对。快速模式复用已有账户/数量校验、冻结订单快照、操作锁和未知结果锁定，不会自动重试失败提交。
+
+**授权自动返回尚未接通。** 当前固定回调 `https://127.0.0.1` 仍需复制粘贴。Expo SDK 57 的官方登录会话使用自定义 URL scheme 接回；Apple 原生 HTTPS 回调要求关联域名。可行后续路线是配置用户控制的 HTTPS 回调页、在 Schwab 门户登记该地址，再返回独立 App 的专属 scheme；需要确认实际域名后实施并重新构建验证。账号密码始终在 Schwab 官方页面填写，不由 App 收集。参考：[Expo WebBrowser](https://docs.expo.dev/versions/v57.0.0/sdk/webbrowser/)、[Apple HTTPS callback](https://developer.apple.com/documentation/authenticationservices/aswebauthenticationsession/callback/https(host:path:))。
 
 自选列表／左滑多股同列、账户持仓、行情详情、分时／五日、日周月及 1/5/15/30/60/120 分钟 K 线、MA5/10/20/30、扩展时段底色、价量对齐、横拖／双指缩放、系统明暗色、图下买卖撤、账户核对、简单订单修改和撤销均移植为 React Native。
 
@@ -54,7 +58,7 @@ npx eas-cli@23.2.0 build --platform ios --profile unsigned --non-interactive
 
 应用标识为 `app.personal.ths.expo`，与旧 SwiftUI 包不同。独立安装的 App 与 Expo Go 不共享配置。通用包需导入个人配置；自用包可用 `scripts/personalize-ipa.py` 在本机追加配置，首次启动自动保存到 SecureStore。配置不会提交 GitHub 或上传云端构建，已有会话优先且显式重置后不自动恢复。两种包都需要本人完成 Schwab 授权，沿用上文的手动粘贴回调方式。
 
-下单必须先重新核对账户及报价，再本人确认。提交不会自动重试；不确定结果保留交易锁定直到本人在券商核实。模拟模式与真实模式隔离。缺失数据保持空缺，不以模拟值填入真实账户。
+下单会重新核对账户及报价；普通模式显示确认页，快速模式由本人点击买入/卖出按钮后直接核对并提交。提交不会自动重试；不确定结果保留交易锁定直到本人在券商核实。模拟模式与真实模式隔离。缺失数据保持空缺，不以模拟值填入真实账户。
 
 ## 本地验证
 

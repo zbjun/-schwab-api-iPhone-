@@ -1,3 +1,11 @@
+# 2026-09-09: Settings and optional quick trading
+
+- Connection is nested under Settings. Quick mode defaults off, persists in local AsyncStorage, and its switch is unavailable until preferences load or while an action is pending. Settings follows the existing palette and uses a dependency-free vector icon.
+- Quick buy/sell skips only the UI review: the same broker prepare/submit chain still checks funds, holdings, order state, account identity, context generation, and snapshot expiry. It reuses the shared action lock and does not retry uncertain writes. Single-order cancellation has its own explicit button; row taps remain detail navigation. Replacement keeps review.
+- TypeScript and all 174 tests passed, including six quick-order regressions for frozen identity, preparation failures, context changes, wrong identity/expiry, and unknown outcomes. No lint script exists; git diff --check passed.
+- Browser demo at 402x874: Settings and nested connection navigation, off-by-default switch, preference survives full reload, one-click AAPL buy and sell each create one pending order, one-click cancellation removes that order from the cancelable list (3 to 2), and disabling quick mode restores the confirmation page. Dark/light layouts inspected; browser error log empty. Test preference restored off and demo reset afterward.
+- OAuth automatic return is not implemented: the fixed loopback HTTPS callback does not satisfy Expo's custom-scheme session callback or Apple's associated-domain HTTPS callback requirements. Awaiting a user-controlled HTTPS callback address before registering and integrating a return route. Current manual flow remains usable.
+- No new dependencies, real brokerage writes, cloud builds, or IPA. Physical iPhone and live quick orders remain unverified. Changes simplify confirmation navigation, not broker validation.
 # 0.4.2 visual restoration in Expo · 2026-09-07
 
 ## Authenticated overnight history coverage · 2026-09-08

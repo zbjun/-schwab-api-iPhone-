@@ -35,6 +35,7 @@ export function useTrading() {
     "QQQ",
   ]);
   const [storageReady, setStorageReady] = useState(false);
+  const [quickMode, setQuickMode] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [revision, setRevision] = useState(0);
@@ -48,8 +49,10 @@ export function useTrading() {
       AsyncStorage.getItem("ths.expo.watchlist.v1"),
       AsyncStorage.getItem("ths.expo.mode.v1"),
       realRef.current ? restoreBundledConfiguration(realRef.current) : Promise.resolve(false),
+      AsyncStorage.getItem("ths.expo.quickMode.v1"),
     ])
-      .then(([value, mode, configured]) => {
+      .then(([value, mode, configured, quick]) => {
+        setQuickMode(quick === "true");
         if (value) {
           const list = JSON.parse(value);
           if (
@@ -64,7 +67,7 @@ export function useTrading() {
         }
         if ((mode === "real" || (mode === null && configured)) && Platform.OS !== "web") setDemo(false);
       })
-      .catch(() => setMessage("恢复连接配置或自选失败，请到连接页重新导入配置。"))
+      .catch(() => setMessage("恢复偏好或配置失败，请到设置中的连接检查。"))
       .finally(() => setStorageReady(true));
   }, []);
   useEffect(() => {
@@ -217,7 +220,15 @@ export function useTrading() {
     setMessage("");
     setDemo(demoMode);
   }
+  async function changeQuickMode(value: boolean) {
+    if (!storageReady) return;
+    await AsyncStorage.setItem("ths.expo.quickMode.v1", value ? "true" : "false");
+    setQuickMode(value);
+  }
   return {
+    quickMode,
+    changeQuickMode,
+    storageReady,
     broker,
     isDemo,
     switchMode,

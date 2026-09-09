@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Pressable, Switch, Text, View } from "react-native";
 import type {
   Draft,
@@ -20,6 +20,7 @@ import {
   orderSessionLabels,
 } from "./orderRules.ts";
 import { Button, Input, money, styles } from "./ui.tsx";
+import { submitQuickOrder } from "./quickTrading.ts";
 
 const kindLabels: Record<OrderKind, string> = {
   MARKET: "市价",
@@ -64,7 +65,7 @@ export function TradePanel({
   const gtcAllowed = kind !== "MARKET" && session !== "AM" && session !== "PM";
   const [prepared, setPrepared] = useState<Prepared>();
   const context = useRef(0);
-  useEffect(() => {
+  useLayoutEffect(() => {
     setPrepared(undefined);
     ++context.current;
   }, [
@@ -81,8 +82,12 @@ export function TradePanel({
     s.accountID,
     s.broker,
     s.status.authenticated,
+    s.status.unresolvedOperation,
+    s.isDemo,
+    s.quickMode,
+    replacement?.id,
   ]);
-  useEffect(
+  useLayoutEffect(
     () => () => {
       ++context.current;
     },
@@ -125,6 +130,7 @@ export function TradePanel({
     s.status.authenticated &&
     Boolean(s.accountID) &&
     !s.status.unresolvedOperation;
+  const quickOrder = s.quickMode && !replacement;
   async function review() {
     const version = context.current;
     const draft: Draft = {
@@ -137,6 +143,21 @@ export function TradePanel({
       ...(["LIMIT", "STOP_LIMIT"].includes(kind) ? { limitPrice: price } : {}),
       ...(["STOP", "STOP_LIMIT"].includes(kind) ? { stopPrice: stop } : {}),
     };
+    if (quickOrder) {
+      const { snapshot, result } = await submitQuickOrder({
+        broker: s.broker,
+        accountID: s.accountID,
+        draft,
+        isDemo: s.isDemo,
+        isCurrent: () => permitted && context.current === version,
+      });
+      s.setMessage(
+        `${snapshot.isDemo ? "演示" : ""}订单已提交${result.orderID ? ` #${result.orderID}` : ""}，请查看订单状态。`,
+      );
+      await s.refresh();
+      onDone?.();
+      return;
+    }
     const value = await s.broker.prepare(s.accountID, draft, replacement?.id);
     if (context.current === version) setPrepared(value);
   }
@@ -229,7 +250,7 @@ export function TradePanel({
                 fontSize: 11,
               }}
             >
-              {s.isDemo ? "模拟交易" : "真实交易"}
+              {s.isDemo ? "模拟交易" : "真实交易"}{s.quickMode ? " · 快速" : ""}
             </Text>
             {onClose && (
               <Pressable
@@ -247,7 +268,12 @@ export function TradePanel({
           </View>
         </View>
       )}
-      {prepared ? (
+      {!inline && s.quickMode && (
+        <Text style={{ color: p.accent, fontSize: 11, paddingBottom: 6 }}>
+          快速模式
+        </Text>
+      )}
+      {prepared && !quickOrder ? (
         <View style={{ gap: 8 }}>
           <View style={{ alignItems: "flex-start" }}>
             <Button
@@ -673,10 +699,14 @@ export function TradePanel({
                 <Button
                   label={
                     s.busy
-                      ? "正在获取最新账户与报价…"
+                      ? quickOrder
+                        ? "正在核对并提交…"
+                        : "正在获取最新账户与报价…"
                       : replacement
                         ? "核对修改"
-                        : `核对${side === "BUY" ? "买入" : "卖出"}`
+                        : quickOrder
+                          ? `${s.isDemo ? "模拟" : ""}${side === "BUY" ? "买入" : "卖出"}`
+                          : `核对${side === "BUY" ? "买入" : "卖出"}`
                   }
                   active
                   color={tradeColor}
@@ -895,17 +925,36 @@ export function OrderList({
   const [filter, setFilter] = useState("全部");
   const [confirmCancel, setConfirmCancel] = useState(false);
   const generation = useRef(0);
-  useEffect(() => {
+  useLayoutEffect(() => {
     ++generation.current;
     setSelected(undefined);
     setConfirmCancel(false);
-  }, [s.accountID, s.broker, symbol]);
-  useEffect(
+  }, [s.accountID, s.broker, s.quickMode, symbol]);
+  useLayoutEffect(
     () => () => {
       ++generation.current;
     },
     [],
   );
+  const cancelPermitted =
+    s.status.authenticated && Boolean(s.accountID) && !s.status.unresolvedOperation;
+  function cancelOrder(order: Order) {
+    const accountID = s.accountID;
+    const orderID = order.id;
+    const broker = s.broker;
+    const version = generation.current;
+    void s.run(async () => {
+      if (!order.cancelable || !cancelPermitted || version !== generation.current)
+        throw new Error("订单或账户状态已变化，请刷新后重试。");
+      await broker.cancel(accountID, orderID);
+      if (version === generation.current) {
+        setSelected(undefined);
+        setConfirmCancel(false);
+      }
+      await s.refresh();
+      s.setMessage("撤单请求已提交，请以最新订单状态为准。");
+    });
+  }
   const orders = s.orders.filter(
     (o) =>
       (!symbol || o.symbol.split(" / ").includes(symbol)) &&
@@ -1011,21 +1060,8 @@ export function OrderList({
           }}
         >
           {orders.map((o, index) => (
-            <Pressable
+            <View
               key={o.id}
-              accessibilityRole="button"
-              accessibilityLabel={`查看 #${o.id}`}
-              disabled={s.busy}
-              onPress={() =>
-                void s.run(async () => {
-                  const version = generation.current;
-                  const latest = await s.broker.orderDetail(s.accountID, o.id);
-                  if (version === generation.current) {
-                    setSelected(latest);
-                    setConfirmCancel(false);
-                  }
-                })
-              }
               style={{
                 paddingVertical: cancelOnly ? 14 : 20,
                 borderTopWidth: index ? 0.5 : 0,
@@ -1033,93 +1069,122 @@ export function OrderList({
                 gap: 6,
               }}
             >
-              <View style={styles.spread}>
-                <View style={styles.row}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`查看 #${o.id}`}
+                disabled={s.busy}
+                onPress={() =>
+                  void s.run(async () => {
+                    const version = generation.current;
+                    const latest = await s.broker.orderDetail(s.accountID, o.id);
+                    if (version === generation.current) {
+                      setSelected(latest);
+                      setConfirmCancel(false);
+                    }
+                  })
+                }
+                style={{ gap: 6 }}
+              >
+                <View style={styles.spread}>
+                  <View style={styles.row}>
+                    <Text
+                      style={{ color: p.text, fontSize: 18, fontWeight: "700" }}
+                    >
+                      {cancelOnly
+                        ? `${o.side === "BUY" ? "买入" : "卖出"} · ${o.kind ? kindLabels[o.kind] : "复杂订单"}单`
+                        : o.symbol}
+                    </Text>
+                    {!cancelOnly && (
+                      <Text
+                        style={{
+                          color: o.side === "BUY" ? p.up : p.down,
+                          fontSize: 12,
+                        }}
+                      >
+                        {o.side === "BUY"
+                          ? "买入"
+                          : o.side === "SELL"
+                            ? "卖出"
+                            : ""}
+                      </Text>
+                    )}
+                  </View>
                   <Text
-                    style={{ color: p.text, fontSize: 18, fontWeight: "700" }}
+                    style={{
+                      color: o.status === "FILLED" ? p.accent : "#ff8a19",
+                      backgroundColor:
+                        o.status === "FILLED" ? `${p.accent}14` : "#ff8a1914",
+                      fontSize: 12,
+                      fontWeight: "600",
+                      borderRadius: 6,
+                      paddingHorizontal: 8,
+                      paddingVertical: 5,
+                    }}
+                  >
+                    {statusLabel(o.status)}
+                  </Text>
+                </View>
+                <View style={styles.spread}>
+                  <Text style={{ color: p.secondary, fontSize: 13 }}>
+                    {cancelOnly
+                      ? `待成交 ${o.remainingQuantity ?? "—"} 股`
+                      : `${o.kind ? kindLabels[o.kind] : "复杂订单"}单 · ${o.quantity ?? "—"} 股`}
+                  </Text>
+                  <Text
+                    style={{
+                      color: p.text,
+                      fontSize: 17,
+                      fontWeight: "600",
+                      fontVariant: ["tabular-nums"],
+                    }}
+                  >
+                    {o.limitPrice === undefined
+                      ? "市价"
+                      : `$${money(o.limitPrice)}`}{" "}
+                    <Text style={{ color: p.secondary }}>›</Text>
+                  </Text>
+                </View>
+                <View style={styles.spread}>
+                  <Text style={{ color: p.secondary, fontSize: 12 }}>
+                    {cancelOnly
+                      ? `#${o.id}`
+                      : o.enteredAt
+                        ? new Date(o.enteredAt).toLocaleString("zh-CN", {
+                            year: "numeric",
+                            month: "numeric",
+                            day: "numeric",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })
+                        : "时间未知"}
+                  </Text>
+                  <Text
+                    style={{
+                      color: cancelOnly ? p.up : p.secondary,
+                      fontSize: 12,
+                    }}
                   >
                     {cancelOnly
-                      ? `${o.side === "BUY" ? "买入" : "卖出"} · ${o.kind ? kindLabels[o.kind] : "复杂订单"}单`
-                      : o.symbol}
+                      ? o.cancelable
+                        ? s.quickMode
+                          ? "查看详情 ›"
+                          : "撤单核对 ›"
+                        : "查看不可撤原因 ›"
+                      : `已成 ${o.filledQuantity ?? "—"} 股`}
                   </Text>
-                  {!cancelOnly && (
-                    <Text
-                      style={{
-                        color: o.side === "BUY" ? p.up : p.down,
-                        fontSize: 12,
-                      }}
-                    >
-                      {o.side === "BUY"
-                        ? "买入"
-                        : o.side === "SELL"
-                          ? "卖出"
-                          : ""}
-                    </Text>
-                  )}
                 </View>
-                <Text
-                  style={{
-                    color: o.status === "FILLED" ? p.accent : "#ff8a19",
-                    backgroundColor:
-                      o.status === "FILLED" ? `${p.accent}14` : "#ff8a1914",
-                    fontSize: 12,
-                    fontWeight: "600",
-                    borderRadius: 6,
-                    paddingHorizontal: 8,
-                    paddingVertical: 5,
-                  }}
-                >
-                  {statusLabel(o.status)}
-                </Text>
-              </View>
-              <View style={styles.spread}>
-                <Text style={{ color: p.secondary, fontSize: 13 }}>
-                  {cancelOnly
-                    ? `待成交 ${o.remainingQuantity ?? "—"} 股`
-                    : `${o.kind ? kindLabels[o.kind] : "复杂订单"}单 · ${o.quantity ?? "—"} 股`}
-                </Text>
-                <Text
-                  style={{
-                    color: p.text,
-                    fontSize: 17,
-                    fontWeight: "600",
-                    fontVariant: ["tabular-nums"],
-                  }}
-                >
-                  {o.limitPrice === undefined
-                    ? "市价"
-                    : `$${money(o.limitPrice)}`}{" "}
-                  <Text style={{ color: p.secondary }}>›</Text>
-                </Text>
-              </View>
-              <View style={styles.spread}>
-                <Text style={{ color: p.secondary, fontSize: 12 }}>
-                  {cancelOnly
-                    ? `#${o.id}`
-                    : o.enteredAt
-                      ? new Date(o.enteredAt).toLocaleString("zh-CN", {
-                          year: "numeric",
-                          month: "numeric",
-                          day: "numeric",
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })
-                      : "时间未知"}
-                </Text>
-                <Text
-                  style={{
-                    color: cancelOnly ? p.up : p.secondary,
-                    fontSize: 12,
-                  }}
-                >
-                  {cancelOnly
-                    ? o.cancelable
-                      ? "撤单核对 ›"
-                      : "查看不可撤原因 ›"
-                    : `已成 ${o.filledQuantity ?? "—"} 股`}
-                </Text>
-              </View>
-            </Pressable>
+              </Pressable>
+              {s.quickMode && o.cancelable && (
+                <View style={{ alignItems: "flex-end" }}>
+                  <Button
+                    label={s.isDemo ? "模拟撤单" : "撤单"}
+                    palette={p}
+                    disabled={s.busy || !cancelPermitted}
+                    onPress={() => cancelOrder(o)}
+                  />
+                </View>
+              )}
+            </View>
           ))}
         </View>
       )}
@@ -1164,7 +1229,7 @@ export function OrderList({
               ? new Date(selected.enteredAt).toLocaleString()
               : "时间未知"}
           </Text>
-          {confirmCancel ? (
+          {confirmCancel && !s.quickMode ? (
             <>
               <Text style={{ color: p.text }}>
                 确认撤销 {selected.symbol} 的{s.isDemo ? "演示" : "真实"}订单 #
@@ -1182,15 +1247,7 @@ export function OrderList({
                   palette={p}
                   active
                   disabled={s.busy || s.status.unresolvedOperation}
-                  onPress={() =>
-                    void s.run(async () => {
-                      await s.broker.cancel(s.accountID, selected.id);
-                      setSelected(undefined);
-                      setConfirmCancel(false);
-                      await s.refresh();
-                      s.setMessage("撤单请求已提交，请以最新订单状态为准。");
-                    })
-                  }
+                  onPress={() => cancelOrder(selected)}
                 />
               </View>
             </>
@@ -1204,14 +1261,14 @@ export function OrderList({
               )}
               <View style={styles.row}>
                 <Button
-                  label="撤单"
+                  label={s.quickMode && s.isDemo ? "模拟撤单" : "撤单"}
                   palette={p}
                   disabled={
                     !selected.cancelable ||
                     s.busy ||
                     s.status.unresolvedOperation
                   }
-                  onPress={() => setConfirmCancel(true)}
+                  onPress={() => s.quickMode ? cancelOrder(selected) : setConfirmCancel(true)}
                 />
                 {onReplace && (
                   <Button

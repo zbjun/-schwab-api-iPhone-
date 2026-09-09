@@ -22,6 +22,12 @@ export function Icon({
   const cutout = color.toUpperCase() === "#F5F7FA" ? "#1A1C1F" : "#fff";
   let shape;
   switch (name) {
+    case "settings":
+      shape = <>
+        <Path {...common} d="M10 2h4l.5 3 2 1.2 2.8-1 2 3.5-2.3 2v2.6l2.3 2-2 3.5-2.8-1-2 1.2-.5 3h-4l-.5-3-2-1.2-2.8 1-2-3.5 2.3-2v-2.6l-2.3-2 2-3.5 2.8 1 2-1.2Z" />
+        <Circle {...common} cx="12" cy="12" r="3.3" />
+      </>;
+      break;
     case "star":
       shape = (
         <Path

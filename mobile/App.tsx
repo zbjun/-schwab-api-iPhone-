@@ -26,7 +26,7 @@ import {
   styles,
 } from "./src/ui.tsx";
 import { OrderList, TradePanel } from "./src/TradePanel.tsx";
-import Connection from "./src/Connection.tsx";
+import Settings from "./src/Settings.tsx";
 import StockDetail from "./src/StockDetail.tsx";
 import Watchlist from "./src/Watchlist.tsx";
 import Accounts, { AccountSelector } from "./src/Accounts.tsx";
@@ -34,13 +34,13 @@ import { DemoNotice } from "./src/DemoNotice.tsx";
 import { validSymbol } from "./src/orderRules.ts";
 import FormingCandlePreview from "./src/FormingCandlePreview.tsx";
 
-type Tab = "accounts" | "watchlist" | "trade" | "orders" | "connection";
+type Tab = "accounts" | "watchlist" | "trade" | "orders" | "settings";
 const tabs: [Tab, string, string][] = [
   ["accounts", "账户", "pie"],
   ["watchlist", "自选", "star"],
   ["trade", "交易", "trade"],
   ["orders", "订单", "orders"],
-  ["connection", "连接", "link"],
+  ["settings", "设置", "settings"],
 ];
 export default function App() {
   if (
@@ -111,7 +111,7 @@ function TradingApp() {
     Keyboard.dismiss();
     setStock(symbol);
   };
-  const large = !stock && ["accounts", "orders", "connection"].includes(tab);
+  const large = !stock && ["accounts", "orders", "settings"].includes(tab);
   const background =
     stock || tab === "watchlist" ? p.background : groupBackground(p);
   const quote =
@@ -201,7 +201,7 @@ function TradingApp() {
             </View>
           )}
           <View style={{ width: 104, alignItems: "flex-end" }}>
-            {tab !== "connection" || stock ? (
+            {tab !== "settings" || stock ? (
               <View
                 style={[
                   capsule(p),
@@ -294,7 +294,7 @@ function TradingApp() {
               paddingVertical: 8,
             }}
           >
-            有交易结果待核实：请在券商确认后到连接页处理。
+            有交易结果待核实：请在券商确认后到设置中的连接处理。
           </Text>
         )}
         {stock ? (
@@ -497,7 +497,7 @@ function TradingApp() {
                 />
               </ScrollView>
             )}
-            {tab === "connection" && <Connection state={s} palette={p} />}
+            {tab === "settings" && <Settings state={s} palette={p} />}
             <View
               style={[
                 capsule(p),

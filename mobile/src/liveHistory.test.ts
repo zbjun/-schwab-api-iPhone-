@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { overlayLiveHistory } from "./liveHistory.ts";
+import { mergeFormingCandle, mergeObservedCandle, pruneObservedCandles, overlayLiveHistory } from "./liveHistory.ts";
 import type { Candle, History, HistoryRange, Quote } from "./types.ts";
 
 const minute = 60_000;
@@ -391,4 +391,92 @@ test("overnight trades update intraday and all minute charts without leaking int
   const actual = overlayLiveHistory(base, "minute1", [minuteBar], undefined, now)!;
   assert.equal(actual.candles.at(-1)!.volume, 100);
   assert.equal(actual.candles.at(-1)!.provisional, false);
+});
+
+
+test("observed night minutes survive more than two hours and fill a gap behind newer REST bars", () => {
+  const night = at("2026-09-09T00:00:00Z");
+  let observed: Candle[] = [];
+  for (let index = 0; index < 300; index++)
+    observed = mergeFormingCandle(observed, candle(night + index * minute, 26 + index / 1000,
+      { provisional: true, volume: undefined }), night + 300 * minute);
+  assert.equal(observed.length, 300);
+  assert.equal(observed[0].time, night);
+  // Foreground/reconnection pruning does not clear the same source's observations.
+  assert.equal(pruneObservedCandles(observed, night + 600 * minute), observed);
+  const newerRest = history(candle(night - minute, 26), candle(night + 600 * minute, 27));
+  for (const range of ["intraday", "minute1", "fiveDay", "minute5", "minute15", "minute30", "minute60", "minute120"] as const) {
+    const result = overlayLiveHistory(newerRest, range, observed, undefined, night + 601 * minute)!;
+    const recovered = result.candles.filter(c => c.time >= night && c.time < night + 300 * minute);
+    assert.ok(recovered.length > 0, range);
+    assert.equal(recovered[0].open, 26, range);
+    assert.ok(recovered.every(c => c.provisional && c.volume === undefined), range);
+    assert.equal(result.candles.at(-1), newerRest.candles.at(-1), range);
+  }
+  for (const range of ["daily", "weekly", "monthly"] as const)
+    assert.equal(overlayLiveHistory(newerRest, range, observed, undefined, night + 601 * minute), newerRest, range);
+  assert.equal(newerRest.candles.length, 2);
+});
+
+test("completed REST candles win over retained actual and provisional stream snapshots in every period", () => {
+  const night = at("2026-09-09T00:00:00Z");
+  const actual = candle(night, 29, { open: 28, high: 30, low: 27, volume: 9876 });
+  for (const range of ["intraday", "minute1", "fiveDay", "minute5", "minute15", "minute30", "minute60", "minute120"] as const) {
+    const base = history(actual);
+    for (const provisional of [true, false]) {
+      const result = overlayLiveHistory(base, range,
+        [candle(night, 24, { provisional, volume: provisional ? undefined : 2 })],
+        undefined, night + 4 * 60 * minute)!;
+      assert.equal(result, base, range);
+      assert.equal(result.candles[0], actual, range);
+    }
+  }
+  for (const [range, previous, current] of [
+    ["daily", "2026-09-03T13:30:00Z", "2026-09-04T14:00:00Z"],
+    ["weekly", "2026-09-04T13:30:00Z", "2026-09-08T14:00:00Z"],
+    ["monthly", "2026-08-31T13:30:00Z", "2026-09-01T14:00:00Z"],
+  ] as const) {
+    const base = history(candle(at(previous)));
+    assert.equal(overlayLiveHistory(base, range, [candle(at(previous) + minute, 150)], undefined, at(current)), base, range);
+  }
+});
+
+test("retained observations never extend the loaded history backward or fabricate missing volume", () => {
+  const night = at("2026-09-09T00:00:00Z");
+  const completed = candle(night + minute, 28, { volume: 20 });
+  const base = history(candle(night), candle(night + 4 * minute));
+  const result = overlayLiveHistory(base, "minute1", [candle(night - minute), completed], undefined, night + 5 * minute)!;
+  assert.equal(result.candles.length, 3);
+  assert.equal(result.candles[0].time, night);
+  assert.deepEqual(result.candles[1], { ...completed, provisional: false });
+  const observed = candle(night + minute, 27, { provisional: true, volume: undefined });
+  const updatedRest = history(...result.candles);
+  assert.equal(overlayLiveHistory(updatedRest, "minute1", [observed], undefined, night + 6 * minute), updatedRest);
+});
+
+test("observation buffer expires after ten days and has a hard 15000-bar limit", () => {
+  const now = at("2026-09-10T12:00:00Z");
+  const old = candle(now - 10 * 24 * 60 * minute - 1);
+  const recent = candle(now - minute);
+  assert.deepEqual(pruneObservedCandles([old, recent], now), [recent]);
+  assert.deepEqual(mergeObservedCandle([old], recent, now), [recent]);
+  assert.deepEqual(mergeObservedCandle([], old, now), []);
+  // A malformed high-frequency upstream cannot grow memory without bound either.
+  const crowded = Array.from({length: 15000}, (_, i) => candle(now - 16000 + i));
+  const bounded = mergeObservedCandle(crowded, candle(now), now);
+  assert.equal(bounded.length, 15000);
+  assert.equal(bounded.at(-1)!.time, now);
+  assert.equal(bounded[0].time, crowded[1].time);
+  assert.equal(crowded.length, 15000);
+});
+
+test("completed observed minutes resist stale forming snapshots and duplicate volume", () => {
+  const actual = candle(open, 103, { open: 100, high: 105, low: 99, volume: 120 });
+  const stored = mergeObservedCandle([], actual, open + minute);
+  assert.equal(mergeFormingCandle(stored, candle(open, 90, {provisional: true}), open + minute), stored);
+  assert.equal(mergeObservedCandle(stored, actual, open + minute), stored);
+  const correction = {...actual, volume: 130};
+  const corrected = mergeObservedCandle(stored, correction, open + minute);
+  assert.equal(corrected.length, 1);
+  assert.equal(corrected[0].volume, 130);
 });

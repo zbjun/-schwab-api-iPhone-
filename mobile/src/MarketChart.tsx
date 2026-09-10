@@ -24,6 +24,7 @@ import Svg, {
   Text as SvgText,
 } from "react-native-svg";
 import { createChartPress } from "./chartPress.ts";
+import { latestSessionLocation, sessionViewport } from "./chartSessions.ts";
 import { chartDragIntent, chartInteractionActive, type ChartDragIntent } from "./chartGesture.ts";
 import FormingCandle from "./FormingCandle.tsx";
 import type {
@@ -189,6 +190,8 @@ function MarketChart({
     viewport: createViewport(candles.length),
   }));
   const [selectedIndex, setSelectedIndex] = useState<number>();
+  const [locatedSession, setLocatedSession] = useState<{ identity: string; session: TradingSession }>();
+  const sessionChoice = locatedSession?.identity === identity ? locatedSession.session : undefined;
   const line = isLineRange(range) || compact;
   const viewport =
     windowState.identity === identity
@@ -230,6 +233,11 @@ function MarketChart({
   // Price ticks do not change timestamps. Avoid repeating IANA timezone/session
   // conversion across the entire history on every streaming paint.
   const candleTimes = candles.map((candle) => candle.time).join(",");
+  const sessionLocations = useMemo(() => {
+    const times = candles.map((candle) => candle.time);
+    return sessions.map((session) => extended && !compact ? latestSessionLocation(times, session) : undefined);
+  }, [candleTimes, extended, compact]);
+  const located = sessionChoice ? sessionLocations[sessions.indexOf(sessionChoice)] : undefined;
   const metadata = useMemo(
     () =>
       candles.map((candle) => ({
@@ -253,11 +261,12 @@ function MarketChart({
         : 320;
   const showToolbar = !compact && !line && height >= 130;
   const showSessionLegend = !compact && extended && height >= 220;
+  const showSessionInfo = showSessionLegend && sessionChoice !== undefined;
   const showVolume = !compact && height >= 180;
   const wrapAverages = !compact && !line && width < 300;
   const headerHeight = compact
     ? 0
-    : (wrapAverages ? 44 : 24) + (showToolbar ? 28 : 0) + (showSessionLegend ? 18 : 0);
+    : (wrapAverages ? 44 : 24) + (showToolbar ? 28 : 0) + (showSessionLegend ? 28 : 0) + (showSessionInfo ? 34 : 0);
   const svgHeight = Math.max(16, height - headerHeight);
   const left = compact ? 1 : 0;
   const plotWidth = Math.max(1, width - left - (compact ? 1 : 42));
@@ -674,7 +683,15 @@ function MarketChart({
     bounds.end === candles.length
       ? `最近 ${bounds.end - bounds.first} 根`
       : `第 ${bounds.first + 1}–${bounds.end} 根`;
-  const latest = () => commit(createViewport(candles.length));
+  const latest = () => {
+    setLocatedSession(undefined);
+    commit(createViewport(candles.length));
+  };
+  const locateSession = (session: TradingSession) => {
+    setLocatedSession({ identity, session });
+    const location = sessionLocations[sessions.indexOf(session)];
+    if (location && !line) commit(sessionViewport(candles.length, location));
+  };
 
   return (
     <View
@@ -730,7 +747,12 @@ function MarketChart({
       {showSessionLegend && (
         <View testID="chart.sessionLegend" style={styles.sessionLegend}>
           {sessions.map((session) => (
-            <View key={session} style={styles.sessionKey}>
+            <Pressable key={session} style={[styles.sessionKey, { minHeight: 28 }]}
+              testID={`chart.session.${session}`}
+              accessibilityRole="button"
+              accessibilityLabel={`查看最近有数据的${sessionTitles[session]}`}
+              accessibilityState={{ selected: sessionChoice === session }}
+              onPress={() => locateSession(session)}>
               <View
                 style={{
                   width: 6,
@@ -739,10 +761,10 @@ function MarketChart({
                   backgroundColor: sessionColor(session),
                 }}
               />
-              <Text style={[styles.small, { color: palette.secondary }]}>
+              <Text style={[styles.small, { color: sessionChoice === session ? palette.accent : palette.secondary }]}>
                 {sessionTitles[session]}
               </Text>
-            </View>
+            </Pressable>
           ))}
           <Text
             style={[
@@ -750,8 +772,22 @@ function MarketChart({
               { color: palette.secondary, marginLeft: "auto" },
             ]}
           >
-            美东时间
+            点时段定位 · 美东
           </Text>
+        </View>
+      )}
+      {showSessionInfo && (
+        <View style={{ height: 34, flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <Text testID="chart.sessionInfo" numberOfLines={2}
+            style={[styles.small, { color: palette.secondary, flex: 1, lineHeight: 15 }]}>
+            {located
+              ? `${sessionTitles[sessionChoice!]}最近有数据：${dateTime(located.firstTime)}–${dateTime(located.lastTime)} 美东 · ${located.count}根${line ? "（图中已包含）" : ""}`
+              : `${candles.length ? `已加载 ${dateTime(candles[0].time)}–${dateTime(candles.at(-1)!.time)} 美东；` : ""}未包含${sessionTitles[sessionChoice!]}K线，可刷新重试。`}
+          </Text>
+          <Pressable accessibilityRole="button" accessibilityLabel="关闭时段说明" hitSlop={6}
+            onPress={() => setLocatedSession(undefined)} style={styles.chartButton}>
+            <Text style={{ color: palette.secondary }}>×</Text>
+          </Pressable>
         </View>
       )}
       {showToolbar && (
@@ -1321,7 +1357,7 @@ const styles = StyleSheet.create({
   },
   legendText: { fontSize: 11, fontVariant: ["tabular-nums"] },
   sessionLegend: {
-    height: 18,
+    height: 28,
     flexDirection: "row",
     alignItems: "center",
     gap: 11,

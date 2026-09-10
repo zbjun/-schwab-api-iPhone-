@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AppState } from "react-native";
 import type { Broker, Candle, History, HistoryRange, Quote } from "./types.ts";
-import { mergeFormingCandle, overlayLiveHistory } from "./liveHistory.ts";
+import { mergeFormingCandle, mergeObservedCandle, pruneObservedCandles, overlayLiveHistory } from "./liveHistory.ts";
 import { volumeRatio } from "./marketStatistics.ts";
 import { marketRefreshInterval, shareHistory } from "./marketRefresh.ts";
 import { startMarketPolling } from "./marketPolling.ts";
@@ -25,7 +25,19 @@ export function useLiveMarket(
   >("off");
   const streamStatusRef = useRef(streamStatus);
   const [streamQuote, setStreamQuote] = useState<Partial<Quote>>();
-  const [streamMinutes, setStreamMinutes] = useState<Candle[]>([]);
+  const [observations, setObservations] = useState<{ broker: Broker; symbol: string; candles: Candle[] }>(
+    () => ({ broker, symbol, candles: [] }),
+  );
+  const streamMinutes = observations.broker === broker && observations.symbol === symbol
+    ? observations.candles : [];
+  const retainCandle = (candle: Candle, forming: boolean) => {
+    setObservations((previous) => {
+      const sameSource = previous.broker === broker && previous.symbol === symbol;
+      const before = sameSource ? previous.candles : [];
+      const candles = (forming ? mergeFormingCandle : mergeObservedCandle)(before, candle, Date.now());
+      return sameSource && candles === before ? previous : { broker, symbol, candles };
+    });
+  };
   const [foreground, setForeground] = useState(
     AppState.currentState !== "background" &&
       AppState.currentState !== "inactive",
@@ -45,8 +57,18 @@ export function useLiveMarket(
   }, [active]);
 
   useEffect(() => {
+    setObservations((previous) => {
+      if (previous.broker !== broker || previous.symbol !== symbol)
+        return { broker, symbol, candles: [] };
+      const candles = pruneObservedCandles(previous.candles, Date.now());
+      return candles === previous.candles ? previous : { ...previous, candles };
+    });
+  }, [active, broker, symbol]);
+
+  useEffect(() => {
     setStreamQuote(undefined);
-    setStreamMinutes([]);
+    // Foreground changes and reconnects retain observations for this source.
+    // A different broker/symbol is never rendered with the previous buffer.
     streamStatusRef.current = "off";
     setStreamStatus("off");
     if (!active || demo || !broker.subscribeMarket) return;
@@ -59,7 +81,7 @@ export function useLiveMarket(
         setStreamStatus(status);
         if (status === "fallback" && previous !== "fallback") {
           setStreamQuote(undefined);
-          setStreamMinutes([]);
+
           for (const poll of polls.current) {
             poll.setActive(false);
             poll.setActive(activeRef.current);
@@ -72,18 +94,10 @@ export function useLiveMarket(
         setStreamQuote(next);
       },
       onFormingCandle: (candle) => {
-        if (mounted)
-          setStreamMinutes((prev) =>
-            mergeFormingCandle(prev, candle, Date.now()),
-          );
+        if (mounted) retainCandle(candle, true);
       },
       onCandle: (candle) => {
-        if (mounted)
-          setStreamMinutes((prev) =>
-            [...prev.filter((c) => c.time !== candle.time), candle]
-              .sort((a, b) => a.time - b.time)
-              .slice(-120),
-          );
+        if (mounted) retainCandle(candle, false);
       },
     });
     return () => {

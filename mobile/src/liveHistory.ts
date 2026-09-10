@@ -13,34 +13,58 @@ const indexCache = new WeakMap<
   Map<HistoryRange, Map<string, number>>
 >();
 
-export function mergeFormingCandle(
+const observationAge = 10 * 24 * 60 * 60_000;
+const observationLimit = 15_000;
+
+export function pruneObservedCandles(previous: Candle[], now: number): Candle[] {
+  let expired = 0;
+  while (expired < previous.length && previous[expired].time < now - observationAge) expired++;
+  const start = Math.max(expired, previous.length - observationLimit);
+  return start > 0 ? previous.slice(start) : previous;
+}
+
+/** Retain only actual observations in memory; never manufacture absent minutes. */
+export function mergeObservedCandle(
   previous: Candle[],
   sample: Candle,
   now: number,
 ): Candle[] {
-  if (!validCandle(sample) || !sample.provisional || sample.time > now + 5000)
+  if (!validCandle(sample) || !Number.isFinite(now) ||
+      sample.time > now + 5000 || sample.time < now - observationAge)
     return previous;
-  const old = previous.find((c) => c.time === sample.time);
-  if (old && !old.provisional && old.time + 60_000 <= now) return previous;
-  const next: Candle = {
+  // Buffers produced here stay sorted. Binary search avoids sorting ten days of
+  // candles for every price tick.
+  let first = 0, end = previous.length;
+  while (first < end) {
+    const middle = (first + end) >>> 1;
+    if (previous[middle].time < sample.time) first = middle + 1;
+    else end = middle;
+  }
+  const old = previous[first]?.time === sample.time ? previous[first] : undefined;
+  if (old && !old.provisional && sample.provisional) return previous;
+  const next: Candle = sample.provisional ? {
     time: sample.time,
     open: old?.open ?? sample.open,
     high: Math.max(old?.high ?? sample.high, sample.high),
     low: Math.min(old?.low ?? sample.low, sample.low),
     close: sample.close,
     provisional: true,
-  };
-  if (
-    old?.provisional &&
-    old.open === next.open &&
-    old.high === next.high &&
-    old.low === next.low &&
-    old.close === next.close
-  )
+  } : { ...sample };
+  if (old && old.open === next.open && old.high === next.high &&
+      old.low === next.low && old.close === next.close &&
+      old.volume === next.volume && old.provisional === next.provisional)
     return previous;
-  return [...previous.filter((c) => c.time !== sample.time), next]
-    .sort((a, b) => a.time - b.time)
-    .slice(-120);
+  const result = [...previous];
+  result.splice(first, old ? 1 : 0, next);
+  return pruneObservedCandles(result, now);
+}
+
+export function mergeFormingCandle(
+  previous: Candle[],
+  sample: Candle,
+  now: number,
+): Candle[] {
+  return sample.provisional ? mergeObservedCandle(previous, sample, now) : previous;
 }
 function historyIndex(
   history: History,
@@ -55,7 +79,7 @@ function historyIndex(
   if (!index) {
     index = new Map();
     history.candles.forEach((c, i) => {
-      const key = bucket(c.time, range)?.key;
+      const key = candleBucket(c, range)?.key;
       if (key) index!.set(key, i);
     });
     ranges.set(range, index);
@@ -68,7 +92,7 @@ function historyIndex(
 function bucket(
   time: number,
   range: HistoryRange,
-): { key: string; start: number } | undefined {
+): { key: string; start: number; end?: number } | undefined {
   const day = newYorkDateKey(time);
   if (!day) return;
   const size =
@@ -80,7 +104,7 @@ function bucket(
     const start =
       session.start +
       Math.floor((time - session.start) / (size * 60_000)) * size * 60_000;
-    return { key: String(start), start };
+    return { key: String(start), start, end: Math.min(start + size * 60_000, session.end) };
   }
   if (range === "monthly")
     return {
@@ -99,6 +123,28 @@ function bucket(
   };
 }
 
+// Candle objects are stable between paints. Avoid repeating timezone work for
+// every retained minute on each streamed price update.
+const candleBuckets = new WeakMap<Candle, Map<HistoryRange, ReturnType<typeof bucket>>>();
+const regularObservations = new WeakMap<Candle, boolean>();
+function regularObservation(candle: Candle) {
+  let regular = regularObservations.get(candle);
+  if (regular === undefined) {
+    regular = sessionAt(candle.time) === "regular";
+    regularObservations.set(candle, regular);
+  }
+  return regular;
+}
+function candleBucket(candle: Candle, range: HistoryRange) {
+  let ranges = candleBuckets.get(candle);
+  if (!ranges) {
+    ranges = new Map();
+    candleBuckets.set(candle, ranges);
+  }
+  if (!ranges.has(range)) ranges.set(range, bucket(candle.time, range));
+  return ranges.get(range);
+}
+
 export function overlayLiveHistory(
   base: History | undefined,
   range: HistoryRange,
@@ -111,25 +157,29 @@ export function overlayLiveHistory(
   const exactMinute = range === "intraday" || range === "minute1";
   const bars = [...base.candles];
   const indices = historyIndex(base, range);
-  const lastBase = bars.at(-1)!;
-  const first = bucket(lastBase.time, range);
+  const first = bucket(bars[0].time, range);
+  const restIndices = historyIndex(base, range);
+  const currentBucket = bucket(now, range);
   let changed = false;
   const apply = (sample: Candle, exact: boolean) => {
     if (
       !validCandle(sample) ||
       sample.time > now + 5_000 ||
-      (calendar && sessionAt(sample.time) !== "regular")
+      sample.time < now - observationAge ||
+      (calendar && !regularObservation(sample))
     )
       return;
-    if (
-      sample.provisional &&
-      exactMinute &&
-      sample.time + 60_000 <= now &&
-      base.candles.some((c) => !c.provisional && c.time === sample.time)
-    )
-      return;
-    const target = bucket(sample.time, range);
+    const target = candleBucket(sample, range);
     if (!target || !first || target.start < first.start) return;
+    const restIndex = restIndices.get(target.key);
+    const rest = restIndex === undefined ? undefined : base.candles[restIndex];
+    // Completed REST bars are authoritative, including larger periods. Cached
+    // observations may fill a missing bucket but must not roll a completed bar
+    // back to an earlier stream snapshot.
+    const complete = target.end !== undefined
+      ? now >= target.end
+      : currentBucket !== undefined && target.start < currentBucket.start;
+    if (rest && !rest.provisional && complete) return;
     const index = indices.get(target.key) ?? -1;
     const old = bars[index];
     const next: Candle = exact

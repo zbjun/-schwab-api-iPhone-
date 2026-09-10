@@ -1,0 +1,35 @@
+[Unit]
+Description=Personal Schwab shared authorization gateway
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=ths-gateway
+Group=ths-gateway
+WorkingDirectory=/opt/ths-gateway/current
+ExecStart=/opt/ths-gateway/node/bin/node server/start.mjs /etc/ths-gateway/config.json
+Environment=NODE_ENV=production
+UMask=0077
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=75
+StateDirectory=ths-gateway
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ths-gateway
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=true
+LockPersonality=true
+TasksMax=64
+MemoryMax=384M
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

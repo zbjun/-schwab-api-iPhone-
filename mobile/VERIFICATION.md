@@ -1,3 +1,10 @@
+# 2026-09-10: Shared server deployed, awaiting account activation
+
+- Deployed gateway release `303757f` to the existing personal Linux server with isolated, checksum-verified Node v24.21.0. Added an unprivileged systemd service and exact HTTPS Nginx routes, preserving the website's root route. Deployment templates and evidence are in `../server/DEPLOYMENT.md`.
+- All 35 server/integration fixtures passed on that runtime. Both real device keys passed public HTTPS readiness checks using the actual mobile ServerBroker class. Keyless and browser-origin requests were rejected; invalid callback, log suppression, loopback binding and graceful restart/vault preservation checks passed.
+- Existing Client ID/Secret are stored on the server; distinct device configurations were written only to ignored, ACL-restricted local files. No keys, vaults, account data or OAuth URLs were committed.
+- Fresh shared status is configured=true, authenticated=false. Developer callback registration still needs confirmation and one official user login. The browser-control connection failed, so it could not perform the portal change. Physical device migration, authenticated brokerage queries/market streaming and order behavior remain unverified. No IPA was built and no real order was submitted or cancelled.
+
 # 2026-09-10: Locate extended sessions and retain observed minutes
 
 - Rechecked the minute-history path: requests already set `needExtendedHoursData=true`; decoder and renderer retain valid overnight timestamps. The September 8 SNDU/QQQ raw-response comparison in `OVERNIGHT-DIAGNOSTIC.md` is historical evidence, not a fresh statement about today's coverage. No current authenticated diagnostic process was available; this change does not claim restored upstream SNDU history.

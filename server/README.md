@@ -2,7 +2,7 @@
 
 One server owns the existing Schwab Client ID, Client Secret and OAuth tokens. Each phone uses a different device connection key. Refreshes run through the same broker instance; the server also shares one upstream market socket across both phones. There is no browser trading API and no dependency installation for the server itself.
 
-This source is implemented and locally tested. A reachable server with HTTPS still needs to be configured before real phones can use it. No deployment, real trade or IPA build is implied by these instructions.
+The personal server has now been deployed over HTTPS; see [DEPLOYMENT.md](DEPLOYMENT.md) for the verified layout and pending authorization/device steps. The generic instructions below also cover a fresh installation. No real trade or IPA build is implied by these instructions.
 
 ## Initial setup
 

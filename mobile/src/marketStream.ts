@@ -105,13 +105,38 @@ const quoteFields = {
 const fields =
   "0,1,2,3,8,10,11,12,13,15,17,18,19,20,21,28,29,30,31,32,33,34,35,36,42";
 
-/** One foreground symbol, acknowledged subscriptions, and a bounded fallback/retry loop. */
+/** Backwards-compatible single-symbol client. */
 export function openMarketStream(
   symbol: string,
   credentials: () => Promise<StreamCredentials>,
   callbacks: MarketStreamCallbacks,
   options: MarketStreamOptions = {},
 ): () => void {
+  return openMultiMarketStream([symbol], credentials, {
+    onQuote: callbacks.onQuote,
+    onFormingCandle: (_, candle) => callbacks.onFormingCandle?.(candle),
+    onCandle: (_, candle) => callbacks.onCandle(candle),
+    onStatus: callbacks.onStatus,
+  }, options);
+}
+
+export interface MultiMarketStreamCallbacks {
+  onQuote: MarketStreamCallbacks["onQuote"];
+  onFormingCandle?: (symbol: string, candle: Candle) => void;
+  onCandle: (symbol: string, candle: Candle) => void;
+  onStatus: MarketStreamCallbacks["onStatus"];
+}
+
+/** One authenticated socket for a bounded symbol set; sequences stay per symbol. */
+export function openMultiMarketStream(
+  symbols: string[],
+  credentials: () => Promise<StreamCredentials>,
+  callbacks: MultiMarketStreamCallbacks,
+  options: MarketStreamOptions = {},
+): () => void {
+  symbols = [...new Set(symbols)];
+  if (!symbols.length || symbols.length > 32 || symbols.some((symbol) => !/^[A-Z0-9][A-Z0-9.\/-]{0,19}$/.test(symbol)))
+    throw new Error("Invalid market symbol set");
   const now = options.now ?? Date.now;
   const schedule = options.setTimeout ?? setTimeout;
   const cancel = options.clearTimeout ?? clearTimeout;
@@ -128,14 +153,24 @@ export function openMarketStream(
   let heartbeat: Timer | undefined;
   let reconnect: Timer | undefined;
   let flushTimer: Timer | undefined;
-  let quote: StreamQuote = { symbol };
-  let pendingQuote: StreamQuote | undefined;
-  const pendingCandles = new Map<number, Candle>();
-  const pendingFormingCandles = new Map<number, Candle>();
-  let quoteSequence = -1;
-  let chartSequence = -1;
-  let chartTime = -1;
-  let lastCandle: Candle | undefined;
+  function freshState(symbol: string) {
+    return {
+      quote: { symbol } as StreamQuote,
+      pendingQuote: undefined as StreamQuote | undefined,
+      pendingCandles: new Map<number, Candle>(),
+      pendingFormingCandles: new Map<number, Candle>(),
+      quoteSequence: -1, chartSequence: -1, chartTime: -1,
+      lastCandle: undefined as Candle | undefined,
+    };
+  }
+  const states = new Map(symbols.map((symbol) => [symbol, freshState(symbol)]));
+  function clearPending() {
+    for (const state of states.values()) {
+      state.pendingQuote = undefined;
+      state.pendingCandles.clear();
+      state.pendingFormingCandles.clear();
+    }
+  }
 
   function report(status: Parameters<MarketStreamCallbacks["onStatus"]>[0]) {
     if (!stopped) callbacks.onStatus(status);
@@ -166,9 +201,7 @@ export function openMarketStream(
     generation++;
     clearTimers();
     closeSocket();
-    pendingQuote = undefined;
-    pendingCandles.clear();
-    pendingFormingCandles.clear();
+    clearPending();
     report("fallback");
     if (stopped) return;
     const delay = Math.min(60_000, 5_000 * 2 ** Math.min(retry++, 4));
@@ -189,26 +222,28 @@ export function openMarketStream(
     if (phase !== "live" || flushTimer !== undefined) return;
     flushTimer = schedule(() => {
       flushTimer = undefined;
-      const nextQuote = pendingQuote;
-      const formingCandles = [...pendingFormingCandles.values()].sort(
-        (a, b) => a.time - b.time,
-      );
-      const candles = [...pendingCandles.values()].sort(
-        (a, b) => a.time - b.time,
-      );
-      pendingQuote = undefined;
-      pendingCandles.clear();
-      pendingFormingCandles.clear();
-      if (stopped) return;
-      for (const candle of formingCandles) {
+      for (const [symbol, state] of states) {
+        const nextQuote = state.pendingQuote;
+        const formingCandles = [...state.pendingFormingCandles.values()].sort(
+          (a, b) => a.time - b.time,
+        );
+        const candles = [...state.pendingCandles.values()].sort(
+          (a, b) => a.time - b.time,
+        );
+        state.pendingQuote = undefined;
+        state.pendingCandles.clear();
+        state.pendingFormingCandles.clear();
         if (stopped) return;
-        callbacks.onFormingCandle?.(candle);
-      }
-      if (stopped) return;
-      if (nextQuote) callbacks.onQuote(nextQuote);
-      for (const candle of candles) {
-        if (stopped) break;
-        callbacks.onCandle(candle);
+        for (const candle of formingCandles) {
+          if (stopped) return;
+          callbacks.onFormingCandle?.(symbol, candle);
+        }
+        if (stopped) return;
+        if (nextQuote) callbacks.onQuote(nextQuote);
+        for (const candle of candles) {
+          if (stopped) break;
+          callbacks.onCandle(symbol, candle);
+        }
       }
     }, 250);
   }
@@ -217,15 +252,15 @@ export function openMarketStream(
     Number.isSafeInteger(value) &&
     value > 0 &&
     value <= now() + 60_000;
-  function matches(entry: Entry) {
+  function matches(entry: Entry, symbol: string) {
     return (
       (entry.key === symbol || entry["0"] === symbol) &&
       (entry.key === undefined || entry.key === symbol) &&
       (entry["0"] === undefined || entry["0"] === symbol)
     );
   }
-  function readQuote(entry: Entry) {
-    if (!matches(entry)) return;
+  function readQuote(entry: Entry, symbol: string, state: ReturnType<typeof freshState>) {
+    if (!matches(entry, symbol)) return;
     const delta: StreamQuote = { symbol };
     for (const [field, name] of Object.entries(quoteFields)) {
       if (entry[field] === undefined) continue;
@@ -246,17 +281,17 @@ export function openMarketStream(
       entry.seq !== undefined &&
       (!finite(entry.seq) ||
         !Number.isSafeInteger(entry.seq) ||
-        entry.seq <= quoteSequence)
+        entry.seq <= state.quoteSequence)
     )
       return;
     if (
       delta.quoteTime !== undefined &&
-      delta.quoteTime < (quote.quoteTime ?? 0)
+      delta.quoteTime < (state.quote.quoteTime ?? 0)
     )
       return;
     if (
       delta.tradeTime !== undefined &&
-      delta.tradeTime < (quote.tradeTime ?? 0)
+      delta.tradeTime < (state.quote.tradeTime ?? 0)
     )
       return;
     if (entry.delayed !== undefined) {
@@ -284,21 +319,21 @@ export function openMarketStream(
       delta.description = entry["15"];
     }
     if (Object.keys(delta).length === 1) return;
-    if (finite(entry.seq)) quoteSequence = entry.seq;
-    quote = { ...quote, ...delta };
+    if (finite(entry.seq)) state.quoteSequence = entry.seq;
+    state.quote = { ...state.quote, ...delta };
     // Collect trades before the UI throttle so first open and transient extrema
     // survive even when the displayed quote only retains the latest price.
-    const { lastPrice, tradeTime } = quote;
+    const { lastPrice, tradeTime } = state.quote;
     if (
       (delta.lastPrice !== undefined || delta.tradeTime !== undefined) &&
-      quote.isRealtime === true &&
+      state.quote.isRealtime === true &&
       finite(lastPrice) && lastPrice > 0 &&
       finite(tradeTime) &&
       tradeTime >= now() - 60_000 && tradeTime <= now() + 5_000
     ) {
       const time = Math.floor(tradeTime / 60_000) * 60_000;
-      const previous = pendingFormingCandles.get(time);
-      pendingFormingCandles.set(time, {
+      const previous = state.pendingFormingCandles.get(time);
+      state.pendingFormingCandles.set(time, {
         time,
         open: previous?.open ?? lastPrice,
         high: Math.max(previous?.high ?? lastPrice, lastPrice),
@@ -306,14 +341,14 @@ export function openMarketStream(
         close: lastPrice,
         provisional: true,
       });
-      if (pendingFormingCandles.size > 256)
-        pendingFormingCandles.delete(pendingFormingCandles.keys().next().value!);
+      if (state.pendingFormingCandles.size > 256)
+        state.pendingFormingCandles.delete(state.pendingFormingCandles.keys().next().value!);
     }
-    pendingQuote = { ...quote };
+    state.pendingQuote = { ...state.quote };
     queueFlush();
   }
-  function readCandle(entry: Entry) {
-    if (!matches(entry) || !timestamp(entry["7"])) return;
+  function readCandle(entry: Entry, symbol: string, state: ReturnType<typeof freshState>) {
+    if (!matches(entry, symbol) || !timestamp(entry["7"])) return;
     const [sequence, open, high, low, close, volume] = [
       "1",
       "2",
@@ -343,25 +378,25 @@ export function openMarketStream(
     )
       return;
     if (
-      candle.time < chartTime ||
-      (candle.time === chartTime && (sequence as number) < chartSequence)
+      candle.time < state.chartTime ||
+      (candle.time === state.chartTime && (sequence as number) < state.chartSequence)
     )
       return;
     const identical =
-      lastCandle &&
-      candle.time === lastCandle.time &&
-      candle.open === lastCandle.open &&
-      candle.high === lastCandle.high &&
-      candle.low === lastCandle.low &&
-      candle.close === lastCandle.close &&
-      candle.volume === lastCandle.volume;
-    chartTime = candle.time;
-    chartSequence = sequence as number;
-    lastCandle = candle;
+      state.lastCandle &&
+      candle.time === state.lastCandle.time &&
+      candle.open === state.lastCandle.open &&
+      candle.high === state.lastCandle.high &&
+      candle.low === state.lastCandle.low &&
+      candle.close === state.lastCandle.close &&
+      candle.volume === state.lastCandle.volume;
+    state.chartTime = candle.time;
+    state.chartSequence = sequence as number;
+    state.lastCandle = candle;
     if (identical) return;
-    pendingCandles.set(candle.time, candle);
-    if (pendingCandles.size > 256)
-      pendingCandles.delete(pendingCandles.keys().next().value!);
+    state.pendingCandles.set(candle.time, candle);
+    if (state.pendingCandles.size > 256)
+      state.pendingCandles.delete(state.pendingCandles.keys().next().value!);
     queueFlush();
   }
   async function connect() {
@@ -369,12 +404,7 @@ export function openMarketStream(
     const current = ++generation;
     const active = () => !stopped && current === generation;
     phase = "connecting";
-    quote = { symbol };
-    pendingQuote = undefined;
-    pendingCandles.clear();
-    pendingFormingCandles.clear();
-    quoteSequence = chartSequence = chartTime = -1;
-    lastCandle = undefined;
+    for (const symbol of symbols) states.set(symbol, freshState(symbol));
     report("connecting");
     if (!active()) return;
     armDeadline();
@@ -480,11 +510,11 @@ export function openMarketStream(
                   JSON.stringify({
                     requests: [
                       request("1", "LEVELONE_EQUITIES", "SUBS", {
-                        keys: symbol,
+                        keys: symbols.join(","),
                         fields,
                       }),
                       request("2", "CHART_EQUITY", "SUBS", {
-                        keys: symbol,
+                        keys: symbols.join(","),
                         fields: "0,1,2,3,4,5,6,7,8",
                       }),
                     ],
@@ -502,7 +532,7 @@ export function openMarketStream(
                 if (deadline !== undefined) cancel(deadline);
                 deadline = undefined;
                 report("live");
-                if (active() && (pendingQuote || pendingCandles.size))
+                if (active() && [...states.values()].some((state) => state.pendingQuote || state.pendingCandles.size))
                   queueFlush();
               }
             }
@@ -517,8 +547,12 @@ export function openMarketStream(
           if (!object(update) || !Array.isArray(update.content)) continue;
           for (const entry of update.content) {
             if (!object(entry)) continue;
-            if (update.service === "LEVELONE_EQUITIES") readQuote(entry);
-            if (update.service === "CHART_EQUITY") readCandle(entry);
+            const symbol = typeof entry.key === "string" ? entry.key : entry["0"];
+            if (typeof symbol !== "string") continue;
+            const state = states.get(symbol);
+            if (!state) continue;
+            if (update.service === "LEVELONE_EQUITIES") readQuote(entry, symbol, state);
+            if (update.service === "CHART_EQUITY") readCandle(entry, symbol, state);
           }
         }
       };
@@ -536,8 +570,6 @@ export function openMarketStream(
     generation++;
     clearTimers();
     closeSocket();
-    pendingQuote = undefined;
-    pendingCandles.clear();
-    pendingFormingCandles.clear();
+    clearPending();
   };
 }

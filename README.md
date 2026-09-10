@@ -1,6 +1,6 @@
 # THS · 个人 iPhone 交易客户端
 
-**当前开发入口：Expo / React Native 0.5.5**，位于 [`mobile/`](mobile/README.md)。最新源码另含紧凑买卖撤布局与本机夜盘历史诊断工具，尚未重新打包 IPA。使用 Expo Go 在 iPhone 调试，界面与业务代码热更新不消耗 EAS 云端构建配额。原 SwiftUI 版本保留，以下记录原生 0.4.3 的已交付状态。
+**当前开发入口：Expo / React Native 0.5.5**，位于 [`mobile/`](mobile/README.md)。最新源码另含紧凑买卖撤布局、快速模式与[双设备共享授权服务器](server/README.md)，尚未部署到用户服务器或重新打包 IPA。使用 Expo Go 在 iPhone 调试，界面与业务代码热更新不消耗 EAS 云端构建配额。原 SwiftUI 版本保留，以下记录原生 0.4.3 的已交付状态。
 
 原生 SwiftUI 项目，当前交付 **0.4.3（build 7）个人版**。首次安装无需填写 Client ID / Secret，保存已有会话，并包含盘前盘后行情、时段底色标记、K 线双指缩放、单指拖动与“最新”入口。iPhone 直接访问 Schwab，不依赖自建服务器或域名。
 

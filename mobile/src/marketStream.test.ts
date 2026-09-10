@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isSchwabStreamURL, openMarketStream } from "./marketStream.ts";
+import { isSchwabStreamURL, openMarketStream, openMultiMarketStream } from "./marketStream.ts";
 import type {
   MarketWebSocket,
   MarketStreamCallbacks,
@@ -570,4 +570,66 @@ test("forming bars flush before authoritative bars, and pending provisional buff
   h.time.advance(250); assert.equal(h.formingCandles.length, 1);
   h.sockets[1].quote({ key: "AAPL", "3": 111, "35": h.time.now(), delayed: false });
   h.stop(); h.time.advance(250); assert.equal(h.formingCandles.length, 1);
+});
+
+test("multi-symbol stream shares one login, routes independent sequences, and reconnects as one", async () => {
+  const time = clock();
+  const sockets: Socket[] = [];
+  const quotes: Array<{ symbol: string; lastPrice?: number }> = [];
+  const candles: string[] = [];
+  let credentialReads = 0;
+  const stop = openMultiMarketStream(["AAPL", "QQQ"], async () => { credentialReads++; return auth; }, {
+    onQuote: (quote) => quotes.push(quote),
+    onCandle: (symbol) => candles.push(symbol),
+    onStatus: () => {},
+  }, { ...time, createWebSocket: () => { const socket = new Socket(); sockets.push(socket); return socket; } });
+  await settle();
+  assert.equal(sockets.length, 1);
+  sockets[0].live();
+  assert.equal(sockets[0].sent[1].requests[0].parameters.keys, "AAPL,QQQ");
+  sockets[0].quote({ key: "AAPL", seq: 999, "3": 200 });
+  sockets[0].quote({ key: "QQQ", seq: 1, "3": 500 });
+  sockets[0].quote({ key: "AAPL", seq: 998, "3": 100 });
+  sockets[0].quote({ key: "QQQ", "0": "AAPL", seq: 2, "3": 1 });
+  sockets[0].candle({ key: "QQQ", "1": 1, "2": 500, "3": 501, "4": 499, "5": 500, "6": 10, "7": start });
+  time.advance(250);
+  assert.deepEqual(quotes.map(({ symbol, lastPrice }) => ({ symbol, lastPrice })), [{ symbol: "AAPL", lastPrice: 200 }, { symbol: "QQQ", lastPrice: 500 }]);
+  assert.deepEqual(candles, ["QQQ"]);
+  sockets[0].onclose?.();
+  time.advance(5000);
+  await settle();
+  assert.equal(credentialReads, 2);
+  assert.equal(sockets.length, 2);
+  sockets[1].live();
+  assert.equal(sockets[1].sent[1].requests[0].parameters.keys, "AAPL,QQQ");
+  sockets[1].quote({ key: "AAPL", seq: 1, "3": 201 });
+  time.advance(250);
+  assert.equal(quotes.at(-1)?.lastPrice, 201);
+  stop();
+  assert.equal(time.pending(), 0);
+});
+
+test("multi-symbol forming extrema and chart sequences stay independent within a shared batch", async () => {
+  const time = clock();
+  const socket = new Socket();
+  const forming: Array<{ symbol: string; candle: Candle }> = [];
+  const candles: Array<{ symbol: string; candle: Candle }> = [];
+  const stop = openMultiMarketStream(["AAPL", "QQQ"], async () => auth, {
+    onQuote: () => {},
+    onStatus: () => {},
+    onFormingCandle: (symbol, candle) => forming.push({ symbol, candle }),
+    onCandle: (symbol, candle) => candles.push({ symbol, candle }),
+  }, { ...time, createWebSocket: () => socket });
+  await settle(); socket.live();
+  socket.quote({ key: "AAPL", seq: 99, "3": 100, "35": start, delayed: false });
+  socket.quote({ key: "QQQ", seq: 1, "3": 500, "35": start, delayed: false });
+  socket.quote({ key: "AAPL", seq: 100, "3": 102, "35": start + 1 });
+  socket.quote({ key: "QQQ", seq: 2, "3": 499, "35": start + 1 });
+  socket.candle(bar(start, 99));
+  socket.candle({ ...bar(start, 1), key: "QQQ", "5": 106 });
+  time.advance(250);
+  assert.deepEqual(forming.map(({ symbol, candle }) => [symbol, candle.open, candle.high, candle.low, candle.close]),
+    [["AAPL", 100, 102, 100, 102], ["QQQ", 500, 500, 499, 499]]);
+  assert.deepEqual(candles.map(({ symbol, candle }) => [symbol, candle.close]), [["AAPL", 105], ["QQQ", 106]]);
+  stop(); assert.equal(time.pending(), 0);
 });

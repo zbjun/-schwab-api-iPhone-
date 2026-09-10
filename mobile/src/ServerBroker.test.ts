@@ -1,0 +1,226 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { setTimeout as delay } from "node:timers/promises";
+import { ServerBroker, serverOrigin } from "./ServerBroker.ts";
+import type { FetchTransport } from "./broker.ts";
+import type { Prepared, Vault } from "./types.ts";
+
+const KEY = "a".repeat(64), ORIGIN = "https://fixture.example.test";
+const prepared = { id: "opaque-review" } as Prepared;
+function vault() {
+  const data = new Map<string, string>();
+  const store: Vault = {
+    async get(key) { return data.get(key) ?? null; },
+    async set(key, value) { data.set(key, value); },
+    async remove(key) { data.delete(key); },
+  };
+  return { store, data };
+}
+function response(result: unknown, status = 200) {
+  return new Response(JSON.stringify(status === 200 ? { result } : result), { status });
+}
+async function fixture(fetch: FetchTransport, timeoutMilliseconds = 1000) {
+  const v = vault();
+  const broker = new ServerBroker(v.store, { fetch, timeoutMilliseconds });
+  await broker.configureServer(ORIGIN, KEY);
+  return { broker, ...v };
+}
+async function until(check: () => boolean) {
+  for (let n = 0; n < 100 && !check(); n++) await delay(5);
+  assert.ok(check(), "condition reached");
+}
+
+test("device connection persists through vault; public configuration never returns its key", async () => {
+  let calls = 0;
+  const f = await fixture(async () => { calls++; return response({}); });
+  assert.deepEqual(await f.broker.configuration(), { origin: ORIGIN });
+  const restored = new ServerBroker(f.store);
+  assert.deepEqual(await restored.configuration(), { origin: ORIGIN });
+  assert.equal(calls, 0);
+  assert.equal(f.data.size, 1);
+  assert.equal([...f.data.values()][0].includes("clientSecret"), false);
+  await f.broker.disconnect();
+  assert.equal(await f.broker.configuration(), null);
+  assert.equal(calls, 0, "forgetting connection never logs out server");
+});
+
+test("HTTPS origins only; reject credential URLs, paths, query and hash", async () => {
+  for (const value of ["http://fixture.test", "https://user:pass@fixture.test", "https://fixture.test/api", "https://fixture.test?a=b", "https://fixture.test/#x"])
+    assert.throws(() => serverOrigin(value));
+  assert.equal(serverOrigin(" https://fixture.test:8443/ "), "https://fixture.test:8443");
+  const f = await fixture(async () => response({}));
+  await assert.rejects(f.broker.configureServer(ORIGIN, "short"));
+  assert.deepEqual(await f.broker.configuration(), { origin: ORIGIN });
+});
+
+test("reads use only device bearer; redirects and broker-token endpoints are not accepted", async () => {
+  const f = await fixture(async (url, init) => {
+    assert.equal(url, `${ORIGIN}/rpc`);
+    assert.equal((init?.headers as Record<string,string>).Authorization, `Bearer ${KEY}`);
+    assert.equal(init?.redirect, "error");
+    assert.deepEqual(JSON.parse(String(init?.body)), { method: "accounts", args: [] });
+    return response([]);
+  });
+  assert.deepEqual(await f.broker.accounts(), []);
+  const redirected = await fixture(async () => new Response("", { status: 302 }));
+  await assert.rejects(redirected.broker.accounts(), { code: "serverRedirect" });
+  const wrongAuth = await fixture(async () => response("https://not-schwab.test/login"));
+  await assert.rejects(wrongAuth.broker.authorizationURL(), { code: "serverAuthorization" });
+});
+
+test("an uncertain write is never retried and blocks later writes across restart and disconnect", async () => {
+  let attempts = 0;
+  const f = await fixture(async () => { attempts++; throw new Error("network lost"); });
+  await assert.rejects(f.broker.submit(prepared), { code: "serverUnavailable" });
+  await assert.rejects(f.broker.submit(prepared), { code: "orderOutcomeUnknown" });
+  await f.broker.disconnect();
+  const restored = new ServerBroker(f.store, { fetch: async () => { attempts++; return response(null); } });
+  await restored.configureServer(ORIGIN, KEY);
+  await assert.rejects(restored.cancel("account", "order"), { code: "orderOutcomeUnknown" });
+  assert.equal(attempts, 1);
+});
+
+test("known pre-write rejection clears local marker; server unknown result does not", async () => {
+  let unknown = false, submissions = 0;
+  const f = await fixture(async (_url, init) => {
+    const { method, args } = JSON.parse(String(init?.body));
+    assert.equal(method, "submit");
+    assert.deepEqual(args, [{ id: prepared.id }]);
+    submissions++;
+    return response({ error: { code: unknown ? "orderOutcomeUnknown" : "reviewExpired", message: "untrusted secret" } }, 400);
+  });
+  await assert.rejects(f.broker.submit(prepared), { code: "reviewExpired" });
+  unknown = true;
+  await assert.rejects(f.broker.submit(prepared), { code: "orderOutcomeUnknown" });
+  await assert.rejects(f.broker.submit(prepared), { code: "orderOutcomeUnknown" });
+  assert.equal(submissions, 2);
+});
+
+test("configuration changes cannot race writes or reconciliation", async () => {
+  let finish!: (r: Response) => void;
+  const f = await fixture(async () => new Promise<Response>(r => { finish = r; }));
+  const write = f.broker.submit(prepared);
+  await until(() => !!finish);
+  await assert.rejects(f.broker.configureServer("https://other.test", KEY), { code: "operationBusy" });
+  await assert.rejects(f.broker.disconnect(), { code: "operationBusy" });
+  await assert.rejects(f.broker.acknowledgeReconciliation(), { code: "operationBusy" });
+  finish(response({ orderID: "fixture" }));
+  await write;
+});
+
+test("market polls forward incremental data, abort on stop, release once and suppress late results", async () => {
+  const statuses: string[] = [], quotes: unknown[] = [], candles: unknown[] = [];
+  let posts = 0, deletes = 0, lastSignal: AbortSignal | null | undefined;
+  let late!: (r: Response) => void;
+  const candle = { time: 1, open: 2, high: 3, low: 1, close: 2 };
+  const f = await fixture(async (url, init) => {
+    assert.equal(url, `${ORIGIN}/market`);
+    if (init?.method === "DELETE") { deletes++; return response(null); }
+    const body = JSON.parse(String(init?.body));
+    assert.equal(body.waitMs, 20000);
+    assert.equal(body.symbol, "SNDU");
+    lastSignal = init?.signal;
+    posts++;
+    if (posts === 1) return response({ cursor: 10, status: "live", quote: { symbol: "SNDU", lastPrice: 2 }, formingCandles: [candle], candles: [candle] });
+    assert.equal(body.cursor, 10);
+    return new Promise<Response>(r => { late = r; });
+  }, 5); // RPC timeout must not accidentally shorten the 20-second market wait.
+  const stop = f.broker.subscribeMarket("SNDU", { onStatus: x => statuses.push(x), onQuote: q => quotes.push(q), onCandle: c => candles.push(c), onFormingCandle: c => candles.push(c) });
+  await until(() => posts === 2);
+  await delay(25);
+  assert.equal(statuses.at(-1), "live");
+  stop(); stop();
+  await until(() => deletes === 1);
+  assert.equal(lastSignal?.aborted, true);
+  late(response({ cursor: 11, status: "live", quote: { symbol: "SNDU", lastPrice: 999 }, formingCandles: [], candles: [] }));
+  await delay(120);
+  assert.equal(quotes.length, 1);
+  assert.equal(candles.length, 2);
+  assert.equal(posts, 2);
+  assert.equal(deletes, 1);
+});
+
+test("switching chart symbol releases the previous subscription before starting next", async () => {
+  const calls: string[] = [];
+  const f = await fixture(async (_url, init) => {
+    if (init?.method === "DELETE") { calls.push("DELETE"); return response(null); }
+    const { symbol } = JSON.parse(String(init?.body));
+    calls.push(symbol);
+    return new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+  });
+  const cb = { onStatus() {}, onQuote() {}, onCandle() {} };
+  f.broker.subscribeMarket("SNDU", cb);
+  await until(() => calls.includes("SNDU"));
+  const stop = f.broker.subscribeMarket("QQQ", cb);
+  await until(() => calls.includes("QQQ"));
+  assert.deepEqual(calls, ["SNDU", "DELETE", "QQQ"]);
+  stop();
+  await until(() => calls.length === 4);
+});
+
+test("reconciliation cannot clear a server-wide unresolved write; it clears only local marker after server is clear", async () => {
+  let unresolved = true;
+  const f = await fixture(async (_url, init) => {
+    const { method } = JSON.parse(String(init?.body));
+    if (method === "submit") throw new Error("lost response");
+    assert.equal(method, "status");
+    return response({ configured: true, authenticated: true, unresolvedOperation: unresolved });
+  });
+  await assert.rejects(f.broker.submit(prepared));
+  await assert.rejects(f.broker.acknowledgeReconciliation(), { code: "orderOutcomeUnknown" });
+  assert.equal((await f.broker.status()).unresolvedOperation, true);
+  unresolved = false;
+  assert.equal((await f.broker.status()).unresolvedOperation, true, "local uncertainty remains until deliberate reconciliation");
+  await f.broker.acknowledgeReconciliation();
+  assert.equal((await f.broker.status()).unresolvedOperation, false);
+});
+
+test("device configuration mutation locks writes before asynchronous vault persistence", async () => {
+  const v = vault();
+  const originalSet = v.store.set;
+  let finish!: () => void;
+  v.store.set = async (key, value) => { await new Promise<void>(r => { finish = r; }); await originalSet(key, value); };
+  let calls = 0;
+  const broker = new ServerBroker(v.store, { fetch: async () => { calls++; return response(null); } });
+  const save = broker.configureServer(ORIGIN, KEY);
+  await until(() => !!finish);
+  await assert.rejects(broker.submit(prepared), { code: "operationBusy" });
+  await assert.rejects(broker.disconnect(), { code: "operationBusy" });
+  await assert.rejects(broker.configureServer("https://other.test", KEY), { code: "operationBusy" });
+  finish(); await save;
+  assert.equal(calls, 0);
+});
+
+test("optional RPC arguments are omitted instead of JSON null for new orders and default quotes", async () => {
+  const requests: { method: string; args: unknown[] }[] = [];
+  const f = await fixture(async (_url, init) => {
+    requests.push(JSON.parse(String(init?.body)));
+    return response(null);
+  });
+  const draft = { symbol: "SNDU", side: "BUY", kind: "LIMIT", quantity: 1, limitPrice: "27", duration: "DAY" } as const;
+  await f.broker.prepare("account", draft);
+  await f.broker.prepare("account", draft, "replacement");
+  await f.broker.quotes(["SNDU"]);
+  await f.broker.quotes(["SNDU"], { fundamentals: true });
+  assert.deepEqual(requests, [
+    { method: "prepare", args: ["account", draft] },
+    { method: "prepare", args: ["account", draft, "replacement"] },
+    { method: "quotes", args: [["SNDU"]] },
+    { method: "quotes", args: [["SNDU"], { fundamentals: true }] },
+  ]);
+});
+
+test("stopping from status callback suppresses remaining quote and candle callbacks", async () => {
+  let deletes = 0, emitted = 0;
+  const f = await fixture(async (_url, init) => {
+    if (init?.method === "DELETE") { deletes++; return response(null); }
+    const candle = { time: 1, open: 2, high: 3, low: 1, close: 2 };
+    return response({ cursor: 1, status: "live", quote: { symbol: "SNDU", lastPrice: 2 }, formingCandles: [candle], candles: [candle] });
+  });
+  const stop = f.broker.subscribeMarket("SNDU", {
+    onStatus(status) { if (status === "live") stop(); },
+    onQuote() { emitted++; }, onCandle() { emitted++; }, onFormingCandle() { emitted++; },
+  });
+  await until(() => deletes === 1);
+  assert.equal(emitted, 0);
+});

@@ -1,0 +1,8 @@
+config.json
+data/
+*.key
+*.pem
+*.enc
+*.lock
+*.tmp
+device-*.json

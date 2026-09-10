@@ -51,6 +51,8 @@ export type FetchTransport = (
   init: RequestInit,
 ) => Promise<Response>;
 export interface SchwabBrokerOptions {
+  /** Server deployment only; must exactly match the registered HTTPS callback. */
+  callbackURL?: string;
   stream?: typeof openMarketStream;
   fetch?: FetchTransport;
   randomState?: () => string | Promise<string>;
@@ -454,6 +456,7 @@ export class SchwabBroker implements Broker {
   private readonly makeState: () => string | Promise<string>;
   private readonly now: () => number;
   private readonly timeout: number;
+  private readonly callbackURL: string;
   private state: StoredSession = { version: 1 };
   private loaded = false;
   private loading?: Promise<void>;
@@ -471,6 +474,11 @@ export class SchwabBroker implements Broker {
   private unresolved = false;
 
   constructor(vault: Vault, options: SchwabBrokerOptions = {}) {
+    this.callbackURL = options.callbackURL ?? CALLBACK_URL;
+    const callback = new URL(this.callbackURL);
+    if (callback.protocol !== "https:" || callback.username || callback.password ||
+        callback.search || callback.hash || /[\\\s]/u.test(this.callbackURL))
+      throw invalidResponse();
     this.openStream = options.stream ?? openMarketStream;
     this.vault = vault;
     this.fetcher =
@@ -637,7 +645,7 @@ export class SchwabBroker implements Broker {
         new URLSearchParams({
           response_type: "code",
           client_id: credentials.clientID,
-          redirect_uri: CALLBACK_URL,
+          redirect_uri: this.callbackURL,
           state,
         }).toString()
       );
@@ -656,10 +664,13 @@ export class SchwabBroker implements Broker {
       }
       if (typeof callback !== "string") throw error("invalidCallback");
       const raw = callback.trim();
+      const expectedCallback = new URL(this.callbackURL);
+      const base = raw.split("?")[0];
       if (
         bytes(raw) > 16_384 ||
         /[\p{Cc}\p{Cf}\\]/u.test(raw) ||
-        !/^https:\/\/127\.0\.0\.1(?:\/)?\?/i.test(raw) ||
+        (base !== this.callbackURL &&
+          !(expectedCallback.pathname === "/" && base === this.callbackURL + "/")) ||
         raw.includes("#")
       )
         throw error("invalidCallback");
@@ -670,12 +681,10 @@ export class SchwabBroker implements Broker {
         throw error("invalidCallback");
       }
       if (
-        url.protocol !== "https:" ||
-        url.hostname !== "127.0.0.1" ||
-        url.port ||
+        url.origin !== expectedCallback.origin ||
         url.username ||
         url.password ||
-        url.pathname !== "/"
+        url.pathname !== expectedCallback.pathname
       )
         throw error("invalidCallback");
       const q = url.searchParams;
@@ -711,7 +720,7 @@ export class SchwabBroker implements Broker {
       {
         grant_type: "authorization_code",
         code: exchange.code,
-        redirect_uri: CALLBACK_URL,
+        redirect_uri: this.callbackURL,
       },
       exchange.generation,
     );
@@ -1030,6 +1039,42 @@ export class SchwabBroker implements Broker {
     this.assertGeneration(expected);
     return result;
   }
+  /** Server-local credential provider; never expose through a remote API. */
+  async marketCredentials(): Promise<StreamCredentials> {
+    await this.load();
+    return this.streamCredentials(this.generation);
+  }
+  private async streamCredentials(expected: number): Promise<StreamCredentials> {
+    const prefs = await this.read(
+      "/trader/v1/userPreference",
+      undefined,
+      expected,
+    );
+    const token = await this.ensureToken(expected);
+    this.assertGeneration(expected);
+    const info = (
+      prefs as { streamerInfo?: Record<string, unknown>[] } | null
+    )?.streamerInfo?.[0];
+    const field = (key: string): string => {
+      const value = info?.[key];
+      if (
+        typeof value !== "string" ||
+        !value ||
+        value.length > 2048 ||
+        /[\s\u0000-\u001f\u007f]/u.test(value)
+      )
+        throw invalidResponse();
+      return value;
+    };
+    return {
+      url: field("streamerSocketUrl"),
+      accessToken: token.accessToken,
+      customerId: field("schwabClientCustomerId"),
+      correlId: field("schwabClientCorrelId"),
+      channel: field("schwabClientChannel"),
+      functionId: field("schwabClientFunctionId"),
+    };
+  }
   subscribeMarket(
     symbol: string,
     callbacks: MarketStreamCallbacks,
@@ -1041,36 +1086,9 @@ export class SchwabBroker implements Broker {
       normalized,
       async (): Promise<StreamCredentials> => {
         if (stopped) throw error("sessionChanged");
-        const prefs = await this.read(
-          "/trader/v1/userPreference",
-          undefined,
-          expected,
-        );
-        const token = await this.ensureToken(expected);
-        this.assertGeneration(expected);
+        const credentials = await this.streamCredentials(expected);
         if (stopped) throw error("sessionChanged");
-        const info = (
-          prefs as { streamerInfo?: Record<string, unknown>[] } | null
-        )?.streamerInfo?.[0];
-        const field = (key: string): string => {
-          const value = info?.[key];
-          if (
-            typeof value !== "string" ||
-            !value ||
-            value.length > 2048 ||
-            /[\s\u0000-\u001f\u007f]/u.test(value)
-          )
-            throw invalidResponse();
-          return value;
-        };
-        return {
-          url: field("streamerSocketUrl"),
-          accessToken: token.accessToken,
-          customerId: field("schwabClientCustomerId"),
-          correlId: field("schwabClientCorrelId"),
-          channel: field("schwabClientChannel"),
-          functionId: field("schwabClientFunctionId"),
-        };
+        return credentials;
       },
       callbacks,
     );

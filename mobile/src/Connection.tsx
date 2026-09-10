@@ -12,6 +12,7 @@ import type { TradingState } from "./useTrading.ts";
 import type { Palette } from "./types.ts";
 import { Button, Icon, Input, styles } from "./ui.tsx";
 import { importConfiguration } from "./device.ts";
+import ServerConnection from "./ServerConnection.tsx";
 
 export default function Connection({
   state: s,
@@ -27,6 +28,17 @@ export default function Connection({
   const [reset, setReset] = useState(false),
     [reconcile, setReconcile] = useState(false);
   const native = Platform.OS !== "web";
+  const transportPicker = <View style={[styles.row, { gap: 8, marginBottom: 16 }]}>
+    <Button label="手机直连" palette={p} active={s.transport === "direct"} disabled={s.busy || !s.storageReady}
+      onPress={() => void s.run(() => s.changeTransport("direct"))} />
+    <Button label="服务器共享" palette={p} active={s.transport === "server"} disabled={s.busy || !s.storageReady}
+      onPress={() => void s.run(() => s.changeTransport("server"))} />
+  </View>;
+  if (s.transport === "server") return <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
+    <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 16, paddingBottom: 125 }}>
+      {transportPicker}<ServerConnection state={s} palette={p} />
+    </ScrollView>
+  </KeyboardAvoidingView>;
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === "ios" ? "padding" : undefined}
@@ -42,6 +54,7 @@ export default function Connection({
           gap: 0,
         }}
       >
+        {transportPicker}
         <View
           style={[
             styles.card,

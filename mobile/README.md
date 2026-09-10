@@ -25,11 +25,19 @@
 - 跳转到本机回调后，Safari 可能显示无法访问；复制地址栏完整网址，返回 App 粘贴并点击“完成授权”。Expo Go 不提供此项目的专属 URL scheme 自动回跳，因此沿用手动回调方式。
 - 真实读写由 iPhone 直接访问 `api.schwabapi.com`。无需自建域名或服务器。当前本机验证使用虚构数据，没有调用真实订单接口。
 
+## 两台设备共享服务器授权
+
+最新源码新增“设置 → Schwab 连接 → 服务器共享”。服务器使用现有 Client ID / Secret，统一保存并刷新 Schwab 令牌。每台手机仅保存 HTTPS 服务器地址和各自的设备密钥；服务器已授权时，另一台刷新连接即可使用。忘记本机连接不注销另一台设备。
+
+服务部署说明见 [`../server/README.md`](../server/README.md)，验收边界见 [多设备连接](MULTI-DEVICE.md)。目前完成本地实现，尚未部署到用户服务器，也没有进行双真机验收。需要实际服务器地址、访问方式及 HTTPS 回调地址；本轮不生成 IPA。
+
+服务器模式复用当前交易核对、快速模式和结果不明锁定。两台设备共享写操作锁，核对只允许发起设备提交且只能使用一次。另一台重新核对可能使较早的核对失效，届时需本人重新核对。行情由服务器共享上游连接，再向设备分发；手机不接收 Schwab 令牌。迁移后请停止旧直连客户端刷新同一应用会话。
+
 ## 功能与边界
 
 底部连接入口已移入“设置 → Schwab 连接”。设置中的快速模式默认关闭，开关保存在本机。开启后，输入价格和股数，点买入/卖出即在后台核对并提交；单笔撤单按钮直接发送撤单请求，点订单行仍只查看详情。关闭时恢复原有核对页，修改订单仍需核对。快速模式复用已有账户/数量校验、冻结订单快照、操作锁和未知结果锁定，不会自动重试失败提交。
 
-**授权自动返回尚未接通。** 当前固定回调 `https://127.0.0.1` 仍需复制粘贴。Expo SDK 57 的官方登录会话使用自定义 URL scheme 接回；Apple 原生 HTTPS 回调要求关联域名。可行后续路线是配置用户控制的 HTTPS 回调页、在 Schwab 门户登记该地址，再返回独立 App 的专属 scheme；需要确认实际域名后实施并重新构建验证。账号密码始终在 Schwab 官方页面填写，不由 App 收集。参考：[Expo WebBrowser](https://docs.expo.dev/versions/v57.0.0/sdk/webbrowser/)、[Apple HTTPS callback](https://developer.apple.com/documentation/authenticationservices/aswebauthenticationsession/callback/https(host:path:))。
+**直连模式仍需手动回调；服务器模式可自动接收回调。** 部署服务器并登记实际 `https://你的域名/oauth/callback` 后，Schwab 官方页面完成登录会回调服务器，无需再粘贴授权链接。成功页面提示返回 App，App 回到前台后刷新共享授权状态。浏览器自动关闭或自动跳回 App 尚未接通；未部署的本地代码不能代替实际回调登记。账号密码始终在 Schwab 官方页面填写，不由 App 收集。参考：[Expo WebBrowser](https://docs.expo.dev/versions/v57.0.0/sdk/webbrowser/)、[Apple HTTPS callback](https://developer.apple.com/documentation/authenticationservices/aswebauthenticationsession/callback/https(host:path:))。
 
 自选列表／左滑多股同列、账户持仓、行情详情、分时／五日、日周月及 1/5/15/30/60/120 分钟 K 线、MA5/10/20/30、扩展时段底色、价量对齐、横拖／双指缩放、系统明暗色、图下买卖撤、账户核对、简单订单修改和撤销均移植为 React Native。
 

@@ -6,6 +6,7 @@ import { File, Paths } from "expo-file-system";
 import { fetch as nativeFetch } from "expo/fetch";
 import type { Vault } from "./types.ts";
 import { SchwabBroker } from "./broker.ts";
+import { ServerBroker } from "./ServerBroker.ts";
 import { PERSONAL_CONFIG_RESOURCE, parsePersonalConfiguration, seedPersonalConfiguration } from "./personalConfiguration.ts";
 
 const key = (value: string) =>
@@ -38,6 +39,10 @@ export function createRealBroker() {
         .map((v) => v.toString(16).padStart(2, "0"))
         .join(""),
   });
+}
+export function createServerBroker() {
+  nativeOnly();
+  return new ServerBroker(vault, { fetch: nativeFetch });
 }
 export async function restoreBundledConfiguration(broker: SchwabBroker) {
   if (Platform.OS !== "ios") return false;

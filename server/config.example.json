@@ -1,0 +1,12 @@
+{
+  "port": 8788,
+  "callbackURL": "https://127.0.0.1",
+  "dataDirectory": "./data",
+  "encryptionKeyFile": "./vault.key",
+  "clientID": "REPLACE_ON_SERVER",
+  "clientSecret": "REPLACE_ON_SERVER",
+  "devices": [
+    { "id": "iphone", "token": "GENERATE_A_RANDOM_32_BYTE_BASE64URL_TOKEN" },
+    { "id": "second-device", "token": "GENERATE_A_DIFFERENT_RANDOM_32_BYTE_BASE64URL_TOKEN" }
+  ]
+}

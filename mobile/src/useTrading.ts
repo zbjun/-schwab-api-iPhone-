@@ -2,17 +2,17 @@ import { useEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { DemoBroker } from "./demo.ts";
-import { createRealBroker, restoreBundledConfiguration } from "./device.ts";
+import { createRealBroker, createServerBroker, restoreBundledConfiguration } from "./device.ts";
 import { TradingError } from "./orderRules.ts";
 import type { Account, Broker, Order, Quote, SessionStatus } from "./types.ts";
 
 export function useTrading() {
   const demo = useRef<Broker>(new DemoBroker()).current;
   const realRef = useRef<ReturnType<typeof createRealBroker> | null>(null);
-  if (!realRef.current && Platform.OS !== "web")
-    realRef.current = createRealBroker();
+  const serverRef = useRef<ReturnType<typeof createServerBroker> | null>(null);
+  const [transport, setTransport] = useState<"direct" | "server">("direct");
   const [isDemo, setDemo] = useState(true);
-  const broker = isDemo ? demo : realRef.current!;
+  const broker: Broker = isDemo ? demo : transport === "server" ? serverRef.current! : realRef.current!;
   const [status, setStatus] = useState<SessionStatus>({
     configured: false,
     authenticated: false,
@@ -48,10 +48,20 @@ export function useTrading() {
     Promise.all([
       AsyncStorage.getItem("ths.expo.watchlist.v1"),
       AsyncStorage.getItem("ths.expo.mode.v1"),
-      realRef.current ? restoreBundledConfiguration(realRef.current) : Promise.resolve(false),
+      AsyncStorage.getItem("ths.expo.transport.v1"),
       AsyncStorage.getItem("ths.expo.quickMode.v1"),
     ])
-      .then(([value, mode, configured, quick]) => {
+      .then(async ([value, mode, savedTransport, quick]) => {
+        let configured = false;
+        const nextTransport = savedTransport === "server" ? "server" : "direct";
+        if (Platform.OS !== "web") {
+          if (nextTransport === "server") serverRef.current = createServerBroker();
+          else {
+            realRef.current = createRealBroker();
+            configured = await restoreBundledConfiguration(realRef.current);
+          }
+        }
+        setTransport(nextTransport);
         setQuickMode(quick === "true");
         if (value) {
           const list = JSON.parse(value);
@@ -215,10 +225,34 @@ export function useTrading() {
       });
   }
   function switchMode(demoMode: boolean) {
-    if (busy || (!demoMode && Platform.OS === "web")) return;
+    if (busy || !storageReady || (!demoMode && Platform.OS === "web")) return;
+    if (!demoMode) {
+      // Preference storage can fail before startup constructs a broker. Do not leave
+      // demo mode until the selected native transport is actually available.
+      try {
+        if (transport === "server") serverRef.current ??= createServerBroker();
+        else realRef.current ??= createRealBroker();
+      } catch {
+        setMessage("初始化设备连接失败，请稍后重试或在设置中检查连接配置。");
+        return;
+      }
+    }
     ++epoch.current;
     setMessage("");
     setDemo(demoMode);
+  }
+  async function changeTransport(value: "direct" | "server") {
+    if (!storageReady || value === transport) return;
+    if (Platform.OS === "web") { setTransport(value); return; }
+    if (value === "server") serverRef.current ??= createServerBroker();
+    else {
+      realRef.current ??= createRealBroker();
+      await restoreBundledConfiguration(realRef.current);
+    }
+    await AsyncStorage.setItem("ths.expo.transport.v1", value);
+    ++epoch.current;
+    setStatus({ configured: false, authenticated: false, unresolvedOperation: false });
+    setTransport(value);
   }
   async function changeQuickMode(value: boolean) {
     if (!storageReady) return;
@@ -226,6 +260,9 @@ export function useTrading() {
     setQuickMode(value);
   }
   return {
+    transport,
+    changeTransport,
+    serverBroker: serverRef.current,
     quickMode,
     changeQuickMode,
     storageReady,

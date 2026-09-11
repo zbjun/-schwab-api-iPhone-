@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { executeLocalMarket, validateLocalMarketSettings } from "./localMarket.ts";
+import { executeLocalMarket, quoteMidpoint, validateLocalMarketSettings } from "./localMarket.ts";
 import { TradingError } from "./orderRules.ts";
 import type { Draft, Order, Prepared, Quote } from "./types.ts";
 
@@ -9,6 +9,7 @@ function fixture() {
   let current = true;
   let stop = false;
   let quotePrice = 100;
+  let halfSpread = 0;
   let quoteTime: number | undefined;
   let realtime = true;
   const drafts: Draft[] = [];
@@ -17,7 +18,7 @@ function fixture() {
   const orders = new Map<string, Order>();
   const messages: string[] = [];
   let reads = 0;
-  const quote = (): Quote => ({ symbol: "QQQ", bidPrice: quotePrice, askPrice: quotePrice, quoteTime: quoteTime ?? time, isRealtime: realtime });
+  const quote = (): Quote => ({ symbol: "QQQ", bidPrice: quotePrice - halfSpread, askPrice: quotePrice + halfSpread, quoteTime: quoteTime ?? time, isRealtime: realtime });
   const broker = {
     async quotes(_symbols: string[], options?: { fundamentals?: boolean }) {
       assert.equal(options?.fundamentals, false);
@@ -44,7 +45,7 @@ function fixture() {
   };
   const request: Parameters<typeof executeLocalMarket>[0] = {
     broker, accountID: "account", symbol: "QQQ", side: "BUY", quantity: 10, session: "PM",
-    settings: { boundaryPercent: 0.5, durationSeconds: 10 }, isDemo: false,
+    settings: { boundaryPercent: 0.5, durationSeconds: 10, slippagePercent: 0 }, isDemo: false,
     isCurrent: () => current, shouldStop: () => stop,
     onProgress: (message) => messages.push(message), now: () => time,
     sleep: async (ms) => { time += ms; },
@@ -53,17 +54,18 @@ function fixture() {
     setTime: (value: number) => { time = value; }, time: () => time,
     setCurrent: (value: boolean) => { current = value; }, setStop: () => { stop = true; },
     setPrice: (value: number) => { quotePrice = value; },
+    setHalfSpread: (value: number) => { halfSpread = value; },
     setQuoteTime: (value: number) => { quoteTime = value; },
     setRealtime: (value: boolean) => { realtime = value; }, reads: () => reads,
   };
 }
 
 test("local market settings allow zero boundary and custom duration but reject non-finite and unbounded settings", () => {
-  validateLocalMarketSettings({ boundaryPercent: 0, durationSeconds: 3600 });
+  validateLocalMarketSettings({ boundaryPercent: 0, durationSeconds: 3600, slippagePercent: 0 });
   for (const boundaryPercent of [-1, 100, Infinity, NaN])
-    assert.throws(() => validateLocalMarketSettings({ boundaryPercent, durationSeconds: 10 }));
+    assert.throws(() => validateLocalMarketSettings({ boundaryPercent, durationSeconds: 10, slippagePercent: 0 }));
   for (const durationSeconds of [0, 0.5, 3601, Infinity, NaN])
-    assert.throws(() => validateLocalMarketSettings({ boundaryPercent: 1, durationSeconds }));
+    assert.throws(() => validateLocalMarketSettings({ boundaryPercent: 1, durationSeconds, slippagePercent: 0 }));
 });
 
 test("invalid quantities and sessions never access broker", async () => {
@@ -143,7 +145,7 @@ test("buy boundary remains based on first quote after a confirmed chase", async 
   assert.match(result.message, /价格边界/);
 });
 
-test("sell uses bid and a fixed lower boundary", async () => {
+test("sell uses a fixed lower boundary", async () => {
   const f = fixture();
   f.request.side = "SELL";
   f.request.sleep = async (ms) => { f.setTime(f.time() + ms); f.setPrice(99.4); };
@@ -374,12 +376,73 @@ test("fractional fills after cancellation stop instead of rounding into excess s
   assert.match(result.message, /不是整股/);
 });
 
-test("SELL targets the bid even when the ask is very different", async () => {
+test("SELL with zero slippage targets the midpoint rather than the bid", async () => {
   const f = fixture();
   f.request.side = "SELL";
-  f.broker.quotes = async () => [{ ...f.quote(), bidPrice: 99, askPrice: 110 }];
-  const prepare = f.broker.prepare;
-  f.broker.prepare = async (...args) => ({ ...await prepare(...args), quote: { ...f.quote(), bidPrice: 99, askPrice: 110 } });
+  f.setPrice(104.5);
+  f.setHalfSpread(5.5);
   await executeLocalMarket(f.request);
-  assert.equal(f.drafts[0].limitPrice, "99.00");
+  assert.equal(f.drafts[0].limitPrice, "104.50");
+});
+
+test("midpoint requires valid two-sided quotes and accepts a locked book", () => {
+  assert.equal(quoteMidpoint({ symbol: "QQQ", bidPrice: 99, askPrice: 101 }), 100);
+  assert.equal(quoteMidpoint({ symbol: "QQQ", bidPrice: 100, askPrice: 100 }), 100);
+  assert.equal(quoteMidpoint(), undefined);
+  for (const pair of [[undefined, 101], [99, undefined], [0, 1], [-1, 1], [101, 99], [NaN, 100], [99, Infinity]]) {
+    assert.equal(quoteMidpoint({ symbol: "QQQ", bidPrice: pair[0], askPrice: pair[1], lastPrice: 100 }), undefined);
+  }
+});
+
+test("slippage is explicit, finite, nonnegative and included in the boundary", async () => {
+  for (const slippagePercent of [undefined, NaN, Infinity, -0.1, 0.6]) {
+    const f = fixture();
+    await assert.rejects(executeLocalMarket({ ...f.request, settings: { ...f.request.settings, slippagePercent: slippagePercent as number } }), /滑点/);
+    assert.equal(f.drafts.length, 0);
+  }
+});
+
+test("BUY adds and SELL subtracts configured midpoint percentage without falling back to the opposite quote", async () => {
+  for (const side of ["BUY", "SELL"] as const) {
+    const f = fixture();
+    f.request.side = side;
+    f.request.settings.slippagePercent = 0.1;
+    f.setHalfSpread(1);
+    await executeLocalMarket(f.request);
+    assert.equal(f.drafts[0].limitPrice, side === "BUY" ? "100.10" : "99.90");
+    assert.equal(f.drafts.length, 1);
+  }
+});
+
+test("chasing recalculates from latest midpoint without compounding slippage or widening initial midpoint boundary", async () => {
+  for (const side of ["BUY", "SELL"] as const) {
+    const f = fixture();
+    f.request.side = side;
+    f.request.settings.slippagePercent = 0.2;
+    f.setHalfSpread(0.5);
+    f.request.sleep = async ms => {
+      f.setTime(f.time() + ms);
+      f.setPrice(100 + (side === "BUY" ? 1 : -1) * (f.submitted.length < 2 ? 0.2 : 0.4));
+    };
+    const result = await executeLocalMarket(f.request);
+    assert.deepEqual(f.drafts.map(d => d.limitPrice), side === "BUY" ? ["100.20", "100.41"] : ["99.80", "99.60"]);
+    assert.deepEqual(f.canceled, ["1", "2"]);
+    assert.match(result.message, /价格边界/);
+  }
+});
+
+test("missing or crossed two-sided quotes stop a resting strategy and confirm cancellation", async () => {
+  for (const invalid of ["missing", "crossed"] as const) {
+    const f = fixture();
+    const quotes = f.broker.quotes;
+    f.broker.quotes = async (...args) => {
+      if (!f.submitted.length) return quotes(...args);
+      return [{ ...f.quote(), bidPrice: invalid === "crossed" ? 101 : undefined, askPrice: 100 }];
+    };
+    const result = await executeLocalMarket(f.request);
+    assert.equal(f.submitted.length, 1);
+    assert.deepEqual(f.canceled, ["1"]);
+    assert.match(result.message, /双边报价/);
+    assert.match(result.message, /已确认撤销/);
+  }
 });

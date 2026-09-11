@@ -7,6 +7,8 @@ import { TradingError } from "./orderRules.ts";
 import type { Account, Broker, Order, Quote, SessionStatus } from "./types.ts";
 import { createAccountReader } from "./accountRefresh.ts";
 import { startMarketPolling } from "./marketPolling.ts";
+import { createLocalMarketPreferenceWriter, decodeLocalMarketPreferences, emptyLocalMarketPreferences,
+  localMarketSettingsKey, type LocalMarketPreferences } from "./localMarketPreferences.ts";
 
 export function useTrading() {
   const demo = useRef<Broker>(new DemoBroker()).current;
@@ -39,6 +41,15 @@ export function useTrading() {
   const [storageReady, setStorageReady] = useState(false);
   const [quickMode, setQuickMode] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [localMarketPreferences, setLocalMarketPreferences] = useState({ ...emptyLocalMarketPreferences });
+  const [localMarketPreferencesReady, setLocalMarketPreferencesReady] = useState(false);
+  const [localMarketPreferencesSaving, setLocalMarketPreferencesSaving] = useState(false);
+  const [localMarketPreferencesError, setLocalMarketPreferencesError] = useState("");
+  const localPreferencesRef = useRef(localMarketPreferences);
+  const localPreferenceSave = useRef(0);
+  const writeLocalPreferences = useRef(createLocalMarketPreferenceWriter(
+    raw => AsyncStorage.setItem(localMarketSettingsKey, raw),
+  )).current;
   const [message, setMessage] = useState("");
   const [revision, setRevision] = useState(0);
   const [accountVisible, setAccountVisible] = useState(false);
@@ -55,6 +66,33 @@ export function useTrading() {
     actionLock = useRef(false);
   const current = useRef({ broker, accountID });
   current.current = { broker, accountID };
+  useEffect(() => {
+    let active = true;
+    void AsyncStorage.getItem(localMarketSettingsKey).then(raw => {
+      if (!active) return;
+      const restored = decodeLocalMarketPreferences(raw);
+      localPreferencesRef.current = restored;
+      setLocalMarketPreferences(restored);
+    }).catch(() => { if (active) setLocalMarketPreferencesError("参数恢复失败，请在此重新填写。"); })
+      .finally(() => { if (active) setLocalMarketPreferencesReady(true); });
+    return () => { active = false; };
+  }, []);
+  function changeLocalMarketPreference(key: keyof LocalMarketPreferences, value: string) {
+    // Editing is disabled until restoration completes and for the whole active trade.
+    if (!localMarketPreferencesReady || busy || actionLock.current) return;
+    const next = { ...localPreferencesRef.current, [key]: value };
+    localPreferencesRef.current = next;
+    setLocalMarketPreferences(next);
+    setLocalMarketPreferencesSaving(true);
+    const version = ++localPreferenceSave.current;
+    void writeLocalPreferences(next).then(() => {
+      if (version === localPreferenceSave.current) setLocalMarketPreferencesError("");
+    }).catch(() => {
+      if (version === localPreferenceSave.current) setLocalMarketPreferencesError("参数保存失败，本次使用当前值；重启后请重新检查。");
+    }).finally(() => {
+      if (version === localPreferenceSave.current) setLocalMarketPreferencesSaving(false);
+    });
+  }
   useEffect(() => {
     const listener = AppState.addEventListener("change", (value) => setForeground(value === "active"));
     return () => listener.remove();
@@ -338,6 +376,11 @@ export function useTrading() {
     serverBroker: serverRef.current,
     quickMode,
     changeQuickMode,
+    localMarketPreferences,
+    localMarketPreferencesReady,
+    localMarketPreferencesSaving,
+    localMarketPreferencesError,
+    changeLocalMarketPreference,
     storageReady,
     broker,
     isDemo,

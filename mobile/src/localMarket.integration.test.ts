@@ -10,7 +10,7 @@ test("local market uses the actual demo broker's one-use preparation and confirm
     let elapsed = 0;
     const result = await executeLocalMarket({
       broker, accountID: account.id, symbol: "AAPL", side, quantity: 1,
-      session: "PM", settings: { boundaryPercent: 0.7, durationSeconds: 3 },
+      session: "PM", settings: { boundaryPercent: 0.7, durationSeconds: 3, slippagePercent: 0.1 },
       isDemo: true, isCurrent: () => true, shouldStop: () => false,
       onProgress: () => {}, now: () => Date.now() + elapsed, sleep: async ms => { elapsed += ms; },
     });

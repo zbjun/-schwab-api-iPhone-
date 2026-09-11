@@ -2,8 +2,10 @@ import { FINAL_STATUSES, OPEN_STATUSES, TradingError, parsePrice, validSymbol } 
 import type { Broker, Draft, Order, OrderSession, Quote, Side } from "./types.ts";
 
 export interface LocalMarketSettings {
-  /** Maximum adverse movement from the first executable quote; zero disables chasing. */
+  /** Maximum adverse movement from the initial bid/ask midpoint, including slippage. */
   boundaryPercent: number;
+  /** Buy above / sell below each current midpoint by this percentage. */
+  slippagePercent: number;
   /** Foreground execution is capped at one hour; cancellation confirmation may take longer. */
   durationSeconds: number;
 }
@@ -11,8 +13,18 @@ export interface LocalMarketSettings {
 export function validateLocalMarketSettings(settings: LocalMarketSettings): void {
   if (!Number.isFinite(settings.boundaryPercent) || settings.boundaryPercent < 0 || settings.boundaryPercent >= 100)
     throw new TradingError("localMarketBoundary", "价格偏离范围须大于或等于 0%，且小于 100%。");
+  if (!Number.isFinite(settings.slippagePercent) || settings.slippagePercent < 0 || settings.slippagePercent > settings.boundaryPercent)
+    throw new TradingError("localMarketSlippage", "滑点须大于或等于 0%，且不能超过价格边界。");
   if (!Number.isInteger(settings.durationSeconds) || settings.durationSeconds < 1 || settings.durationSeconds > 3600)
     throw new TradingError("localMarketDuration", "追价时长须为 1 至 3600 秒的整数。");
+}
+
+/** Require both sides of the same quote; never substitute last trade or one side. */
+export function quoteMidpoint(quote?: Quote): number | undefined {
+  const bid = quote?.bidPrice, ask = quote?.askPrice;
+  if (bid === undefined || ask === undefined || !Number.isFinite(bid) || !Number.isFinite(ask) ||
+    bid <= 0 || ask <= 0 || bid > ask) return undefined;
+  return bid + (ask - bid) / 2;
 }
 
 interface Request {
@@ -92,16 +104,17 @@ export async function executeLocalMarket(request: Request): Promise<{
     const age = now() - (quote.quoteTime ?? Number.NaN);
     if (!isDemo && (quote.isRealtime !== true || !Number.isFinite(age) || age < -2000 || age > 10000))
       throw new Stop("买卖报价超过 10 秒或并非实时，已停止追价。");
-    const raw = side === "BUY" ? quote.askPrice : quote.bidPrice;
-    if (raw === undefined || !Number.isFinite(raw) || raw <= 0)
-      throw new Stop("买卖报价无效，已停止追价。");
+    const raw = quoteMidpoint(quote);
+    if (raw === undefined)
+      throw new Stop("买卖双边报价缺失或异常，无法计算中间价，已停止追价。");
     return raw;
   }
 
   function priceFor(raw: number): number {
+    const target = raw * (1 + (side === "BUY" ? 1 : -1) * settings.slippagePercent / 100);
     // Stock prices >= $1 use cents; sub-dollar prices use four decimal places.
-    const scale = raw >= 1 ? 100 : 10000;
-    const units = side === "BUY" ? Math.ceil(raw * scale - 1e-8) : Math.floor(raw * scale + 1e-8);
+    const scale = target >= 1 ? 100 : 10000;
+    const units = side === "BUY" ? Math.ceil(target * scale - 1e-8) : Math.floor(target * scale + 1e-8);
     const price = units / scale;
     if (!parsePrice(price.toFixed(4)) || boundary === undefined ||
       (side === "BUY" ? price > boundary + 1e-10 : price < boundary - 1e-10))
@@ -230,7 +243,7 @@ export async function executeLocalMarket(request: Request): Promise<{
         permitted();
         await sleep(Math.min(1000, Math.max(1, deadline - now())));
         price = await nextPrice();
-        // A favorable quote already crosses the resting limit; do not churn it.
+        // A resting buy above / sell below the new target is already more aggressive.
         if (side === "BUY" ? price <= active.price : price >= active.price) continue;
         // Each chase needs two writes; cap replacement cycles at one per two seconds.
         if (now() - active.placedAt < 2000) continue;

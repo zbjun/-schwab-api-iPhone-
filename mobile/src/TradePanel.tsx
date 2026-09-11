@@ -1,6 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AppState, Pressable, Switch, Text, View } from "react-native";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import type {
   Draft,
   Order,
@@ -23,7 +22,8 @@ import {
 import { Button, Input, money, styles } from "./ui.tsx";
 import { submitQuickOrder } from "./quickTrading.ts";
 import { completeQuickOrder, type QuickOrderFeedback } from "./quickOrderFeedback.ts";
-import { executeLocalMarket, validateLocalMarketSettings, type LocalMarketSettings } from "./localMarket.ts";
+import { executeLocalMarket, quoteMidpoint, type LocalMarketSettings } from "./localMarket.ts";
+import { readLocalMarketSettings } from "./localMarketPreferences.ts";
 
 const kindLabels: Record<OrderKind, string> = {
   MARKET: "市价",
@@ -33,7 +33,6 @@ const kindLabels: Record<OrderKind, string> = {
 };
 type TicketKind = OrderKind | "LOCAL_MARKET";
 const ticketLabels = { ...kindLabels, LOCAL_MARKET: "本地市价" };
-const localSettingsKey = "ths.expo.localMarket.settings.v1";
 export function TradePanel({
   state: s,
   symbol,
@@ -57,32 +56,13 @@ export function TradePanel({
 }) {
   const [side, setSide] = useState<Side | "CANCEL">(initialSide);
   const [kind, setKind] = useState<TicketKind>(replacement?.kind ?? "LIMIT");
-  const [boundaryPercent, setBoundaryPercent] = useState("");
-  const [durationSeconds, setDurationSeconds] = useState("");
-  const [localSettingsReady, setLocalSettingsReady] = useState(false);
+  const { boundaryPercent, slippagePercent, durationSeconds } = s.localMarketPreferences;
+  const localSettingsReady = s.localMarketPreferencesReady;
   const [localReview, setLocalReview] = useState<LocalMarketSettings>();
   const [localRunning, setLocalRunning] = useState(false);
   const [localMessage, setLocalMessage] = useState("");
   const localStop = useRef(false);
   const mounted = useRef(true);
-  useEffect(() => {
-    let active = true;
-    void AsyncStorage.getItem(localSettingsKey).then((raw) => {
-      if (!active || !raw) return;
-      const saved = JSON.parse(raw);
-      if (typeof saved.boundaryPercent === "string" && typeof saved.durationSeconds === "string") {
-        setBoundaryPercent(saved.boundaryPercent);
-        setDurationSeconds(saved.durationSeconds);
-      }
-    }).catch(() => { if (active) setLocalMessage("追价参数恢复失败，请重新填写。"); })
-      .finally(() => { if (active) setLocalSettingsReady(true); });
-    return () => { active = false; };
-  }, []);
-  useEffect(() => {
-    if (!localSettingsReady) return;
-    void AsyncStorage.setItem(localSettingsKey, JSON.stringify({ boundaryPercent, durationSeconds }))
-      .catch(() => { if (mounted.current) setLocalMessage("追价参数保存失败，本次仍使用输入值。"); });
-  }, [boundaryPercent, durationSeconds, localSettingsReady]);
   useEffect(() => {
     mounted.current = true;
     const listener = AppState.addEventListener("change", (value) => {
@@ -113,6 +93,7 @@ export function TradePanel({
     side,
     kind,
     boundaryPercent,
+    slippagePercent,
     durationSeconds,
     price,
     stop,
@@ -148,13 +129,14 @@ export function TradePanel({
       return () => clearTimeout(timer);
     }
   }, [prepared]);
+  const midpoint = quote?.symbol === symbol ? quoteMidpoint(quote) : undefined;
   const reference =
     kind === "LIMIT" || kind === "STOP_LIMIT"
       ? price
       : kind === "STOP"
         ? stop
         : kind === "LOCAL_MARKET" && side === "BUY"
-          ? (quote?.askPrice === undefined ? undefined : quote.askPrice * (1 + (Number(boundaryPercent) || 0) / 100))
+          ? (midpoint === undefined ? undefined : midpoint * (1 + (Number(boundaryPercent) || 0) / 100))
           : (quote?.askPrice ?? quote?.lastPrice);
   const max =
     side === "BUY"
@@ -207,11 +189,10 @@ export function TradePanel({
   }
   async function review() {
     if (kind === "LOCAL_MARKET") {
-      const settings = { boundaryPercent: Number(boundaryPercent), durationSeconds: Number(durationSeconds) };
+      let settings: LocalMarketSettings;
       try {
-        if (!localSettingsReady || !boundaryPercent.trim() || !durationSeconds.trim())
-          throw new Error("请填写价格边界和追价时长。");
-        validateLocalMarketSettings(settings);
+        if (!localSettingsReady) throw new Error("正在恢复本地市价参数，请稍后重试。");
+        settings = readLocalMarketSettings(s.localMarketPreferences);
         if (!Number.isSafeInteger(Number(quantity)) || Number(quantity) <= 0)
           throw new Error("请输入大于 0 的整股数量。");
       } catch (error) {
@@ -379,10 +360,11 @@ export function TradePanel({
           </Text>
           <SummaryRow label="账户" value={s.account?.displayNumber ?? "—"} palette={p} />
           <SummaryRow label="交易时段" value={orderSessionLabels[session]} palette={p} />
-          <SummaryRow label="相对启动报价最大偏离" value={`${localReview.boundaryPercent}%`} palette={p} />
+          <SummaryRow label="中间价滑点" value={`${side === "BUY" ? "+" : "−"}${localReview.slippagePercent}%`} palette={p} />
+          <SummaryRow label="相对启动中间价最大偏离" value={`${localReview.boundaryPercent}%`} palette={p} />
           <SummaryRow label="最长追价" value={`${localReview.durationSeconds} 秒`} palette={p} />
           <Text style={{ color: p.secondary, fontSize: 12 }}>
-            确认时读取最新{side === "BUY" ? "卖一" : "买一"}作为固定基准，在边界内自动追价。超时停止并撤剩余委托；撤单需券商确认。请保持 App 前台运行。
+            中间价 =（买一 + 卖一）÷ 2；委托价 = 最新中间价 ×（1 {side === "BUY" ? "+" : "−"} 滑点%）。价格边界固定基于启动中间价，已包含滑点；价格按最小价位取整，不能突破边界。价格未达到对手报价时可能等待成交。请保持 App 前台运行。
           </Text>
           <Button label={`确认${s.isDemo ? "模拟" : ""}本地市价${side === "BUY" ? "买入" : "卖出"}`} palette={p}
             active color={tradeColor} disabled={s.busy || !permitted} onPress={() => void s.run(() => startLocal(localReview))} />
@@ -620,7 +602,7 @@ export function TradePanel({
                   <View style={{ flex: 1, gap: 4 }}>
                     <Text style={{ color: p.secondary, fontSize: 12 }}>
                       {kind === "MARKET" || kind === "LOCAL_MARKET"
-                        ? kind === "LOCAL_MARKET" ? "参考报价 · USD" : "市价 · USD"
+                        ? kind === "LOCAL_MARKET" ? "中间价 · USD" : "市价 · USD"
                         : kind === "STOP"
                           ? "触发价 · USD"
                           : "限价 · USD"}
@@ -635,7 +617,7 @@ export function TradePanel({
                           fontSize: 19,
                         }}
                       >
-                        ${money(kind === "LOCAL_MARKET" ? side === "BUY" ? quote?.askPrice : quote?.bidPrice : quote?.lastPrice)}
+                        ${money(kind === "LOCAL_MARKET" ? midpoint : quote?.lastPrice, kind === "LOCAL_MARKET" ? 4 : 2)}
                       </Text>
                     ) : (
                       priceInput(kind === "STOP")
@@ -679,23 +661,11 @@ export function TradePanel({
               )}
               {kind === "LOCAL_MARKET" && (
                 <View style={{ gap: 5, paddingVertical: 4 }}>
-                  <View style={{ flexDirection: "row", gap: 10 }}>
-                    <View style={{ flex: 1, gap: 4 }}>
-                      <Text style={{ color: p.secondary, fontSize: 12 }}>价格边界 · 最大偏离 %</Text>
-                      <Input palette={p} testID="trade.local.boundary" accessibilityLabel="价格边界百分比"
-                        placeholder="例如 0.5" keyboardType="decimal-pad" value={boundaryPercent}
-                        onChangeText={setBoundaryPercent} editable={!s.busy && localSettingsReady} />
-                    </View>
-                    <View style={{ flex: 1, gap: 4 }}>
-                      <Text style={{ color: p.secondary, fontSize: 12 }}>追价时长 · 秒</Text>
-                      <Input palette={p} testID="trade.local.duration" accessibilityLabel="追价时长秒数"
-                        placeholder="例如 10" keyboardType="number-pad" value={durationSeconds}
-                        onChangeText={setDurationSeconds} editable={!s.busy && localSettingsReady} />
-                    </View>
-                  </View>
+                  <Text testID="trade.local.settings-summary" style={{ color: p.text, fontSize: 12 }}>
+                    滑点 {slippagePercent.trim() ? `${slippagePercent}%` : "未设置"} · 边界 {boundaryPercent.trim() ? `${boundaryPercent}%` : "未设置"} · 追价 {durationSeconds.trim() ? `${durationSeconds} 秒` : "未设置"}
+                  </Text>
                   <Text style={{ color: p.secondary, fontSize: 11, lineHeight: 16 }}>
-                    参数自动保存。以启动时{side === "BUY" ? "卖一" : "买一"}为固定基准，{side === "BUY" ? "买价不超过基准 +" : "卖价不低于基准 −"}设定百分比；最长 3600 秒。
-                    达到边界、超时或点停止，将停止追价并撤剩余委托。请保持前台；断网或退出 App 后无法保证及时撤单，须在订单页核实。
+                    最新买卖中间价 {side === "BUY" ? "+" : "−"} 滑点；在设置 → 本地市价单调整。请保持前台，断网或退出后须核对未完成委托。
                   </Text>
                 </View>
               )}

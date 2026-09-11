@@ -1,3 +1,11 @@
+# 2026-09-11: Midpoint slippage and settings-only controls (source update)
+
+- Local-market pricing now uses `(bid + ask) / 2`, adding configured percentage slippage for buys and subtracting it for sells. Both sides must be finite, positive and non-crossed; missing or invalid sides stop the strategy without substituting last trade or a one-sided quote. Locked quotes remain valid.
+- Each chase uses the latest midpoint; slippage is not compounded. The adverse price boundary stays anchored to the initial midpoint and includes slippage. Existing tick rounding, elapsed limit, partial-fill accounting and confirmed-cancellation-before-resubmit behavior remain intact. A target inside the spread can wait for a fill; no immediate fill is promised.
+- Settings contains the local-market slippage, price boundary and chase duration. The trade ticket only displays parameter summaries. Older stored boundary/duration can be restored, but missing slippage requires explicit input, including an explicit zero if desired.
+- This is newer source than the delivered 0.6.2 (9) IPA. Per user request, no IPA is built for this adjustment and no real order is placed.
+- Verification: TypeScript and all 250 tests passed, including midpoint pricing, fixed-boundary chasing, invalid two-sided quotes, legacy preference migration and serialized saves. Web export succeeded (333 modules); `git diff --check` passed. Browser automation was unavailable (`nodeRepl.fetch request failed`), so visual interaction and physical iPhone behavior remain unverified.
+
 # 2026-09-11: 0.6.2 (9) personal iPhone delivery
 
 - EAS `2e194572-3afa-4e6e-8bad-a919e61651fa` finished successfully from source `050067f`. Free subscription, 12/30 aggregate builds before submission, zero accrued cost; no paid usage enabled. Upload audit: 83 files identical to local source, new local-market/account-refresh modules included, no known private values.

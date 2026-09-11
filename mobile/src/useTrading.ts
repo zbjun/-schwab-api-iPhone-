@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { DemoBroker } from "./demo.ts";
-import { createRealBroker, createServerBroker, restoreBundledConfiguration } from "./device.ts";
+import { createRealBroker, createServerBroker, restoreBundledConfiguration, restoreBundledServer } from "./device.ts";
 import { TradingError } from "./orderRules.ts";
 import type { Account, Broker, Order, Quote, SessionStatus } from "./types.ts";
 
@@ -53,10 +53,16 @@ export function useTrading() {
     ])
       .then(async ([value, mode, savedTransport, quick]) => {
         let configured = false;
-        const nextTransport = savedTransport === "server" ? "server" : "direct";
+        let nextTransport: "server" | "direct" = savedTransport === "server" ? "server" : "direct";
+        let importedServer = false;
         if (Platform.OS !== "web") {
-          if (nextTransport === "server") serverRef.current = createServerBroker();
-          else {
+          serverRef.current = createServerBroker();
+          importedServer = await restoreBundledServer(serverRef.current, async () => {
+            await AsyncStorage.setItem("ths.expo.transport.v1", "server");
+            await AsyncStorage.setItem("ths.expo.mode.v1", "real");
+          });
+          if (importedServer) nextTransport = "server";
+          if (nextTransport === "direct") {
             realRef.current = createRealBroker();
             configured = await restoreBundledConfiguration(realRef.current);
           }
@@ -75,7 +81,7 @@ export function useTrading() {
           )
             setWatchlist([...new Set<string>(list)]);
         }
-        if ((mode === "real" || (mode === null && configured)) && Platform.OS !== "web") setDemo(false);
+        if ((importedServer || mode === "real" || (mode === null && configured)) && Platform.OS !== "web") setDemo(false);
       })
       .catch(() => setMessage("恢复偏好或配置失败，请到设置中的连接检查。"))
       .finally(() => setStorageReady(true));

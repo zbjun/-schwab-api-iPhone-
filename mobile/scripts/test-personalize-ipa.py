@@ -58,6 +58,28 @@ class PackagingTests(unittest.TestCase):
             personalizer.personalize(self.source, self.config, self.output)
         self.assertEqual(self.output.read_text(), "keep")
 
+    def test_server_config_contains_only_device_connection(self):
+        value = {"version": 2, "mode": "server", "origin": "https://example.test", "deviceKey": "a" * 43}
+        self.config.write_text(json.dumps(value))
+        personalizer.personalize(self.source, self.config, self.output)
+        with zipfile.ZipFile(self.output) as z:
+            self.assertEqual(json.loads(z.read("Payload/THS.app/THSPersonalConfiguration.json")), value)
+        result = subprocess.run([sys.executable, str(SCRIPTS / "verify-ipa.py"), str(self.output),
+                                 "--version", "test", "--allow-personal-config"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for bad in [{**value, "accessToken": "forbidden"}, {**value, "origin": "http://example.test"},
+                    {**value, "deviceKey": "short"}]:
+            with self.assertRaises(ValueError):
+                personalizer.validate_config(json.dumps(bad).encode())
+
+    def test_local_device_file_is_normalized_without_schwab_credentials(self):
+        self.config.write_text(json.dumps({"origin": "https://example.test", "deviceID": "phone1", "deviceKey": "b" * 43}), encoding="utf-8-sig")
+        personalizer.personalize(self.source, self.config, self.output, server_device=True)
+        with zipfile.ZipFile(self.output) as z:
+            value = json.loads(z.read("Payload/THS.app/THSPersonalConfiguration.json"))
+            self.assertEqual(set(value), {"version", "mode", "origin", "deviceKey"})
+            self.assertEqual(value["mode"], "server")
+
     def test_rejects_unsafe_zip_and_repeat_personalization(self):
         personalizer.personalize(self.source, self.config, self.output)
         with self.assertRaises(ValueError):

@@ -5,6 +5,8 @@ import json
 from pathlib import Path, PurePosixPath
 import unicodedata
 import zipfile
+import re
+from urllib.parse import urlsplit
 
 RESOURCE = "THSPersonalConfiguration.json"
 
@@ -16,6 +18,15 @@ def validate_config(raw):
         config = json.loads(raw)
     except (ValueError, UnicodeError):
         raise ValueError("Invalid configuration JSON") from None
+    if isinstance(config, dict) and type(config.get("version")) is int and config["version"] == 2:
+        if set(config) != {"version", "mode", "origin", "deviceKey"} or config.get("mode") != "server":
+            raise ValueError("Invalid server configuration")
+        if not isinstance(config["origin"], str) or not isinstance(config["deviceKey"], str) or not re.fullmatch(r"[A-Za-z0-9_-]{43,128}", config["deviceKey"]):
+            raise ValueError("Invalid server configuration")
+        url = urlsplit(config["origin"])
+        if url.scheme != "https" or not url.hostname or url.username or url.password or url.query or url.fragment or url.path not in {"", "/"}:
+            raise ValueError("Invalid server origin")
+        return config
     if not isinstance(config, dict) or set(config) != {"version", "clientID", "clientSecret"} or type(config["version"]) is not int or config["version"] != 1:
         raise ValueError("Unsupported configuration schema")
     for name in ("clientID", "clientSecret"):
@@ -31,12 +42,21 @@ def validate_config(raw):
     return config
 
 
-def personalize(source, config_file, output):
+def personalize(source, config_file, output, server_device=False):
     source, config_file, output = map(Path, (source, config_file, output))
     if output.resolve() in {source.resolve(), config_file.resolve()} or output.exists():
         raise ValueError("Output must be a new file distinct from inputs")
     with config_file.open("rb") as handle:
-        config = validate_config(handle.read(16385))
+        raw = handle.read(16385)
+        if server_device:
+            if len(raw) > 16384:
+                raise ValueError("Device configuration too large")
+            device = json.loads(raw.decode("utf-8-sig"))
+            if not isinstance(device, dict) or set(device) != {"origin", "deviceID", "deviceKey"}:
+                raise ValueError("Invalid device file")
+            raw = json.dumps({"version": 2, "mode": "server", "origin": device["origin"],
+                              "deviceKey": device["deviceKey"]}).encode()
+        config = validate_config(raw)
     with zipfile.ZipFile(source) as archive:
         names = archive.namelist()
         if len(names) != len(set(names)) or archive.testzip() is not None:
@@ -73,10 +93,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--config", type=Path, required=True)
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--config", type=Path)
+    group.add_argument("--server-device", type=Path)
     args = parser.parse_args()
     try:
-        result = personalize(args.source, args.config, args.output)
+        result = personalize(args.source, args.config or args.server_device, args.output, bool(args.server_device))
     except (ValueError, OSError, zipfile.BadZipFile):
         parser.exit(1, "Personalization failed: check unsigned archive, configuration schema and new output path.\n")
     print(json.dumps(result, indent=2))

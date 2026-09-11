@@ -33,6 +33,7 @@ import Accounts, { AccountSelector } from "./src/Accounts.tsx";
 import { DemoNotice } from "./src/DemoNotice.tsx";
 import { validSymbol } from "./src/orderRules.ts";
 import FormingCandlePreview from "./src/FormingCandlePreview.tsx";
+import HistorySnapshotPreview from "./src/HistorySnapshotPreview.tsx";
 
 type Tab = "accounts" | "watchlist" | "trade" | "orders" | "settings";
 const tabs: [Tab, string, string][] = [
@@ -43,6 +44,9 @@ const tabs: [Tab, string, string][] = [
   ["settings", "设置", "settings"],
 ];
 export default function App() {
+  if (__DEV__ && Platform.OS === "web" &&
+    new URLSearchParams(window.location.search).get("preview") === "history")
+    return <SafeAreaProvider><HistorySnapshotPreview /></SafeAreaProvider>;
   if (
     __DEV__ &&
     Platform.OS === "web" &&

@@ -49,6 +49,14 @@
 
 深度字段参考 [schwab-py 作者的实现说明](https://schwab-py.readthedocs.io/en/stable/streaming.html#level-two-order-book)；该作者明确指出深度流的公开官方资料不完整，字段解释包含逆向验证，因此本项目不承诺全市场覆盖。
 
+## 0.6.0 服务器共享自用包
+
+本版本支持在本机向云端生成的未签名 IPA 加入服务器设备配置。为两个设备分别生成自用包，首次启动自动将各自的设备连接保存到 Keychain 并切换到服务器共享模式；沿用已有手动服务器连接，显式断开后不会再次自动导入。服务器当前已完成授权时，手机无需再次登录 Schwab。券商要求重新授权时仍需在官方页面完成一次授权，两台设备共享结果。
+
+使用 `python scripts/personalize-ipa.py INPUT.ipa OUTPUT.ipa --server-device ../artifacts/server-device-configs/device-1.json` 生成设备一的自用包，设备二使用另一份设备文件。云端构建不包含这些私有文件。每个包仍需本人签名后安装；签名时保持原应用标识可用于覆盖升级。
+
+下面的 0.5.5 记录保留旧直连包的构建和迁移方式。
+
 ## 独立 IPA
 
 `eas.json` 的 `unsigned` 配置使用 Expo 云端 macOS/Xcode，将本目录预构建为原生 iOS 项目，编译 Release，嵌入 Hermes bundle，并输出 `THS-0.5.5-unsigned.ipa`。这是真机包，需要使用自己的证书签名后安装；安装后不依赖 Expo Go、Metro 或电脑。提交源码不会触发 IPA 构建。

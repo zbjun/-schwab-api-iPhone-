@@ -8,6 +8,7 @@ import type { Vault } from "./types.ts";
 import { SchwabBroker } from "./broker.ts";
 import { ServerBroker } from "./ServerBroker.ts";
 import { PERSONAL_CONFIG_RESOURCE, parsePersonalConfiguration, seedPersonalConfiguration } from "./personalConfiguration.ts";
+import { seedBundledServer } from "./bundledServer.ts";
 
 const key = (value: string) =>
   `ths.expo.v1.${[...value].map((c) => c.charCodeAt(0).toString(16).padStart(4, "0")).join("")}`;
@@ -50,8 +51,20 @@ export async function restoreBundledConfiguration(broker: SchwabBroker) {
     const file = new File(Paths.bundle, PERSONAL_CONFIG_RESOURCE);
     if (!file.exists) return undefined;
     if (file.size > 16384) throw new Error("内置配置文件格式不正确。");
-    return file.text();
+    const raw = await file.text();
+    // A shared-server package must never seed direct Schwab credentials.
+    if (JSON.parse(raw)?.version === 2) return undefined;
+    return raw;
   });
+}
+export async function restoreBundledServer(broker: ServerBroker, activate: () => Promise<void>) {
+  if (Platform.OS !== "ios") return false;
+  return seedBundledServer(broker, vault, async () => {
+    const file = new File(Paths.bundle, PERSONAL_CONFIG_RESOURCE);
+    if (!file.exists) return undefined;
+    if (file.size > 16384) throw new Error("内置配置文件格式不正确。");
+    return file.text();
+  }, activate);
 }
 export async function importConfiguration(): Promise<
   { clientID: string; clientSecret: string } | undefined

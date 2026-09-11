@@ -1,5 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Pressable, Switch, Text, View } from "react-native";
+import { AppState, Pressable, Switch, Text, View } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import type {
   Draft,
   Order,
@@ -22,6 +23,7 @@ import {
 import { Button, Input, money, styles } from "./ui.tsx";
 import { submitQuickOrder } from "./quickTrading.ts";
 import { completeQuickOrder, type QuickOrderFeedback } from "./quickOrderFeedback.ts";
+import { executeLocalMarket, validateLocalMarketSettings, type LocalMarketSettings } from "./localMarket.ts";
 
 const kindLabels: Record<OrderKind, string> = {
   MARKET: "市价",
@@ -29,6 +31,9 @@ const kindLabels: Record<OrderKind, string> = {
   STOP: "止损",
   STOP_LIMIT: "止损限价",
 };
+type TicketKind = OrderKind | "LOCAL_MARKET";
+const ticketLabels = { ...kindLabels, LOCAL_MARKET: "本地市价" };
+const localSettingsKey = "ths.expo.localMarket.settings.v1";
 export function TradePanel({
   state: s,
   symbol,
@@ -51,7 +56,40 @@ export function TradePanel({
   onClose?: () => void;
 }) {
   const [side, setSide] = useState<Side | "CANCEL">(initialSide);
-  const [kind, setKind] = useState<OrderKind>(replacement?.kind ?? "LIMIT");
+  const [kind, setKind] = useState<TicketKind>(replacement?.kind ?? "LIMIT");
+  const [boundaryPercent, setBoundaryPercent] = useState("");
+  const [durationSeconds, setDurationSeconds] = useState("");
+  const [localSettingsReady, setLocalSettingsReady] = useState(false);
+  const [localReview, setLocalReview] = useState<LocalMarketSettings>();
+  const [localRunning, setLocalRunning] = useState(false);
+  const [localMessage, setLocalMessage] = useState("");
+  const localStop = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    let active = true;
+    void AsyncStorage.getItem(localSettingsKey).then((raw) => {
+      if (!active || !raw) return;
+      const saved = JSON.parse(raw);
+      if (typeof saved.boundaryPercent === "string" && typeof saved.durationSeconds === "string") {
+        setBoundaryPercent(saved.boundaryPercent);
+        setDurationSeconds(saved.durationSeconds);
+      }
+    }).catch(() => { if (active) setLocalMessage("追价参数恢复失败，请重新填写。"); })
+      .finally(() => { if (active) setLocalSettingsReady(true); });
+    return () => { active = false; };
+  }, []);
+  useEffect(() => {
+    if (!localSettingsReady) return;
+    void AsyncStorage.setItem(localSettingsKey, JSON.stringify({ boundaryPercent, durationSeconds }))
+      .catch(() => { if (mounted.current) setLocalMessage("追价参数保存失败，本次仍使用输入值。"); });
+  }, [boundaryPercent, durationSeconds, localSettingsReady]);
+  useEffect(() => {
+    mounted.current = true;
+    const listener = AppState.addEventListener("change", (value) => {
+      if (value !== "active") localStop.current = true;
+    });
+    return () => { mounted.current = false; localStop.current = true; listener.remove(); };
+  }, []);
   const [price, setPrice] = useState(
     replacement?.limitPrice?.toString() ?? quote?.lastPrice?.toFixed(2) ?? "",
   );
@@ -63,16 +101,19 @@ export function TradePanel({
   const [byAmount, setByAmount] = useState(false);
   const [gtc, setGTC] = useState(replacement?.duration === "GOOD_TILL_CANCEL");
   const [session, setSession] = useState<OrderSession>("NORMAL");
-  const gtcAllowed = kind !== "MARKET" && session !== "AM" && session !== "PM";
+  const gtcAllowed = kind !== "MARKET" && kind !== "LOCAL_MARKET" && session !== "AM" && session !== "PM";
   const [prepared, setPrepared] = useState<Prepared>();
   const [quickFeedback, setQuickFeedback] = useState<QuickOrderFeedback>();
   const context = useRef(0);
   useLayoutEffect(() => {
     setPrepared(undefined);
+    setLocalReview(undefined);
     ++context.current;
   }, [
     side,
     kind,
+    boundaryPercent,
+    durationSeconds,
     price,
     stop,
     quantity,
@@ -112,7 +153,9 @@ export function TradePanel({
       ? price
       : kind === "STOP"
         ? stop
-        : (quote?.askPrice ?? quote?.lastPrice);
+        : kind === "LOCAL_MARKET" && side === "BUY"
+          ? (quote?.askPrice === undefined ? undefined : quote.askPrice * (1 + (Number(boundaryPercent) || 0) / 100))
+          : (quote?.askPrice ?? quote?.lastPrice);
   const max =
     side === "BUY"
       ? maximumBuy(s.account, reference)
@@ -133,7 +176,53 @@ export function TradePanel({
     Boolean(s.accountID) &&
     !s.status.unresolvedOperation;
   const quickOrder = s.quickMode && !replacement;
+  const kindOptions = (session === "NORMAL" ? Object.keys(kindLabels) : ["LIMIT"])
+    .concat(replacement ? [] : ["LOCAL_MARKET"])
+    .map(value => ({ value, label: `${ticketLabels[value as TicketKind]}单` }));
+  async function startLocal(settings: LocalMarketSettings) {
+    const version = context.current;
+    localStop.current = AppState.currentState === "background" || AppState.currentState === "inactive";
+    setLocalReview(undefined);
+    setLocalRunning(true);
+    setLocalMessage("正在读取启动报价…");
+    try {
+      const result = await executeLocalMarket({
+        broker: s.broker, accountID: s.accountID, symbol, side: side as Side,
+        quantity: Number(quantity), settings, session, isDemo: s.isDemo,
+        isCurrent: () => mounted.current && permitted && context.current === version,
+        shouldStop: () => localStop.current,
+        onProgress: message => { if (mounted.current) setLocalMessage(message); },
+      });
+      if (mounted.current) { setLocalMessage(result.message); setQuantity(""); }
+      s.setMessage(result.message);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "本地市价执行中断，请核对订单状态。";
+      if (mounted.current) setLocalMessage(message);
+      s.setMessage(message);
+    } finally {
+      if (mounted.current) setLocalRunning(false);
+      try { await s.refresh(); }
+      catch { s.setMessage("交易状态刷新失败，请到订单页核对，勿重复下单。"); }
+    }
+  }
   async function review() {
+    if (kind === "LOCAL_MARKET") {
+      const settings = { boundaryPercent: Number(boundaryPercent), durationSeconds: Number(durationSeconds) };
+      try {
+        if (!localSettingsReady || !boundaryPercent.trim() || !durationSeconds.trim())
+          throw new Error("请填写价格边界和追价时长。");
+        validateLocalMarketSettings(settings);
+        if (!Number.isSafeInteger(Number(quantity)) || Number(quantity) <= 0)
+          throw new Error("请输入大于 0 的整股数量。");
+      } catch (error) {
+        setLocalMessage(error instanceof Error ? error.message : "请检查本地市价参数。");
+        throw error;
+      }
+      setLocalMessage("");
+      if (quickOrder) await startLocal(settings);
+      else setLocalReview(Object.freeze({ ...settings }));
+      return;
+    }
     const version = context.current;
     const draft: Draft = {
       symbol,
@@ -282,7 +371,23 @@ export function TradePanel({
           快速模式
         </Text>
       )}
-      {prepared && !quickOrder ? (
+      {localReview && !quickOrder ? (
+        <View style={{ gap: 8 }}>
+          <Button label="返回修改" palette={p} disabled={s.busy} onPress={() => setLocalReview(undefined)} />
+          <Text style={{ color: tradeColor, fontSize: 20, fontWeight: "700" }}>
+            本地市价{side === "BUY" ? "买入" : "卖出"} {symbol} · {quantity} 股
+          </Text>
+          <SummaryRow label="账户" value={s.account?.displayNumber ?? "—"} palette={p} />
+          <SummaryRow label="交易时段" value={orderSessionLabels[session]} palette={p} />
+          <SummaryRow label="相对启动报价最大偏离" value={`${localReview.boundaryPercent}%`} palette={p} />
+          <SummaryRow label="最长追价" value={`${localReview.durationSeconds} 秒`} palette={p} />
+          <Text style={{ color: p.secondary, fontSize: 12 }}>
+            确认时读取最新{side === "BUY" ? "卖一" : "买一"}作为固定基准，在边界内自动追价。超时停止并撤剩余委托；撤单需券商确认。请保持 App 前台运行。
+          </Text>
+          <Button label={`确认${s.isDemo ? "模拟" : ""}本地市价${side === "BUY" ? "买入" : "卖出"}`} palette={p}
+            active color={tradeColor} disabled={s.busy || !permitted} onPress={() => void s.run(() => startLocal(localReview))} />
+        </View>
+      ) : prepared && !quickOrder ? (
         <View style={{ gap: 8 }}>
           <View style={{ alignItems: "flex-start" }}>
             <Button
@@ -415,12 +520,10 @@ export function TradePanel({
                 />
               ) : (
                 <Choice
-                  label={`${kindLabels[kind]}单`}
-                  options={(session === "NORMAL" ? Object.keys(kindLabels) as OrderKind[] : ["LIMIT"] as OrderKind[]).map(
-                    (value) => ({ value, label: `${kindLabels[value]}单` }),
-                  )}
+                  label={`${ticketLabels[kind]}单`}
+                  options={kindOptions}
                   value={kind}
-                  onChange={(value) => setKind(value as OrderKind)}
+                  onChange={(value) => setKind(value as TicketKind)}
                   palette={p}
                   disabled={s.busy}
                   color={tradeColor}
@@ -471,12 +574,10 @@ export function TradePanel({
               {!inline && (
                 <FormRow label="订单类型" palette={p}>
                   <Choice
-                    label={`${kindLabels[kind]}单`}
-                    options={(session === "NORMAL" ? Object.keys(kindLabels) as OrderKind[] : ["LIMIT"] as OrderKind[]).map(
-                      (value) => ({ value, label: `${kindLabels[value]}单` }),
-                    )}
+                    label={`${ticketLabels[kind]}单`}
+                    options={kindOptions}
                     value={kind}
-                    onChange={(value) => setKind(value as OrderKind)}
+                    onChange={(value) => setKind(value as TicketKind)}
                     palette={p}
                     disabled={s.busy}
                   />
@@ -504,7 +605,7 @@ export function TradePanel({
                   onChange={(value) => {
                     const next = value as OrderSession;
                     setSession(next);
-                    if (next !== "NORMAL") setKind("LIMIT");
+                    if (next !== "NORMAL" && kind !== "LOCAL_MARKET") setKind("LIMIT");
                     if (next === "AM" || next === "PM") setGTC(false);
                   }}
                 />
@@ -518,13 +619,13 @@ export function TradePanel({
                 <View style={{ flexDirection: "row", gap: 12 }}>
                   <View style={{ flex: 1, gap: 4 }}>
                     <Text style={{ color: p.secondary, fontSize: 12 }}>
-                      {kind === "MARKET"
-                        ? "市价 · USD"
+                      {kind === "MARKET" || kind === "LOCAL_MARKET"
+                        ? kind === "LOCAL_MARKET" ? "参考报价 · USD" : "市价 · USD"
                         : kind === "STOP"
                           ? "触发价 · USD"
                           : "限价 · USD"}
                     </Text>
-                    {kind === "MARKET" ? (
+                    {kind === "MARKET" || kind === "LOCAL_MARKET" ? (
                       <Text
                         style={{
                           color: p.text,
@@ -534,7 +635,7 @@ export function TradePanel({
                           fontSize: 19,
                         }}
                       >
-                        ${money(quote?.lastPrice)}
+                        ${money(kind === "LOCAL_MARKET" ? side === "BUY" ? quote?.askPrice : quote?.bidPrice : quote?.lastPrice)}
                       </Text>
                     ) : (
                       priceInput(kind === "STOP")
@@ -575,6 +676,28 @@ export function TradePanel({
                 <FormRow label="触发价 · USD" palette={p}>
                   {priceInput(true)}
                 </FormRow>
+              )}
+              {kind === "LOCAL_MARKET" && (
+                <View style={{ gap: 5, paddingVertical: 4 }}>
+                  <View style={{ flexDirection: "row", gap: 10 }}>
+                    <View style={{ flex: 1, gap: 4 }}>
+                      <Text style={{ color: p.secondary, fontSize: 12 }}>价格边界 · 最大偏离 %</Text>
+                      <Input palette={p} testID="trade.local.boundary" accessibilityLabel="价格边界百分比"
+                        placeholder="例如 0.5" keyboardType="decimal-pad" value={boundaryPercent}
+                        onChangeText={setBoundaryPercent} editable={!s.busy && localSettingsReady} />
+                    </View>
+                    <View style={{ flex: 1, gap: 4 }}>
+                      <Text style={{ color: p.secondary, fontSize: 12 }}>追价时长 · 秒</Text>
+                      <Input palette={p} testID="trade.local.duration" accessibilityLabel="追价时长秒数"
+                        placeholder="例如 10" keyboardType="number-pad" value={durationSeconds}
+                        onChangeText={setDurationSeconds} editable={!s.busy && localSettingsReady} />
+                    </View>
+                  </View>
+                  <Text style={{ color: p.secondary, fontSize: 11, lineHeight: 16 }}>
+                    参数自动保存。以启动时{side === "BUY" ? "卖一" : "买一"}为固定基准，{side === "BUY" ? "买价不超过基准 +" : "卖价不低于基准 −"}设定百分比；最长 3600 秒。
+                    达到边界、超时或点停止，将停止追价并撤剩余委托。请保持前台；断网或退出 App 后无法保证及时撤单，须在订单页核实。
+                  </Text>
+                </View>
               )}
               <View
                 style={[styles.spread, { paddingVertical: inline ? 0 : 12 }]}
@@ -627,12 +750,12 @@ export function TradePanel({
                     onChange={(value) => {
                       const next = value as OrderSession;
                       setSession(next);
-                      if (next !== "NORMAL") setKind("LIMIT");
+                      if (next !== "NORMAL" && kind !== "LOCAL_MARKET") setKind("LIMIT");
                       if (next === "AM" || next === "PM") setGTC(false);
                     }}
                   />
                   <Choice
-                    label={gtc && kind !== "MARKET" ? "撤销前有效" : "当日有效"}
+                    label={gtc && gtcAllowed ? "撤销前有效" : "当日有效"}
                     value={gtc ? "GTC" : "DAY"}
                     options={[
                       { value: "DAY", label: "当日有效" },
@@ -662,7 +785,7 @@ export function TradePanel({
                   <FormRow label="有效期" palette={p}>
                     <Choice
                       label={
-                        gtc && kind !== "MARKET" ? "撤销前有效" : "当日有效"
+                        gtc && gtcAllowed ? "撤销前有效" : "当日有效"
                       }
                       value={gtc ? "GTC" : "DAY"}
                       options={[
@@ -706,7 +829,7 @@ export function TradePanel({
                   gap: 8,
                 }}
               >
-                {quickOrder && quickFeedback && (
+                {kind !== "LOCAL_MARKET" && quickOrder && quickFeedback && (
                   <Text
                     testID="trade.quick.feedback"
                     accessibilityLiveRegion="polite"
@@ -715,9 +838,18 @@ export function TradePanel({
                     {quickFeedback.message}
                   </Text>
                 )}
+                {kind === "LOCAL_MARKET" && localMessage && (
+                  <Text testID="trade.local.feedback" accessibilityLiveRegion="polite" style={{ color: p.accent, fontSize: 12 }}>
+                    {localMessage}
+                  </Text>
+                )}
+                {localRunning && (
+                  <Button label="停止追价并撤剩余委托" testID="trade.local.stop" palette={p}
+                    onPress={() => { localStop.current = true; setLocalMessage("正在停止追价并核实剩余委托…"); }} />
+                )}
                 <Button
                   label={
-                    s.busy
+                    localRunning ? "本地市价执行中…" : s.busy
                       ? quickOrder
                         ? "正在核对并提交…"
                         : "正在获取最新账户与报价…"
@@ -730,7 +862,7 @@ export function TradePanel({
                   active
                   color={tradeColor}
                   palette={p}
-                  disabled={s.busy || !permitted}
+                  disabled={s.busy || !permitted || (kind === "LOCAL_MARKET" && !localSettingsReady)}
                   onPress={() => void s.run(review)}
                 />
               </View>

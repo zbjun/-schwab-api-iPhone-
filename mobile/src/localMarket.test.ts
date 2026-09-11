@@ -1,0 +1,385 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { executeLocalMarket, validateLocalMarketSettings } from "./localMarket.ts";
+import { TradingError } from "./orderRules.ts";
+import type { Draft, Order, Prepared, Quote } from "./types.ts";
+
+function fixture() {
+  let time = 1_000_000;
+  let current = true;
+  let stop = false;
+  let quotePrice = 100;
+  let quoteTime: number | undefined;
+  let realtime = true;
+  const drafts: Draft[] = [];
+  const submitted: Prepared[] = [];
+  const canceled: string[] = [];
+  const orders = new Map<string, Order>();
+  const messages: string[] = [];
+  let reads = 0;
+  const quote = (): Quote => ({ symbol: "QQQ", bidPrice: quotePrice, askPrice: quotePrice, quoteTime: quoteTime ?? time, isRealtime: realtime });
+  const broker = {
+    async quotes(_symbols: string[], options?: { fundamentals?: boolean }) {
+      assert.equal(options?.fundamentals, false);
+      return [quote()];
+    },
+    async prepare(accountID: string, draft: Draft): Promise<Prepared> {
+      drafts.push(draft);
+      return Object.freeze({ id: "review", draft, accountID, accountDisplay: "test", quote: quote(), availableShares: 100, isDemo: false, preparedAt: time });
+    },
+    async submit(prepared: Prepared): Promise<{ orderID?: string }> {
+      submitted.push(prepared);
+      const id = String(submitted.length);
+      orders.set(id, { id, symbol: "QQQ", side: prepared.draft.side, quantity: prepared.draft.quantity, kind: "LIMIT", filledQuantity: 0, remainingQuantity: prepared.draft.quantity, status: "WORKING", cancelable: true, editable: false, isSimpleEquity: true });
+      return { orderID: id };
+    },
+    async orderDetail(_accountID: string, id: string): Promise<Order> {
+      reads++;
+      return { ...orders.get(id)! };
+    },
+    async cancel(_accountID: string, id: string): Promise<void> {
+      canceled.push(id);
+      orders.get(id)!.status = "CANCELED";
+    },
+  };
+  const request: Parameters<typeof executeLocalMarket>[0] = {
+    broker, accountID: "account", symbol: "QQQ", side: "BUY", quantity: 10, session: "PM",
+    settings: { boundaryPercent: 0.5, durationSeconds: 10 }, isDemo: false,
+    isCurrent: () => current, shouldStop: () => stop,
+    onProgress: (message) => messages.push(message), now: () => time,
+    sleep: async (ms) => { time += ms; },
+  };
+  return { broker, request, drafts, submitted, canceled, orders, messages, quote,
+    setTime: (value: number) => { time = value; }, time: () => time,
+    setCurrent: (value: boolean) => { current = value; }, setStop: () => { stop = true; },
+    setPrice: (value: number) => { quotePrice = value; },
+    setQuoteTime: (value: number) => { quoteTime = value; },
+    setRealtime: (value: boolean) => { realtime = value; }, reads: () => reads,
+  };
+}
+
+test("local market settings allow zero boundary and custom duration but reject non-finite and unbounded settings", () => {
+  validateLocalMarketSettings({ boundaryPercent: 0, durationSeconds: 3600 });
+  for (const boundaryPercent of [-1, 100, Infinity, NaN])
+    assert.throws(() => validateLocalMarketSettings({ boundaryPercent, durationSeconds: 10 }));
+  for (const durationSeconds of [0, 0.5, 3601, Infinity, NaN])
+    assert.throws(() => validateLocalMarketSettings({ boundaryPercent: 1, durationSeconds }));
+});
+
+test("invalid quantities and sessions never access broker", async () => {
+  const f = fixture();
+  for (const quantity of [0, -1, 1.5, Infinity, NaN])
+    await assert.rejects(executeLocalMarket({ ...f.request, quantity }));
+  await assert.rejects(executeLocalMarket({ ...f.request, session: "NIGHT" as never }));
+  assert.equal(f.drafts.length, 0);
+});
+
+test("a filled order uses exact prepared snapshot and explicit LIMIT DAY session", async () => {
+  const f = fixture();
+  const original = f.broker.submit;
+  let prepared!: Prepared;
+  const prepare = f.broker.prepare;
+  f.broker.prepare = async (...args) => { prepared = await prepare(...args); return prepared; };
+  f.broker.submit = async (snapshot) => {
+    assert.equal(snapshot, prepared);
+    const result = await original(snapshot);
+    Object.assign(f.orders.get(result.orderID!)!, { status: "FILLED", filledQuantity: 10, remainingQuantity: 0 });
+    return result;
+  };
+  const result = await executeLocalMarket(f.request);
+  assert.equal(result.filledQuantity, 10);
+  assert.deepEqual(result.orderIDs, ["1"]);
+  assert.deepEqual(f.drafts[0], { symbol: "QQQ", side: "BUY", quantity: 10, kind: "LIMIT", limitPrice: "100.00", duration: "DAY", session: "PM" });
+  assert.equal(f.canceled.length, 0);
+});
+
+test("chasing waits for confirmed cancellation and includes partial fills during cancel", async () => {
+  const f = fixture();
+  let pendingReads = 0;
+  const read = f.broker.orderDetail;
+  f.broker.orderDetail = async (...args) => {
+    const order = f.orders.get(args[1])!;
+    if (order.id === "1" && order.status === "PENDING_CANCEL" && ++pendingReads >= 3)
+      Object.assign(order, { status: "CANCELED", filledQuantity: 4, remainingQuantity: 6 });
+    if (order.id === "2") Object.assign(order, { status: "FILLED", filledQuantity: 6, remainingQuantity: 0 });
+    return read(...args);
+  };
+  f.broker.cancel = async (_account, id) => {
+    f.canceled.push(id);
+    Object.assign(f.orders.get(id)!, { status: "PENDING_CANCEL", filledQuantity: 2, remainingQuantity: 8 });
+  };
+  f.request.sleep = async (ms) => { f.setTime(f.time() + ms); f.setPrice(100.2); };
+  const submit = f.broker.submit;
+  f.broker.submit = async (snapshot) => {
+    if (f.submitted.length) assert.equal(f.orders.get("1")!.status, "CANCELED");
+    return submit(snapshot);
+  };
+  const result = await executeLocalMarket(f.request);
+  assert.equal(result.filledQuantity, 10);
+  assert.equal(f.drafts[1].quantity, 6);
+  assert.equal(f.drafts[1].limitPrice, "100.20");
+  assert.deepEqual(f.canceled, ["1"]);
+});
+
+test("deadline cancels once and cancellation acknowledgment alone cannot authorize another order", async () => {
+  const f = fixture();
+  f.request.settings.durationSeconds = 2;
+  f.broker.cancel = async (_account, id) => { f.canceled.push(id); };
+  const result = await executeLocalMarket(f.request);
+  assert.equal(f.submitted.length, 1);
+  assert.deepEqual(f.canceled, ["1"]);
+  assert.match(result.message, /撤单结果仍待核对/);
+  assert.doesNotMatch(result.message, /已确认撤销/);
+  assert.ok(f.reads() <= 20);
+});
+
+test("buy boundary remains based on first quote after a confirmed chase", async () => {
+  const f = fixture();
+  f.request.sleep = async (ms) => { f.setTime(f.time() + ms); f.setPrice(f.submitted.length < 2 ? 100.4 : 100.7); };
+  const result = await executeLocalMarket(f.request);
+  assert.equal(f.submitted.length, 2);
+  assert.equal(f.drafts[1].limitPrice, "100.40");
+  assert.deepEqual(f.canceled, ["1", "2"]);
+  assert.match(result.message, /价格边界/);
+});
+
+test("sell uses bid and a fixed lower boundary", async () => {
+  const f = fixture();
+  f.request.side = "SELL";
+  f.request.sleep = async (ms) => { f.setTime(f.time() + ms); f.setPrice(99.4); };
+  const result = await executeLocalMarket(f.request);
+  assert.equal(f.submitted.length, 1);
+  assert.equal(f.drafts[0].side, "SELL");
+  assert.match(result.message, /价格边界/);
+  assert.match(f.messages[0], /最低卖价 99.5000/);
+});
+
+test("stale, future, delayed or missing executable quotes never submit", async () => {
+  for (const mode of ["stale", "future", "delayed", "missing"] as const) {
+    const f = fixture();
+    if (mode === "stale") f.setQuoteTime(f.time() - 10001);
+    if (mode === "future") f.setQuoteTime(f.time() + 2001);
+    if (mode === "delayed") f.setRealtime(false);
+    if (mode === "missing") f.broker.quotes = async () => [{ symbol: "QQQ", lastPrice: 100 }];
+    const result = await executeLocalMarket(f.request);
+    assert.equal(f.submitted.length, 0);
+    assert.match(result.message, /报价/);
+  }
+});
+
+test("prepared quote or identity changes and expiry prevent a write", async () => {
+  for (const mode of ["account", "demo", "draft", "quote", "expiry", "context", "deadline"] as const) {
+    const f = fixture();
+    const prepare = f.broker.prepare;
+    f.broker.prepare = async (...args) => {
+      const value = await prepare(...args);
+      if (mode === "account") return { ...value, accountID: "other" };
+      if (mode === "demo") return { ...value, isDemo: true };
+      if (mode === "draft") return { ...value, draft: { ...value.draft, quantity: 100 } };
+      if (mode === "quote") return { ...value, quote: { ...value.quote, askPrice: 200 } };
+      if (mode === "expiry") return { ...value, preparedAt: f.time() - 60001 };
+      if (mode === "context") f.setCurrent(false);
+      if (mode === "deadline") f.setTime(f.time() + 10000);
+      return value;
+    };
+    await executeLocalMarket(f.request);
+    assert.equal(f.submitted.length, 0, mode);
+  }
+});
+
+test("ambiguous submission and missing IDs never retry", async () => {
+  for (const missing of [false, true]) {
+    const f = fixture();
+    let writes = 0;
+    f.broker.submit = async () => {
+      writes++;
+      if (missing) return {};
+      throw new TradingError("orderOutcomeUnknown", "提交结果不确定");
+    };
+    const result = await executeLocalMarket(f.request);
+    assert.equal(writes, 1);
+    assert.equal(f.canceled.length, 0);
+    assert.match(result.message, /勿重复提交/);
+  }
+});
+
+test("an ambiguous cancellation cannot chase even after terminal read", async () => {
+  const f = fixture();
+  f.request.sleep = async (ms) => { f.setTime(f.time() + ms); f.setPrice(100.2); };
+  f.broker.cancel = async (_account, id) => {
+    f.canceled.push(id);
+    f.orders.get(id)!.status = "CANCELED";
+    throw new TradingError("orderOutcomeUnknown", "撤单结果不确定");
+  };
+  const result = await executeLocalMarket(f.request);
+  assert.equal(f.submitted.length, 1);
+  assert.deepEqual(f.canceled, ["1"]);
+  assert.match(result.message, /待核对/);
+});
+
+test("a definite cancel rejection that raced with fill resolves through a read", async () => {
+  const f = fixture();
+  f.request.sleep = async (ms) => { f.setTime(f.time() + ms); f.setPrice(100.2); };
+  f.broker.cancel = async (_account, id) => {
+    f.canceled.push(id);
+    Object.assign(f.orders.get(id)!, { status: "FILLED", filledQuantity: 10, remainingQuantity: 0 });
+    throw new TradingError("httpError", "已不可撤", 400);
+  };
+  const result = await executeLocalMarket(f.request);
+  assert.equal(result.filledQuantity, 10);
+  assert.equal(f.submitted.length, 1);
+  assert.match(result.message, /全部成交/);
+});
+
+test("external replacements and terminal rejections never spawn another order", async () => {
+  for (const status of ["REPLACED", "REJECTED", "EXPIRED", "CANCELED"]) {
+    const f = fixture();
+    const submit = f.broker.submit;
+    f.broker.submit = async (snapshot) => {
+      const value = await submit(snapshot);
+      f.orders.get(value.orderID!)!.status = status;
+      return value;
+    };
+    const result = await executeLocalMarket(f.request);
+    assert.equal(f.submitted.length, 1);
+    assert.equal(f.canceled.length, 0);
+    assert.match(result.message, new RegExp(status));
+  }
+});
+
+test("stop and context changes clean up the owned order and preserve receipts", async () => {
+  for (const mode of ["stop", "context", "stale"]) {
+    const f = fixture();
+    f.request.sleep = async (ms) => {
+      f.setTime(f.time() + ms);
+      if (mode === "stop") f.setStop();
+      if (mode === "context") f.setCurrent(false);
+      if (mode === "stale") f.setQuoteTime(f.time() - 10001);
+    };
+    const result = await executeLocalMarket(f.request);
+    assert.equal(f.submitted.length, 1);
+    assert.deepEqual(f.canceled, ["1"]);
+    assert.deepEqual(result.orderIDs, ["1"]);
+    assert.match(result.message, /已确认撤销/);
+  }
+});
+
+test("inconsistent order identity cannot cancel a different order or chase", async () => {
+  const f = fixture();
+  const detail = f.broker.orderDetail;
+  f.broker.orderDetail = async (...args) => ({ ...await detail(...args), symbol: "OTHER" });
+  const result = await executeLocalMarket(f.request);
+  assert.equal(f.submitted.length, 1);
+  assert.equal(f.canceled.length, 0);
+  assert.match(result.message, /身份无法核对/);
+  assert.match(result.message, /#1/);
+});
+
+test("decreasing or incomplete fill counts cannot cause another submission", async () => {
+  for (const mode of ["missing", "inconsistent", "decreasing"]) {
+    const f = fixture();
+    const detail = f.broker.orderDetail;
+    let count = 0;
+    f.broker.orderDetail = async (...args) => {
+      const value = await detail(...args);
+      count++;
+      if (mode === "missing") return { ...value, filledQuantity: undefined };
+      if (mode === "inconsistent") return { ...value, filledQuantity: 3, remainingQuantity: 10 };
+      return { ...value, filledQuantity: count === 1 ? 3 : 2, remainingQuantity: count === 1 ? 7 : 8 };
+    };
+    const result = await executeLocalMarket(f.request);
+    assert.equal(f.submitted.length, 1);
+    assert.match(result.message, /数量无法核对/);
+  }
+});
+
+test("preparation failure after confirmed partial cancellation retains fills and IDs", async () => {
+  const f = fixture();
+  f.request.sleep = async (ms) => { f.setTime(f.time() + ms); f.setPrice(100.2); };
+  f.broker.cancel = async (_account, id) => {
+    f.canceled.push(id);
+    Object.assign(f.orders.get(id)!, { status: "CANCELED", filledQuantity: 4, remainingQuantity: 6 });
+  };
+  const prepare = f.broker.prepare;
+  f.broker.prepare = async (...args) => {
+    if (f.submitted.length) throw new TradingError("insufficientFunds", "购买力不足");
+    return prepare(...args);
+  };
+  const result = await executeLocalMarket(f.request);
+  assert.equal(result.filledQuantity, 4);
+  assert.deepEqual(result.orderIDs, ["1"]);
+  assert.match(result.message, /购买力不足/);
+});
+
+test("clock rollback stops chasing and cleanup polling remains bounded", async () => {
+  const f = fixture();
+  f.request.sleep = async () => { f.setTime(f.time() - 1000); };
+  f.broker.cancel = async (_account, id) => { f.canceled.push(id); };
+  const result = await executeLocalMarket(f.request);
+  assert.equal(f.submitted.length, 1);
+  assert.equal(f.canceled.length, 1);
+  assert.ok(f.reads() <= 17);
+  assert.match(result.message, /设备时间/);
+});
+
+test("chase writes are at least two seconds apart and favorable prices do not churn", async () => {
+  for (const favorable of [false, true]) {
+    const f = fixture();
+    const placementTimes: number[] = [];
+    const submit = f.broker.submit;
+    f.broker.submit = async (value) => { placementTimes.push(f.time()); return submit(value); };
+    f.request.sleep = async (ms) => {
+      f.setTime(f.time() + ms);
+      f.setPrice(favorable ? 99 : 100 + (f.time() - 1_000_000) / 100_000);
+    };
+    await executeLocalMarket(f.request);
+    if (favorable) assert.equal(f.submitted.length, 1);
+    else {
+      assert.ok(placementTimes.length > 1);
+      for (let i = 1; i < placementTimes.length; i++) assert.ok(placementTimes[i] - placementTimes[i - 1] >= 2000);
+    }
+  }
+});
+
+test("zero boundary refuses any adverse move and sub-dollar prices retain four digits", async () => {
+  const f = fixture();
+  f.request.settings.boundaryPercent = 0;
+  f.setPrice(0.1234);
+  f.request.sleep = async (ms) => { f.setTime(f.time() + ms); f.setPrice(0.1235); };
+  const result = await executeLocalMarket(f.request);
+  assert.equal(f.drafts[0].limitPrice, "0.1234");
+  assert.equal(f.submitted.length, 1);
+  assert.match(result.message, /价格边界/);
+});
+
+test("marketable tick rounding cannot cross the user price boundary", async () => {
+  const f = fixture();
+  f.request.settings.boundaryPercent = 0;
+  f.setPrice(100.001);
+  const result = await executeLocalMarket(f.request);
+  assert.equal(f.submitted.length, 0);
+  assert.match(result.message, /价格边界/);
+});
+
+test("fractional fills after cancellation stop instead of rounding into excess shares", async () => {
+  const f = fixture();
+  f.request.sleep = async (ms) => { f.setTime(f.time() + ms); f.setPrice(100.2); };
+  f.broker.cancel = async (_account, id) => {
+    f.canceled.push(id);
+    Object.assign(f.orders.get(id)!, { status: "CANCELED", filledQuantity: 4.5, remainingQuantity: 5.5 });
+  };
+  const result = await executeLocalMarket(f.request);
+  assert.equal(f.submitted.length, 1);
+  assert.equal(result.filledQuantity, 4.5);
+  assert.match(result.message, /不是整股/);
+});
+
+test("SELL targets the bid even when the ask is very different", async () => {
+  const f = fixture();
+  f.request.side = "SELL";
+  f.broker.quotes = async () => [{ ...f.quote(), bidPrice: 99, askPrice: 110 }];
+  const prepare = f.broker.prepare;
+  f.broker.prepare = async (...args) => ({ ...await prepare(...args), quote: { ...f.quote(), bidPrice: 99, askPrice: 110 } });
+  await executeLocalMarket(f.request);
+  assert.equal(f.drafts[0].limitPrice, "99.00");
+});

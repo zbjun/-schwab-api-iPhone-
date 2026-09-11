@@ -1,3 +1,10 @@
+# 2026-09-11: 0.6.2 (9) personal iPhone delivery
+
+- EAS `2e194572-3afa-4e6e-8bad-a919e61651fa` finished successfully from source `050067f`. Free subscription, 12/30 aggregate builds before submission, zero accrued cost; no paid usage enabled. Upload audit: 83 files identical to local source, new local-market/account-refresh modules included, no known private values.
+- Cloud TypeScript and 240 tests passed. Public IPA verified as arm64/iphoneos, minimum iOS 16.4, embedded 2,133,197-byte Hermes bundle. Bundle string checks confirm local-market settings/order kind and account-refresh status. Public SHA256 `5cd595411556575fdb263554d1a9c597bce7a55a0a8ee8b94dbe09830c27f0bd`.
+- Device configurations injected only locally. Both personal IPAs preserve all original ZIP entries byte for byte, add only their own connection resource, and pass IPA verification. Device 1 SHA256 `f8c446af8ad79dc444da9b67f36709bb983eb10357ddafb9b4375aabbd617f05`; device 2 `55124ce0293adabb7af88facc18f04457434db58717396e1e7f045622b647b25`. Packages remain ignored local artifacts and require user signing.
+- Read-only status checks with both actual device configurations returned authenticated=true and unresolvedOperation=false before delivery. No real brokerage writes were performed. Physical signed installation, foreground/background behavior, and real local-market execution remain unverified.
+
 # 2026-09-11: 0.6.0 shared-server personal iPhone packages
 
 - EAS build `e1d49219-f31a-436a-9d9f-7da30bc60c1f` finished: 0.6.0 (7), arm64 iPhone, embedded 2,100,233-byte Hermes bundle. One Free-plan cloud build; no paid plan enabled. Upload inspection covered 76 files with exact source match and no known private values; market preview JSON files stayed local.

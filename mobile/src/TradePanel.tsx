@@ -56,7 +56,7 @@ export function TradePanel({
 }) {
   const [side, setSide] = useState<Side | "CANCEL">(initialSide);
   const [kind, setKind] = useState<TicketKind>(replacement?.kind ?? "LIMIT");
-  const { boundaryPercent, slippagePercent, durationSeconds } = s.localMarketPreferences;
+  const { boundaryPercent, startSpreadPercent, durationSeconds } = s.localMarketPreferences;
   const localSettingsReady = s.localMarketPreferencesReady;
   const [localReview, setLocalReview] = useState<LocalMarketSettings>();
   const [localRunning, setLocalRunning] = useState(false);
@@ -92,9 +92,7 @@ export function TradePanel({
   }, [
     side,
     kind,
-    boundaryPercent,
-    slippagePercent,
-    durationSeconds,
+    s.localMarketPreferences,
     price,
     stop,
     quantity,
@@ -360,11 +358,13 @@ export function TradePanel({
           </Text>
           <SummaryRow label="账户" value={s.account?.displayNumber ?? "—"} palette={p} />
           <SummaryRow label="交易时段" value={orderSessionLabels[session]} palette={p} />
-          <SummaryRow label="中间价滑点" value={`${side === "BUY" ? "+" : "−"}${localReview.slippagePercent}%`} palette={p} />
+          <SummaryRow label="价格优先起挂" value={`${localReview.startSpreadPercent}% 价差 → 中间价`} palette={p} />
           <SummaryRow label="相对启动中间价最大偏离" value={`${localReview.boundaryPercent}%`} palette={p} />
-          <SummaryRow label="最长追价" value={`${localReview.durationSeconds} 秒`} palette={p} />
+          <SummaryRow label="最长执行" value={`${localReview.durationSeconds} 秒`} palette={p} />
+          <SummaryRow label="改单门槛" value={`${localReview.repriceIntervalSeconds} 秒 · ${localReview.minRepriceTicks} 个价位`} palette={p} />
+          <SummaryRow label="停止条件" value={`3 秒突变 > ${localReview.jumpPercent}% · 价差 > ${localReview.maxSpreadPercent}%`} palette={p} />
           <Text style={{ color: p.secondary, fontSize: 12 }}>
-            中间价 =（买一 + 卖一）÷ 2；委托价 = 最新中间价 ×（1 {side === "BUY" ? "+" : "−"} 滑点%）。价格边界固定基于启动中间价，已包含滑点；价格按最小价位取整，不能突破边界。价格未达到对手报价时可能等待成交。请保持 App 前台运行。
+            起挂价为{side === "BUY" ? "买一 +" : "卖一 −"} 价差 × 起挂比例；首次等待后最多让到中间价。价格边界固定基于启动中间价；先确认撤单及已成交数量，再调整剩余委托。可能无法成交，请保持 App 前台运行。
           </Text>
           <Button label={`确认${s.isDemo ? "模拟" : ""}本地市价${side === "BUY" ? "买入" : "卖出"}`} palette={p}
             active color={tradeColor} disabled={s.busy || !permitted} onPress={() => void s.run(() => startLocal(localReview))} />
@@ -662,10 +662,10 @@ export function TradePanel({
               {kind === "LOCAL_MARKET" && (
                 <View style={{ gap: 5, paddingVertical: 4 }}>
                   <Text testID="trade.local.settings-summary" style={{ color: p.text, fontSize: 12 }}>
-                    滑点 {slippagePercent.trim() ? `${slippagePercent}%` : "未设置"} · 边界 {boundaryPercent.trim() ? `${boundaryPercent}%` : "未设置"} · 追价 {durationSeconds.trim() ? `${durationSeconds} 秒` : "未设置"}
+                    价格优先 · 起挂 {startSpreadPercent}% 价差 → 中间价 · 最长 {durationSeconds.trim() ? `${durationSeconds} 秒` : "未设置"}
                   </Text>
                   <Text style={{ color: p.secondary, fontSize: 11, lineHeight: 16 }}>
-                    最新买卖中间价 {side === "BUY" ? "+" : "−"} 滑点；在设置 → 本地市价单调整。请保持前台，断网或退出后须核对未完成委托。
+                    边界 {boundaryPercent.trim() ? `${boundaryPercent}%` : "未设置"}，参数在设置 → 本地市价单调整。突变、价差超限或超时停止；请保持前台，断网或退出后核对未完成委托。
                   </Text>
                 </View>
               )}

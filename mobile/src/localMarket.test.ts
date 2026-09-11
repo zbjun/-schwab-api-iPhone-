@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { executeLocalMarket, quoteMidpoint, validateLocalMarketSettings } from "./localMarket.ts";
+import { executeLocalMarket, quoteMidpoint, validateLocalMarketSettings, type LocalMarketSettings } from "./localMarket.ts";
 import { TradingError } from "./orderRules.ts";
 import type { Draft, Order, Prepared, Quote } from "./types.ts";
+
+const defaults: LocalMarketSettings = { boundaryPercent: 0.5, durationSeconds: 10, startSpreadPercent: 25, repriceIntervalSeconds: 5, minRepriceTicks: 2, jumpPercent: 0.5, maxSpreadPercent: 1 };
 
 function fixture() {
   let time = 1_000_000;
@@ -45,7 +47,7 @@ function fixture() {
   };
   const request: Parameters<typeof executeLocalMarket>[0] = {
     broker, accountID: "account", symbol: "QQQ", side: "BUY", quantity: 10, session: "PM",
-    settings: { boundaryPercent: 0.5, durationSeconds: 10, slippagePercent: 0 }, isDemo: false,
+    settings: { ...defaults }, isDemo: false,
     isCurrent: () => current, shouldStop: () => stop,
     onProgress: (message) => messages.push(message), now: () => time,
     sleep: async (ms) => { time += ms; },
@@ -61,11 +63,11 @@ function fixture() {
 }
 
 test("local market settings allow zero boundary and custom duration but reject non-finite and unbounded settings", () => {
-  validateLocalMarketSettings({ boundaryPercent: 0, durationSeconds: 3600, slippagePercent: 0 });
+  validateLocalMarketSettings({ ...defaults, boundaryPercent: 0, durationSeconds: 3600 });
   for (const boundaryPercent of [-1, 100, Infinity, NaN])
-    assert.throws(() => validateLocalMarketSettings({ boundaryPercent, durationSeconds: 10, slippagePercent: 0 }));
+    assert.throws(() => validateLocalMarketSettings({ ...defaults, boundaryPercent }));
   for (const durationSeconds of [0, 0.5, 3601, Infinity, NaN])
-    assert.throws(() => validateLocalMarketSettings({ boundaryPercent: 1, durationSeconds, slippagePercent: 0 }));
+    assert.throws(() => validateLocalMarketSettings({ ...defaults, durationSeconds }));
 });
 
 test("invalid quantities and sessions never access broker", async () => {
@@ -148,6 +150,7 @@ test("buy boundary remains based on first quote after a confirmed chase", async 
 test("sell uses a fixed lower boundary", async () => {
   const f = fixture();
   f.request.side = "SELL";
+  f.request.settings.jumpPercent = 5;
   f.request.sleep = async (ms) => { f.setTime(f.time() + ms); f.setPrice(99.4); };
   const result = await executeLocalMarket(f.request);
   assert.equal(f.submitted.length, 1);
@@ -324,22 +327,20 @@ test("clock rollback stops chasing and cleanup polling remains bounded", async (
   assert.match(result.message, /设备时间/);
 });
 
-test("chase writes are at least two seconds apart and favorable prices do not churn", async () => {
-  for (const favorable of [false, true]) {
+test("repricing in either direction requires both a resting interval and minimum ticks", async () => {
+  for (const side of ["BUY", "SELL"] as const) for (const direction of [-1, 1]) {
     const f = fixture();
-    const placementTimes: number[] = [];
+    f.request.side = side;
+    const placements: number[] = [];
     const submit = f.broker.submit;
-    f.broker.submit = async (value) => { placementTimes.push(f.time()); return submit(value); };
-    f.request.sleep = async (ms) => {
+    f.broker.submit = async value => { placements.push(f.time()); return submit(value); };
+    f.request.sleep = async ms => {
       f.setTime(f.time() + ms);
-      f.setPrice(favorable ? 99 : 100 + (f.time() - 1_000_000) / 100_000);
+      f.setPrice(100 + direction * (f.time() < 1_006_000 ? 0.01 : 0.03));
     };
     await executeLocalMarket(f.request);
-    if (favorable) assert.equal(f.submitted.length, 1);
-    else {
-      assert.ok(placementTimes.length > 1);
-      for (let i = 1; i < placementTimes.length; i++) assert.ok(placementTimes[i] - placementTimes[i - 1] >= 2000);
-    }
+    assert.deepEqual(placements, [1_000_000, 1_006_000]);
+    assert.equal(f.drafts[1].limitPrice, direction === 1 ? "100.03" : "99.97");
   }
 });
 
@@ -354,13 +355,15 @@ test("zero boundary refuses any adverse move and sub-dollar prices retain four d
   assert.match(result.message, /价格边界/);
 });
 
-test("marketable tick rounding cannot cross the user price boundary", async () => {
-  const f = fixture();
-  f.request.settings.boundaryPercent = 0;
-  f.setPrice(100.001);
-  const result = await executeLocalMarket(f.request);
-  assert.equal(f.submitted.length, 0);
-  assert.match(result.message, /价格边界/);
+test("tick rounding protects the midpoint for both sides, including sub-dollar quotes", async () => {
+  for (const side of ["BUY", "SELL"] as const) for (const midpoint of [100.005, 0.12345]) {
+    const f = fixture();
+    f.request.side = side;
+    f.request.settings.boundaryPercent = 0;
+    f.setPrice(midpoint);
+    await executeLocalMarket(f.request);
+    assert.equal(f.drafts[0].limitPrice, midpoint > 1 ? (side === "BUY" ? "100.00" : "100.01") : (side === "BUY" ? "0.1234" : "0.1235"));
+  }
 });
 
 test("fractional fills after cancellation stop instead of rounding into excess shares", async () => {
@@ -376,15 +379,6 @@ test("fractional fills after cancellation stop instead of rounding into excess s
   assert.match(result.message, /不是整股/);
 });
 
-test("SELL with zero slippage targets the midpoint rather than the bid", async () => {
-  const f = fixture();
-  f.request.side = "SELL";
-  f.setPrice(104.5);
-  f.setHalfSpread(5.5);
-  await executeLocalMarket(f.request);
-  assert.equal(f.drafts[0].limitPrice, "104.50");
-});
-
 test("midpoint requires valid two-sided quotes and accepts a locked book", () => {
   assert.equal(quoteMidpoint({ symbol: "QQQ", bidPrice: 99, askPrice: 101 }), 100);
   assert.equal(quoteMidpoint({ symbol: "QQQ", bidPrice: 100, askPrice: 100 }), 100);
@@ -394,40 +388,89 @@ test("midpoint requires valid two-sided quotes and accepts a locked book", () =>
   }
 });
 
-test("slippage is explicit, finite, nonnegative and included in the boundary", async () => {
-  for (const slippagePercent of [undefined, NaN, Infinity, -0.1, 0.6]) {
-    const f = fixture();
-    await assert.rejects(executeLocalMarket({ ...f.request, settings: { ...f.request.settings, slippagePercent: slippagePercent as number } }), /滑点/);
-    assert.equal(f.drafts.length, 0);
-  }
+test("every strategy parameter is explicit and bounded", () => {
+  const invalid = {
+    startSpreadPercent: [undefined, NaN, Infinity, -1, 50.1],
+    repriceIntervalSeconds: [undefined, NaN, Infinity, 1, 2.5, 61],
+    minRepriceTicks: [undefined, NaN, Infinity, 0, 1.5, 101],
+    jumpPercent: [undefined, NaN, Infinity, 0, -1, 100],
+    maxSpreadPercent: [undefined, NaN, Infinity, 0, -1, 100],
+  };
+  for (const [key, values] of Object.entries(invalid)) for (const value of values)
+    assert.throws(() => validateLocalMarketSettings({ ...defaults, [key]: value }), key);
+  validateLocalMarketSettings({ ...defaults, startSpreadPercent: 0 });
+  validateLocalMarketSettings({ ...defaults, startSpreadPercent: 50 });
 });
 
-test("BUY adds and SELL subtracts configured midpoint percentage without falling back to the opposite quote", async () => {
+test("both sides start at 25 percent of spread then permanently move to midpoint", async () => {
   for (const side of ["BUY", "SELL"] as const) {
     const f = fixture();
     f.request.side = side;
-    f.request.settings.slippagePercent = 0.1;
-    f.setHalfSpread(1);
-    await executeLocalMarket(f.request);
-    assert.equal(f.drafts[0].limitPrice, side === "BUY" ? "100.10" : "99.90");
-    assert.equal(f.drafts.length, 1);
-  }
-});
-
-test("chasing recalculates from latest midpoint without compounding slippage or widening initial midpoint boundary", async () => {
-  for (const side of ["BUY", "SELL"] as const) {
-    const f = fixture();
-    f.request.side = side;
-    f.request.settings.slippagePercent = 0.2;
-    f.setHalfSpread(0.5);
+    f.request.settings.durationSeconds = 16;
+    f.setHalfSpread(0.2);
+    const placements: number[] = [];
+    const submit = f.broker.submit;
+    f.broker.submit = async value => { placements.push(f.time()); return submit(value); };
     f.request.sleep = async ms => {
       f.setTime(f.time() + ms);
-      f.setPrice(100 + (side === "BUY" ? 1 : -1) * (f.submitted.length < 2 ? 0.2 : 0.4));
+      if (f.time() >= 1_008_000) f.setPrice(100.1);
+    };
+    await executeLocalMarket(f.request);
+    assert.deepEqual(f.drafts.map(d => d.limitPrice), side === "BUY" ? ["99.90", "100.00", "100.10"] : ["100.10", "100.00", "100.10"]);
+    assert.deepEqual(placements, [1_000_000, 1_005_000, 1_010_000]);
+  }
+});
+
+test("spread guard prevents initial submission and cancels on widening", async () => {
+  for (const initial of [false, true]) {
+    const f = fixture();
+    if (initial) f.setHalfSpread(0.51);
+    else f.request.sleep = async ms => { f.setTime(f.time() + ms); f.setHalfSpread(0.51); };
+    const result = await executeLocalMarket(f.request);
+    assert.equal(f.submitted.length, initial ? 0 : 1);
+    assert.deepEqual(f.canceled, initial ? [] : ["1"]);
+    assert.match(result.message, /价差超过/);
+  }
+});
+
+test("rolling three-second midpoint guard catches cumulative moves, then stops without restarting", async () => {
+  const f = fixture();
+  f.request.settings.boundaryPercent = 5;
+  f.request.sleep = async ms => {
+    f.setTime(f.time() + ms);
+    f.setPrice(100 + (f.time() - 1_000_000) / 1000 * 0.2);
+  };
+  const result = await executeLocalMarket(f.request);
+  assert.equal(f.time(), 1_003_000);
+  assert.equal(f.submitted.length, 1);
+  assert.deepEqual(f.canceled, ["1"]);
+  assert.match(result.message, /3 秒内突变/);
+});
+
+test("slow cumulative drift beyond the jump threshold does not trip the rolling window", async () => {
+  const f = fixture();
+  f.request.settings.boundaryPercent = 5;
+  f.request.sleep = async ms => { f.setTime(f.time() + ms); f.setPrice(100 + (f.time() - 1_000_000) / 10000); };
+  const result = await executeLocalMarket(f.request);
+  assert.doesNotMatch(result.message, /突变/);
+  assert.equal(f.submitted.length, 2);
+});
+
+test("prepared quotes are checked for spread, sudden movement and stale aggressive targets", async () => {
+  for (const side of ["BUY", "SELL"] as const) for (const mode of ["spread", "jump", "target"] as const) {
+    const f = fixture();
+    f.request.side = side;
+    f.request.settings.boundaryPercent = 5;
+    const prepare = f.broker.prepare;
+    f.broker.prepare = async (...args) => {
+      const value = await prepare(...args);
+      if (mode === "spread") f.setHalfSpread(0.6);
+      else f.setPrice(100 + (side === "BUY" ? -1 : 1) * (mode === "jump" ? 0.6 : 0.1));
+      return { ...value, quote: f.quote() };
     };
     const result = await executeLocalMarket(f.request);
-    assert.deepEqual(f.drafts.map(d => d.limitPrice), side === "BUY" ? ["100.20", "100.41"] : ["99.80", "99.60"]);
-    assert.deepEqual(f.canceled, ["1", "2"]);
-    assert.match(result.message, /价格边界/);
+    assert.equal(f.submitted.length, 0, `${side} ${mode}`);
+    assert.match(result.message, mode === "spread" ? /价差超过/ : mode === "jump" ? /突变/ : /当前目标/);
   }
 });
 

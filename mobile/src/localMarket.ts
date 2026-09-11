@@ -2,10 +2,16 @@ import { FINAL_STATUSES, OPEN_STATUSES, TradingError, parsePrice, validSymbol } 
 import type { Broker, Draft, Order, OrderSession, Quote, Side } from "./types.ts";
 
 export interface LocalMarketSettings {
-  /** Maximum adverse movement from the initial bid/ask midpoint, including slippage. */
+  /** Fixed adverse price boundary from the initial bid/ask midpoint. */
   boundaryPercent: number;
-  /** Buy above / sell below each current midpoint by this percentage. */
-  slippagePercent: number;
+  /** Fraction of the spread measured inward from the passive side (0..50). */
+  startSpreadPercent: number;
+  repriceIntervalSeconds: number;
+  minRepriceTicks: number;
+  /** Maximum midpoint movement within three seconds. */
+  jumpPercent: number;
+  /** Maximum bid/ask spread as a percentage of midpoint. */
+  maxSpreadPercent: number;
   /** Foreground execution is capped at one hour; cancellation confirmation may take longer. */
   durationSeconds: number;
 }
@@ -13,8 +19,16 @@ export interface LocalMarketSettings {
 export function validateLocalMarketSettings(settings: LocalMarketSettings): void {
   if (!Number.isFinite(settings.boundaryPercent) || settings.boundaryPercent < 0 || settings.boundaryPercent >= 100)
     throw new TradingError("localMarketBoundary", "价格偏离范围须大于或等于 0%，且小于 100%。");
-  if (!Number.isFinite(settings.slippagePercent) || settings.slippagePercent < 0 || settings.slippagePercent > settings.boundaryPercent)
-    throw new TradingError("localMarketSlippage", "滑点须大于或等于 0%，且不能超过价格边界。");
+  if (!Number.isFinite(settings.startSpreadPercent) || settings.startSpreadPercent < 0 || settings.startSpreadPercent > 50)
+    throw new TradingError("localMarketStartSpread", "起挂位置须为价差的 0% 至 50%。");
+  if (!Number.isInteger(settings.repriceIntervalSeconds) || settings.repriceIntervalSeconds < 2 || settings.repriceIntervalSeconds > 60)
+    throw new TradingError("localMarketInterval", "调价间隔须为 2 至 60 秒的整数。");
+  if (!Number.isInteger(settings.minRepriceTicks) || settings.minRepriceTicks < 1 || settings.minRepriceTicks > 100)
+    throw new TradingError("localMarketTicks", "最小调价幅度须为 1 至 100 个价格档位的整数。");
+  if (!Number.isFinite(settings.jumpPercent) || settings.jumpPercent <= 0 || settings.jumpPercent >= 100)
+    throw new TradingError("localMarketJump", "价格突变阈值须大于 0%，且小于 100%。");
+  if (!Number.isFinite(settings.maxSpreadPercent) || settings.maxSpreadPercent <= 0 || settings.maxSpreadPercent >= 100)
+    throw new TradingError("localMarketSpread", "最大价差须大于 0%，且小于 100%。");
   if (!Number.isInteger(settings.durationSeconds) || settings.durationSeconds < 1 || settings.durationSeconds > 3600)
     throw new TradingError("localMarketDuration", "追价时长须为 1 至 3600 秒的整数。");
 }
@@ -90,6 +104,9 @@ export async function executeLocalMarket(request: Request): Promise<{
   let active: OwnedOrder | undefined;
   let submitting = false;
   let boundary: number | undefined;
+  let firstPlacedAt: number | undefined;
+  let midpointStage = false;
+  const recentMidpoints: { time: number; price: number }[] = [];
 
   function permitted(): void {
     now();
@@ -107,14 +124,25 @@ export async function executeLocalMarket(request: Request): Promise<{
     const raw = quoteMidpoint(quote);
     if (raw === undefined)
       throw new Stop("买卖双边报价缺失或异常，无法计算中间价，已停止追价。");
+    if ((quote.askPrice! - quote.bidPrice!) / raw * 100 > settings.maxSpreadPercent + 1e-10)
+      throw new Stop("买卖价差超过设定上限，已停止追价。");
+    const observedAt = now();
+    while (recentMidpoints.length && recentMidpoints[0].time < observedAt - 3000) recentMidpoints.shift();
+    if (recentMidpoints.some(sample => Math.abs(raw - sample.price) / sample.price * 100 > settings.jumpPercent + 1e-10))
+      throw new Stop("中间价在 3 秒内突变超过设定阈值，已停止追价。");
+    recentMidpoints.push({ time: observedAt, price: raw });
     return raw;
   }
 
-  function priceFor(raw: number): number {
-    const target = raw * (1 + (side === "BUY" ? 1 : -1) * settings.slippagePercent / 100);
+  function priceFor(quote: Quote): number {
+    if (firstPlacedAt !== undefined && now() - firstPlacedAt >= settings.repriceIntervalSeconds * 1000) midpointStage = true;
+    const fraction = midpointStage ? 0.5 : settings.startSpreadPercent / 100;
+    const spread = quote.askPrice! - quote.bidPrice!;
+    const target = side === "BUY" ? quote.bidPrice! + spread * fraction : quote.askPrice! - spread * fraction;
     // Stock prices >= $1 use cents; sub-dollar prices use four decimal places.
     const scale = target >= 1 ? 100 : 10000;
-    const units = side === "BUY" ? Math.ceil(target * scale - 1e-8) : Math.floor(target * scale + 1e-8);
+    // Round away from aggression to protect the selected target and midpoint.
+    const units = side === "BUY" ? Math.floor(target * scale + 1e-8) : Math.ceil(target * scale - 1e-8);
     const price = units / scale;
     if (!parsePrice(price.toFixed(4)) || boundary === undefined ||
       (side === "BUY" ? price > boundary + 1e-10 : price < boundary - 1e-10))
@@ -126,12 +154,13 @@ export async function executeLocalMarket(request: Request): Promise<{
     permitted();
     const quotes = await broker.quotes([symbol], { fundamentals: false });
     permitted();
-    const raw = executable(quotes.find((quote) => quote.symbol === symbol));
+    const quote = quotes.find((quote) => quote.symbol === symbol);
+    const raw = executable(quote);
     if (boundary === undefined) {
       boundary = raw * (1 + (side === "BUY" ? 1 : -1) * settings.boundaryPercent / 100);
       onProgress(`本地市价执行中 · ${side === "BUY" ? "最高买价" : "最低卖价"} ${boundary.toFixed(4)} · 最多 ${settings.durationSeconds} 秒`);
     }
-    return priceFor(raw);
+    return priceFor(quote!);
   }
 
   async function readOwned(order: OwnedOrder): Promise<Order> {
@@ -216,7 +245,11 @@ export async function executeLocalMarket(request: Request): Promise<{
         throw new Stop("订单核对内容已变化，已停止追价。");
       const age = now() - prepared.preparedAt;
       if (!Number.isFinite(age) || age < 0 || age > 60000) throw new Stop("订单核对已失效，已停止追价。");
-      priceFor(executable(prepared.quote));
+      executable(prepared.quote);
+      const preparedTarget = priceFor(prepared.quote!);
+      // A frozen draft cannot silently become more aggressive during preparation.
+      if (side === "BUY" ? price > preparedTarget + 1e-10 : price < preparedTarget - 1e-10)
+        throw new Stop("核对期间报价变化，原挂单价格已超出当前目标，已停止追价。");
       permitted();
       submitting = true;
       const submission = await broker.submit(prepared);
@@ -226,6 +259,7 @@ export async function executeLocalMarket(request: Request): Promise<{
       if (ids.includes(submission.orderID)) throw new Stop("委托编号重复，结果待核对；已停止，不会重复提交。");
       ids.push(submission.orderID);
       active = { id: submission.orderID, quantity: remaining, price, filled: 0, placedAt: now(), cancelAttempted: false, identityInvalid: false };
+      firstPlacedAt ??= active.placedAt;
       onProgress(`本地市价执行中 · 委托 #${active.id} · 限价 ${draft.limitPrice} · 剩余 ${remaining} 股`);
 
       while (active) {
@@ -243,10 +277,11 @@ export async function executeLocalMarket(request: Request): Promise<{
         permitted();
         await sleep(Math.min(1000, Math.max(1, deadline - now())));
         price = await nextPrice();
-        // A resting buy above / sell below the new target is already more aggressive.
-        if (side === "BUY" ? price <= active.price : price >= active.price) continue;
-        // Each chase needs two writes; cap replacement cycles at one per two seconds.
-        if (now() - active.placedAt < 2000) continue;
+        // Preserve queue position through small changes; meaningful favorable and
+        // adverse changes both reprice after the full resting interval.
+        const tick = Math.max(price, active.price) >= 1 ? 0.01 : 0.0001;
+        if (Math.abs(price - active.price) + 1e-10 < settings.minRepriceTicks * tick) continue;
+        if (now() - active.placedAt < settings.repriceIntervalSeconds * 1000) continue;
         if (!detail.cancelable) throw new Stop("当前委托暂不可撤，已停止追价。");
         const owned = active;
         if (!(await cancelAndConfirm(owned))) return result("撤单结果仍待核对，已停止追价；剩余委托可能仍有效，请在订单页核对，勿重复提交。");

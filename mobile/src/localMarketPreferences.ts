@@ -2,32 +2,39 @@ import { validateLocalMarketSettings, type LocalMarketSettings } from "./localMa
 
 export const localMarketSettingsKey = "ths.expo.localMarket.settings.v1";
 export interface LocalMarketPreferences {
-  slippagePercent: string;
+  startSpreadPercent: string;
+  repriceIntervalSeconds: string;
+  minRepriceTicks: string;
+  jumpPercent: string;
+  maxSpreadPercent: string;
   boundaryPercent: string;
   durationSeconds: string;
 }
 export const emptyLocalMarketPreferences: LocalMarketPreferences = {
-  slippagePercent: "", boundaryPercent: "", durationSeconds: "",
+  startSpreadPercent: "25", repriceIntervalSeconds: "5", minRepriceTicks: "2",
+  jumpPercent: "0.5", maxSpreadPercent: "1", boundaryPercent: "", durationSeconds: "",
 };
 
-/** Older installations saved only boundary and duration: slippage still needs an explicit choice. */
+/** Preserve existing limits; the old price-based slippage is never interpreted as a spread fraction. */
 export function decodeLocalMarketPreferences(raw: string | null): LocalMarketPreferences {
   if (!raw) return { ...emptyLocalMarketPreferences };
   const saved: unknown = JSON.parse(raw);
   if (!saved || typeof saved !== "object" || Array.isArray(saved)) throw new Error("Invalid local market preferences");
   const value = saved as Record<string, unknown>;
-  return {
-    slippagePercent: typeof value.slippagePercent === "string" ? value.slippagePercent : "",
-    boundaryPercent: typeof value.boundaryPercent === "string" ? value.boundaryPercent : "",
-    durationSeconds: typeof value.durationSeconds === "string" ? value.durationSeconds : "",
-  };
+  return Object.fromEntries(Object.entries(emptyLocalMarketPreferences).map(([key, fallback]) =>
+    [key, value[key] === undefined ? fallback : typeof value[key] === "string" ? value[key] : ""]
+  )) as unknown as LocalMarketPreferences;
 }
 
 export function readLocalMarketSettings(preferences: LocalMarketPreferences): LocalMarketSettings {
   if (Object.values(preferences).some(value => !value.trim()))
-    throw new Error("请先到设置 → 本地市价单填写滑点、价格边界和追价时长。");
+    throw new Error("请先到设置 → 本地市价单填写完整的价格优先参数、价格边界和执行时长。");
   const settings = {
-    slippagePercent: Number(preferences.slippagePercent),
+    startSpreadPercent: Number(preferences.startSpreadPercent),
+    repriceIntervalSeconds: Number(preferences.repriceIntervalSeconds),
+    minRepriceTicks: Number(preferences.minRepriceTicks),
+    jumpPercent: Number(preferences.jumpPercent),
+    maxSpreadPercent: Number(preferences.maxSpreadPercent),
     boundaryPercent: Number(preferences.boundaryPercent),
     durationSeconds: Number(preferences.durationSeconds),
   };

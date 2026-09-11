@@ -37,17 +37,17 @@ export default function Settings({ state: s, palette: p }: { state: TradingState
       </Text>
     </View>
     <View style={[styles.card, { backgroundColor: p.surface, gap: 12 }]}>
-      <Text style={{ color: p.text, fontSize: 17, fontWeight: "600" }}>本地市价单</Text>
+      <Text style={{ color: p.text, fontSize: 17, fontWeight: "600" }}>本地市价单 · 价格优先</Text>
       <Text style={{ color: p.secondary, fontSize: 13, lineHeight: 20 }}>
-        买入价 = 买卖中间价 ×（1 + 滑点%）；卖出价 = 买卖中间价 ×（1 − 滑点%）。中间价取买一与卖一的平均值。
+        买入从买一向中间价靠近，卖出从卖一向中间价靠近。首次等待后最多让价到中间价，争取更好的价格，可能无法成交。
       </Text>
       <View style={{ gap: 6 }}>
-        <Text style={{ color: p.text, fontSize: 13 }}>滑点 · %</Text>
-        <Input palette={p} testID="settings.local.slippage" accessibilityLabel="本地市价滑点百分比"
-          placeholder="例如 0.1，表示 0.1%" keyboardType="decimal-pad"
-          value={s.localMarketPreferences.slippagePercent}
+        <Text style={{ color: p.text, fontSize: 13 }}>起挂位置 · 占买卖价差 %</Text>
+        <Input palette={p} testID="settings.local.startSpread" accessibilityLabel="起挂位置占买卖价差百分比"
+          placeholder="0–50，25 为价差内四分之一" keyboardType="decimal-pad"
+          value={s.localMarketPreferences.startSpreadPercent}
           editable={!s.busy && s.localMarketPreferencesReady}
-          onChangeText={value => s.changeLocalMarketPreference("slippagePercent", value)} />
+          onChangeText={value => s.changeLocalMarketPreference("startSpreadPercent", value)} />
       </View>
       <View style={{ flexDirection: "row", gap: 10 }}>
         <View style={{ flex: 1, gap: 6 }}>
@@ -59,7 +59,7 @@ export default function Settings({ state: s, palette: p }: { state: TradingState
             onChangeText={value => s.changeLocalMarketPreference("boundaryPercent", value)} />
         </View>
         <View style={{ flex: 1, gap: 6 }}>
-          <Text style={{ color: p.text, fontSize: 13 }}>追价时长 · 秒</Text>
+          <Text style={{ color: p.text, fontSize: 13 }}>最长执行 · 秒</Text>
           <Input palette={p} testID="settings.local.duration" accessibilityLabel="本地市价追价时长秒数"
             placeholder="1–3600 秒" keyboardType="number-pad"
             value={s.localMarketPreferences.durationSeconds}
@@ -67,9 +67,23 @@ export default function Settings({ state: s, palette: p }: { state: TradingState
             onChangeText={value => s.changeLocalMarketPreference("durationSeconds", value)} />
         </View>
       </View>
+      {([
+        [{ key: "repriceIntervalSeconds", label: "最短改单间隔 · 秒", hint: "2–60", id: "interval" },
+          { key: "minRepriceTicks", label: "最小改价 · 价位数", hint: "1–100", id: "ticks" }],
+        [{ key: "jumpPercent", label: "3 秒突变阈值 · %", hint: "例如 0.5", id: "jump" },
+          { key: "maxSpreadPercent", label: "最大价差 · %", hint: "例如 1", id: "spread" }],
+      ] as const).map((row, index) => <View key={index} style={{ flexDirection: "row", gap: 10 }}>
+        {row.map(field => <View key={field.key} style={{ flex: 1, minWidth: 0, gap: 6 }}>
+          <Text style={{ color: p.text, fontSize: 13 }}>{field.label}</Text>
+          <Input palette={p} testID={`settings.local.${field.id}`} accessibilityLabel={field.label}
+            placeholder={field.hint} keyboardType={index === 0 ? "number-pad" : "decimal-pad"}
+            value={s.localMarketPreferences[field.key]} editable={!s.busy && s.localMarketPreferencesReady}
+            onChangeText={value => s.changeLocalMarketPreference(field.key, value)} />
+        </View>)}
+      </View>)}
       <Text style={{ color: p.secondary, fontSize: 12, lineHeight: 19 }}>
-        价格边界固定相对启动时的中间价，包含滑点，不会随追价放宽。滑点不能超过边界；边界须小于 100%。
-        达到边界或超时后停止追价并撤销剩余委托。滑点不足以覆盖价差时可能等待成交。
+        价差阈值按买卖价差 ÷ 中间价计算。价格边界固定相对启动中间价，不随改单放宽。首次挂单等待达到改单间隔后，允许让到中间价。
+        中间价突变、价差超限、突破价格边界或超时会停止并撤销剩余委托，不会自动重启。参数是可调整的初始值，未经回测证明最优。
       </Text>
       {!!localSettingsIssue && s.localMarketPreferencesReady && <Text accessibilityRole="alert"
         testID="settings.local.validation" style={{ color: p.down, fontSize: 12, lineHeight: 19 }}>

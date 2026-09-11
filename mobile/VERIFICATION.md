@@ -1,3 +1,13 @@
+# 2026-09-11: 0.6.3 (10) two-device IPA delivery
+
+- Source: `cc19367`; EAS build `776e920e-b860-4a3c-b0fd-528f8fccfd33` finished successfully. Includes the price-priority engine/settings, unified primary tabs, automatic execution markers and order-row stock navigation described below.
+- Local TypeScript, 252 mobile tests, 6 personalizer tests, web production export and whitespace checks passed. The cloud also passed TypeScript and all 252 tests before Xcode reported ARCHIVE SUCCEEDED.
+- Audited 86 upload files against local source; no device keys or legacy client credentials included. The build commit's 84-file trailer was a counting typo; the audit checked 86 files. No dependencies changed; package-lock root name/version metadata now matches package.json.
+- Generated only two deliverables locally: device 1 and device 2. Both are version 0.6.3, build 10, arm64 physical iPhone archives, minimum iOS 16.4, with a 2,146,787-byte embedded Hermes bundle. Each retains every original archive entry byte-for-byte and adds only its validated server device configuration. Distinct device keys connect to the same server; no private packages are uploaded to GitHub.
+- SHA-256 device 1: `29b2f727508ff0fe3045af806162a6c63474b9e32eb67f1ea654394320f97033`.
+- SHA-256 device 2: `36b9922457e972661f95c273188e0ae814f6e2c2513da35b4dcad56895dbd473`.
+- Signing and physical iPhone installation remain user-side and untested here. No real trades were placed. Server authorization freshness and live fill quality were not revalidated during packaging.
+
 # 2026-09-11: Order-row stock navigation (source update, no IPA)
 
 - OrderList in the Orders tab now routes a single valid stock symbol through App's existing openStock navigation. Tapping the order body/chevron opens that stock's chart; Back returns to Orders. Complex or invalid symbols keep the order-detail path instead of opening an invalid chart.

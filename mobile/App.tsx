@@ -82,6 +82,10 @@ function TradingApp() {
     s.setAccountVisible(tab === "accounts" && !stock);
     return () => s.setAccountVisible(false);
   }, [tab, stock, s.setAccountVisible]);
+  useEffect(() => {
+    s.setOrdersVisible(!!stock || tab === "orders");
+    return () => s.setOrdersVisible(false);
+  }, [tab, stock, s.setOrdersVisible]);
   const [editing, setEditing] = useState(false),
     [adding, setAdding] = useState(false);
   const [watchlistSearch, setWatchlistSearch] = useState("");

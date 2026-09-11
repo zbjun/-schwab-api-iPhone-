@@ -1,3 +1,11 @@
+# 2026-09-11: Automatic execution-marker synchronization (source update, no IPA)
+
+- Root cause: post-submit refresh reads an accepted order once, but later fills were never fetched while viewing a chart. StockDetail already recalculates execution markers when shared orders change; no chart redraw workaround or synthetic fill is needed.
+- useTrading now refreshes orders while a chart or Orders tab is visible and the app is foreground/authenticated. Reads wait 2 seconds after completion with unfinished orders, 5 seconds otherwise, and back off on errors using the existing serial polling utility. Background/leave cleanup suppresses late results. Read-only polling can observe partial fills while a local strategy remains active.
+- Reused the account reader's generic serialization for orders. Manual refresh, post-trade refresh and account selection share the order reader with generation/epoch guards; pre-operation or other-account responses cannot overwrite newer snapshots. Background sync retains existing markers during read errors and does not increment the chart history revision.
+- Verification: TypeScript, all 252 mobile tests, web export and diff checks passed. Added tools/verify-order-marker-sync.cjs as a development-browser regression (Playwright supplied via PLAYWRIGHT_MODULE, optional BROWSER_EXECUTABLE). In isolated demo mode it verifies delayed BUY and SELL partial-fill SVG markers without refresh, transient read failure/recovery, no duplicate markers, unchanged chart revision, serialized reads and no polling after leaving the chart. Independent read-only review found no actionable defects.
+- No real orders or physical iPhone tests; visibility in real accounts depends on when Schwab returns execution details and the corresponding candle being available. No IPA built.
+
 # 2026-09-11: Price-priority local execution (source update, no IPA)
 
 - Replaced midpoint-plus-slippage pricing with spread placement: BUY starts at bid + configured fraction of spread; SELL starts at ask - that fraction. Defaults to 25%. After the first child rests for the configured interval, the strategy permanently permits midpoint placement. BUY rounds down and SELL rounds up to valid price increments; neither crosses its current target at submission.

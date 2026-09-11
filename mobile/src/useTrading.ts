@@ -3,7 +3,7 @@ import { AppState, Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { DemoBroker } from "./demo.ts";
 import { createRealBroker, createServerBroker, restoreBundledConfiguration, restoreBundledServer } from "./device.ts";
-import { TradingError } from "./orderRules.ts";
+import { FINAL_STATUSES, TradingError } from "./orderRules.ts";
 import type { Account, Broker, Order, Quote, SessionStatus } from "./types.ts";
 import { createAccountReader } from "./accountRefresh.ts";
 import { startMarketPolling } from "./marketPolling.ts";
@@ -53,12 +53,17 @@ export function useTrading() {
   const [message, setMessage] = useState("");
   const [revision, setRevision] = useState(0);
   const [accountVisible, setAccountVisible] = useState(false);
+  const [ordersVisible, setOrdersVisible] = useState(false);
   const [foreground, setForeground] = useState(AppState.currentState !== "background" && AppState.currentState !== "inactive");
   const [accountsUpdatedAt, setAccountsUpdatedAt] = useState<number>();
   const [accountRefreshError, setAccountRefreshError] = useState("");
   const [pullRefreshing, setPullRefreshing] = useState(false);
   const accountReader = useRef(createAccountReader<Account[]>()).current;
   const accountGeneration = useRef<object>({});
+  const orderReader = useRef(createAccountReader<Order[]>()).current;
+  const orderGeneration = useRef<object>({});
+  const latestOrders = useRef(orders);
+  latestOrders.current = orders;
   const fullRefreshes = useRef(0);
   const pullLock = useRef(false);
   const epoch = useRef(0),
@@ -156,6 +161,7 @@ export function useTrading() {
   async function refresh() {
     ++fullRefreshes.current;
     accountGeneration.current = {};
+    orderGeneration.current = {};
     try {
       await refreshAll();
     } finally {
@@ -166,6 +172,7 @@ export function useTrading() {
     const version = epoch.current,
       ticket = ++request.current,
       selected = accountID;
+    const orderKey = orderGeneration.current;
     const fresh = () => version === epoch.current && ticket === request.current;
     setOrdersLoaded(false);
     setOrdersError("");
@@ -199,7 +206,7 @@ export function useTrading() {
     ];
     const results = await Promise.allSettled([
       symbols.length ? broker.quotes(symbols) : Promise.resolve([] as Quote[]),
-      nextID ? broker.orders(nextID) : Promise.resolve([] as Order[]),
+      nextID ? orderReader.read(orderKey, () => broker.orders(nextID)) : Promise.resolve([] as Order[]),
     ]);
     if (!fresh()) return;
     const [q, o] = results;
@@ -223,8 +230,9 @@ export function useTrading() {
   async function run(work: () => Promise<void>) {
     if (actionLock.current) return;
     actionLock.current = true;
-    // In-flight background account reads cannot apply across a user operation.
+    // In-flight background account/order reads cannot apply across a user operation.
     accountGeneration.current = {};
+    orderGeneration.current = {};
     setBusy(true);
     setMessage("");
     try {
@@ -244,6 +252,7 @@ export function useTrading() {
   useEffect(() => {
     const version = ++epoch.current;
     accountGeneration.current = {};
+    orderGeneration.current = {};
     setAccountsUpdatedAt(undefined);
     setAccountRefreshError("");
     setAccounts([]);
@@ -285,6 +294,36 @@ export function useTrading() {
     polling.setActive(true);
     return () => { active = false; polling.stop(); };
   }, [accountVisible, foreground, storageReady, status.authenticated, broker, accountID]);
+  useEffect(() => {
+    if (!ordersVisible || !foreground || !storageReady || !status.authenticated || !accountID) return;
+    let active = true;
+    const version = epoch.current;
+    const polling = startMarketPolling({
+      interval: () => latestOrders.current.some(order => !FINAL_STATUSES.has(order.status)) ? 2000 : 5000,
+      cadence: "completion",
+      run: async () => {
+        if (fullRefreshes.current) return;
+        const generation = orderGeneration.current;
+        const fresh = () => active && !fullRefreshes.current && version === epoch.current &&
+          generation === orderGeneration.current && broker === current.current.broker &&
+          accountID === current.current.accountID;
+        try {
+          // Read-only sync can observe partial fills while a local strategy runs.
+          // Reuse the reader so manual/post-trade refreshes cannot race old responses.
+          const values = await orderReader.read(generation, () => broker.orders(accountID));
+          if (!fresh()) return;
+          setOrders(values);
+          setOrdersLoaded(true);
+          setOrdersError("");
+        } catch (error) {
+          if (fresh()) setOrdersError(readFailure("订单", error));
+          throw error;
+        }
+      },
+    });
+    polling.setActive(true);
+    return () => { active = false; polling.stop(); };
+  }, [ordersVisible, foreground, storageReady, status.authenticated, broker, accountID]);
   async function pullRefresh(work: () => Promise<void> = refresh) {
     if (pullLock.current || actionLock.current) return;
     pullLock.current = true;
@@ -314,14 +353,14 @@ export function useTrading() {
     if (busy || id === accountID) return;
     ++epoch.current;
     accountGeneration.current = {};
+    orderGeneration.current = {};
     setAccountID(id);
     setOrders([]);
     setOrdersLoaded(false);
     setOrdersError("");
     const version = epoch.current;
     const ticket = ++request.current;
-    void broker
-      .orders(id)
+    void orderReader.read(orderGeneration.current, () => broker.orders(id))
       .then((values) => {
         if (epoch.current === version && request.current === ticket) {
           setOrders(values);
@@ -388,6 +427,7 @@ export function useTrading() {
     status,
     accounts,
     setAccountVisible,
+    setOrdersVisible,
     accountsUpdatedAt,
     accountRefreshError,
     pullRefreshing,

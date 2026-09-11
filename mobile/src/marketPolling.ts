@@ -3,6 +3,7 @@ type Timer = ReturnType<typeof setTimeout>;
 type MarketPollingOptions = {
   run: () => Promise<void>;
   interval: () => number;
+  cadence?: "start" | "completion";
   onError?: (error: unknown) => void;
   now?: () => number;
   schedule?: (callback: () => void, delay: number) => Timer;
@@ -13,6 +14,7 @@ type MarketPollingOptions = {
 export function startMarketPolling({
   run,
   interval,
+  cadence = "start",
   onError,
   now = Date.now,
   schedule = setTimeout,
@@ -58,7 +60,7 @@ export function startMarketPolling({
     }
     const requested = interval();
     const base = Number.isFinite(requested) ? Math.max(250, requested) : 1000;
-    const elapsed = Math.max(0, now() - started);
+    const elapsed = cadence === "completion" ? 0 : Math.max(0, now() - started);
     // Failed reads always leave at least one base interval before retrying.
     const delay = failures
       ? Math.min(60_000, Math.max(base, base * 2 ** (failures - 1) - elapsed))

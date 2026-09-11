@@ -78,6 +78,10 @@ function TradingApp() {
       : light;
   const [tab, setTab] = useState<Tab>("accounts"),
     [stock, setStock] = useState<string>();
+  useEffect(() => {
+    s.setAccountVisible(tab === "accounts" && !stock);
+    return () => s.setAccountVisible(false);
+  }, [tab, stock, s.setAccountVisible]);
   const [editing, setEditing] = useState(false),
     [adding, setAdding] = useState(false);
   const [watchlistSearch, setWatchlistSearch] = useState("");
@@ -205,7 +209,7 @@ function TradingApp() {
             </View>
           )}
           <View style={{ width: 104, alignItems: "flex-end" }}>
-            {tab !== "settings" || stock ? (
+            {(tab !== "settings" && tab !== "accounts") || stock ? (
               <View
                 style={[
                   capsule(p),

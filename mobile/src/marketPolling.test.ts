@@ -214,3 +214,31 @@ test("slow failures leave a base interval after completion and synchronous throw
   assert.equal(time.nextDelay(), 2000);
   polling.stop();
 });
+
+test("account completion cadence waits five seconds after a slow response and stops when hidden", async () => {
+  const time = clock();
+  const request = deferred();
+  let calls = 0;
+  const polling = startMarketPolling({
+    ...time,
+    interval: () => 5000,
+    cadence: "completion",
+    run: () => { calls++; return request.promise; },
+  });
+  polling.setActive(true);
+  time.advance(12_000);
+  assert.equal(calls, 1);
+  request.resolve();
+  await settle();
+  assert.equal(time.nextDelay(), 5000);
+  time.advance(4999);
+  assert.equal(calls, 1);
+  polling.setActive(false);
+  time.advance(30_000);
+  assert.equal(calls, 1);
+  polling.setActive(true);
+  assert.equal(calls, 2);
+  polling.stop();
+  await settle();
+  assert.equal(time.pending(), 0);
+});

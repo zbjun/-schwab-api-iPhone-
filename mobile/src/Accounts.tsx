@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Modal, Pressable, ScrollView, Text, View } from "react-native";
+import { Modal, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
 import type { Palette } from "./types.ts";
 import type { TradingState } from "./useTrading.ts";
 import { Button, Icon, money, signed, styles } from "./ui.tsx";
@@ -91,6 +91,14 @@ export default function Accounts({
   return (
     <ScrollView
       showsVerticalScrollIndicator={false}
+      alwaysBounceVertical
+      refreshControl={<RefreshControl
+        refreshing={s.accountRefreshing}
+        onRefresh={() => void s.pullRefreshAccounts()}
+        enabled={!s.busy}
+        tintColor={p.accent}
+        colors={[p.accent]}
+      />}
       contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 110 }}
     >
       {s.isDemo && <DemoNotice palette={p} card />}
@@ -157,6 +165,13 @@ export default function Accounts({
             {account?.positions.length ?? 0} 项持仓
           </Text>
         </View>
+        <Text style={{ color: p.secondary, fontSize: 11, marginTop: 12 }}>
+          {s.accountRefreshError
+            ? `${s.accountRefreshError} 正在自动重试，显示上次数据。`
+            : s.accountsUpdatedAt
+              ? `自动刷新 · ${new Date(s.accountsUpdatedAt).toLocaleTimeString()} 更新 · 下拉刷新`
+              : "下拉刷新账户"}
+        </Text>
       </View>
       <View
         style={[

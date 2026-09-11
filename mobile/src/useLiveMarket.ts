@@ -143,7 +143,7 @@ export function useLiveMarket(
         try {
           const next = await readHistory(range);
           if (mounted) {
-            setHistory((prev) => shareHistory(prev, next));
+            setHistory((prev) => shareHistory(prev, next, { range, now: Date.now() }));
             setHistoryError("");
           }
         } finally {

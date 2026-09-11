@@ -3,6 +3,7 @@ import type {
   Candle,
   Draft,
   History,
+  HistoryRange,
   Order,
   OrderKind,
   OrderSession,
@@ -11,6 +12,7 @@ import type {
   Side,
   TradeExecution,
 } from "./types.ts";
+import { historyCoverage } from "./historyCoverage.ts";
 
 /** Only controlled messages are allowed to reach the UI; provider bodies are never errors. */
 export class TradingError extends Error {
@@ -760,7 +762,7 @@ export function decodeFundamentals(
   return result;
 }
 
-export function decodeHistory(payload: unknown, symbol: string): History {
+export function decodeHistory(payload: unknown, symbol: string, capture?: { receivedAt: number; range: HistoryRange }): History {
   const row = object(payload),
     source = array(row.candles);
   if (row.symbol !== symbol || (row.empty === true && source.length !== 0))
@@ -790,9 +792,12 @@ export function decodeHistory(payload: unknown, symbol: string): History {
       volume: number(c.volume, true),
     });
   }
+  const candles = [...byTime.values()].sort((a, b) => a.time - b.time);
   return {
     symbol,
     previousClose,
-    candles: [...byTime.values()].sort((a, b) => a.time - b.time),
+    candles,
+    ...(capture ? { sourceCoverage: { ...capture, rawBars: source.length,
+      decoded: historyCoverage(candles, !["daily", "weekly", "monthly"].includes(capture.range)) } } : {}),
   };
 }

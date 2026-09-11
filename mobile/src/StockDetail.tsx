@@ -7,6 +7,7 @@ import {
   Pressable,
   StyleSheet,
   ScrollView,
+  Share,
   Text,
   useWindowDimensions,
   View,
@@ -20,6 +21,7 @@ import { selectedActivity, selectedChangePercent, selectedReferencePrice } from 
 import { positionAverageCost } from "./tradeMarkers.ts";
 import { useLiveMarket } from "./useLiveMarket.ts";
 import { TradePanel } from "./TradePanel.tsx";
+import { historyCoverageReport } from "./historyCoverage.ts";
 
 export default function StockDetail({
   symbol,
@@ -48,9 +50,14 @@ export default function StockDetail({
   const [availableHeight, setAvailableHeight] = useState(height - 140);
   const [tradePanelHeight, setTradePanelHeight] = useState(382);
   const [metricNotes, setMetricNotes] = useState(false);
+  const [diagnostic, setDiagnostic] = useState("");
   const [inspecting, setInspecting] = useState(false);
   const [selectedCandle, setSelectedCandle] = useState<Candle>();
   const scroll = useRef<ScrollView>(null);
+  useEffect(() => {
+    setMetricNotes(false);
+    setDiagnostic("");
+  }, [symbol, range]);
   useEffect(() => {
     scroll.current?.scrollTo({ y: 0, animated: false });
   }, [panel]);
@@ -276,7 +283,10 @@ export default function StockDetail({
                   accessibilityLabel="行情指标说明"
                   testID="detail.metricInfo"
                   hitSlop={10}
-                  onPress={() => setMetricNotes(!metricNotes)}
+                  onPress={() => {
+                    setDiagnostic(history ? historyCoverageReport(history, range) : "行情尚未加载。");
+                    setMetricNotes(!metricNotes);
+                  }}
                 >
                   <Text
                     style={{ color: p.secondary, fontSize: 15, lineHeight: 18 }}
@@ -286,12 +296,21 @@ export default function StockDetail({
                 </Pressable>
               </View>
               {metricNotes && (
+                <View style={{ gap: 8 }}>
                 <Text
                   style={{ color: p.secondary, fontSize: 11, lineHeight: 16 }}
                 >
                   十字线选中时，高低开、成交量均来自该根 K 线；成交额按高低开收均价乘该根成交量估算，并非实际成交额。换手估按该根成交量除以当前总股本计算，历史总股本变化未还原。市值今与市盈今仍是当前基本面。取消选中后恢复最新行情；选中时量比位置显示成交额估。平时量比对比此前五个交易日的平均成交量。黄色线根据分钟价格和成交量估算均价，每个交易日重置。缺失数据显示
                   —。
                 </Text>
+                <Text selectable testID="detail.historyDiagnostic"
+                  style={{ color: p.secondary, fontSize: 11, lineHeight: 17 }}>{diagnostic}</Text>
+                {Platform.OS !== "web" && <Pressable accessibilityRole="button"
+                  accessibilityLabel="分享行情诊断" style={{ paddingVertical: 8 }}
+                  onPress={() => { void Share.share({ message: diagnostic }).catch(() => {}); }}>
+                  <Text style={{ color: p.accent }}>分享行情诊断（不含账户和密钥）</Text>
+                </Pressable>}
+                </View>
               )}
             </>
           )}
@@ -431,7 +450,9 @@ export default function StockDetail({
                 testID="chart.tradeLegend"
                 style={{ fontSize: 10, color: p.secondary, lineHeight: 18 }}
               >
-                B 买入 · S 卖出 · {s.ordersLoaded ? "近30天成交" : "成交待加载"}
+                {history?.candles.some(c => c.retained)
+                  ? "含上次收到的缓存K线 · 点上方ⓘ查看时段诊断"
+                  : `B 买入 · S 卖出 · ${s.ordersLoaded ? "近30天成交" : "成交待加载"}`}
                 {averageCost !== undefined ? " · 虚线成本" : ""}
               </Text>
             )}

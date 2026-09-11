@@ -18,11 +18,19 @@ export interface Candle {
   close: number;
   volume?: number;
   provisional?: boolean;
+  /** Previously received historical bar omitted from the latest response. */
+  retained?: boolean;
 }
 export interface History {
   symbol: string;
   candles: Candle[];
   previousClose?: number;
+  sourceCoverage?: {
+    receivedAt: number;
+    range: HistoryRange;
+    rawBars: number;
+    decoded: import("./historyCoverage.ts").Coverage;
+  };
 }
 export interface Quote {
   symbol: string;

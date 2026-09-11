@@ -1113,6 +1113,7 @@ export class SchwabBroker implements Broker {
         expected,
       ),
       normalized,
+      { receivedAt: this.now(), range },
     );
     if (range === "minute60" || range === "minute120")
       history.candles = aggregateMinutes(

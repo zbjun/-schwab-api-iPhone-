@@ -1,6 +1,6 @@
 # THS Expo / React Native
 
-当前开发客户端使用 **Expo SDK 57 / React Native 0.86 / React 19.2**，应用配置为 **0.6.2（iOS build 9）**。项目入口、功能概览见[仓库首页](../README.md)，详细证据见[验证记录](VERIFICATION.md)。
+当前开发客户端使用 **Expo SDK 57 / React Native 0.86 / React 19.2**，应用配置为 **0.6.3（iOS build 10）**。项目入口、功能概览见[仓库首页](../README.md)，详细证据见[验证记录](VERIFICATION.md)。
 
 截至 2026-09-11，最近交付的 0.6.2（9）IPA 来自 `050067f`。此后的价格优先本地市价、统一页面布局、自动同步 B/S 点和订单导航等修改已进入源码，**尚未重新打包**。版本配置相同不代表安装包已包含最新提交。
 
@@ -100,7 +100,7 @@ JavaScript、TypeScript 和界面修改通过 Fast Refresh 更新，不触发 EA
 
 ## 独立 IPA
 
-在 `mobile/` 内使用 `eas.json` 的 `unsigned` 配置构建。云端 macOS/Xcode 生成 Release 真机包并嵌入 Hermes bundle，当前脚本输出 `THS-0.6.2-unsigned.ipa`。需用自己的证书签名安装，之后不依赖 Metro、Expo Go 或电脑。推送源码不会触发 IPA 构建。
+在 `mobile/` 内使用 `eas.json` 的 `unsigned` 配置构建。云端 macOS/Xcode 生成 Release 真机包并嵌入 Hermes bundle，当前脚本输出 `THS-0.6.3-unsigned.ipa`。需用自己的证书签名安装，之后不依赖 Metro、Expo Go 或电脑。推送源码不会触发 IPA 构建。
 
 明确需要新 IPA 并核对 EAS 账户额度后，在本目录执行：
 

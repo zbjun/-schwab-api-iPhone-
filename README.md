@@ -11,7 +11,7 @@
 | 项目 | 状态 |
 | --- | --- |
 | 当前开发入口 | `mobile/`，Expo SDK 57、React Native 0.86、React 19.2 |
-| 应用版本配置 | 0.6.2，iOS build 9，`app.personal.ths.expo` |
+| 应用版本配置 | 0.6.3，iOS build 10，`app.personal.ths.expo` |
 | 最近已交付 IPA | 0.6.2（9），构建源码 `050067f` |
 | 最新源码 | 已增加价格优先本地市价、页面风格统一、B/S 点自动同步、订单行进入行情等更新，**尚未重新构建 IPA** |
 | 服务器 | 已有 HTTPS 部署及共享授权验证记录；授权是否仍有效以 App 当前连接状态为准 |

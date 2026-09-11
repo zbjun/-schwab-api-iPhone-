@@ -17,6 +17,7 @@ import {
   maximumBuy,
   maximumSell,
   sharesForBudget,
+  validSymbol,
   orderSessionLabels,
 } from "./orderRules.ts";
 import { Button, Input, money, styles } from "./ui.tsx";
@@ -1035,12 +1036,14 @@ export function OrderList({
   symbol,
   cancelOnly = false,
   onReplace,
+  onStock,
 }: {
   state: TradingState;
   palette: Palette;
   symbol?: string;
   cancelOnly?: boolean;
   onReplace?: (order: Order) => void;
+  onStock?: (symbol: string) => void;
 }) {
   const [selected, setSelected] = useState<Order>();
   const [filter, setFilter] = useState("全部");
@@ -1059,6 +1062,16 @@ export function OrderList({
   );
   const cancelPermitted =
     s.status.authenticated && Boolean(s.accountID) && !s.status.unresolvedOperation;
+  function viewOrder(order: Order) {
+    void s.run(async () => {
+      const version = generation.current;
+      const latest = await s.broker.orderDetail(s.accountID, order.id);
+      if (version === generation.current) {
+        setSelected(latest);
+        setConfirmCancel(false);
+      }
+    });
+  }
   function cancelOrder(order: Order) {
     const accountID = s.accountID;
     const orderID = order.id;
@@ -1192,18 +1205,11 @@ export function OrderList({
             >
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel={`查看 #${o.id}`}
+                accessibilityLabel={onStock && !cancelOnly && validSymbol(o.symbol)
+                  ? `订单 #${o.id}，查看 ${o.symbol} 行情` : `查看 #${o.id}`}
                 disabled={s.busy}
-                onPress={() =>
-                  void s.run(async () => {
-                    const version = generation.current;
-                    const latest = await s.broker.orderDetail(s.accountID, o.id);
-                    if (version === generation.current) {
-                      setSelected(latest);
-                      setConfirmCancel(false);
-                    }
-                  })
-                }
+                onPress={() => onStock && !cancelOnly && validSymbol(o.symbol)
+                  ? onStock(o.symbol) : viewOrder(o)}
                 style={{ gap: 6 }}
               >
                 <View style={styles.spread}>
@@ -1295,6 +1301,13 @@ export function OrderList({
                   </Text>
                 </View>
               </Pressable>
+              {onStock && !cancelOnly && validSymbol(o.symbol) && (
+                <Pressable accessibilityRole="button" accessibilityLabel={`订单 #${o.id} 详情`}
+                  disabled={s.busy} onPress={() => viewOrder(o)}
+                  style={{ alignSelf: "flex-end", minHeight: 32, justifyContent: "center" }}>
+                  <Text style={{ color: p.accent, fontSize: 13 }}>订单详情</Text>
+                </Pressable>
+              )}
               {s.quickMode && o.cancelable && (
                 <View style={{ alignItems: "flex-end" }}>
                   <Button
@@ -1303,6 +1316,94 @@ export function OrderList({
                     disabled={s.busy || !cancelPermitted}
                     onPress={() => cancelOrder(o)}
                   />
+                </View>
+              )}
+              {selected?.id === o.id && (
+                <View
+                  style={{
+                    backgroundColor: p.background,
+                    borderRadius: 12,
+                    padding: 12,
+                    gap: 10,
+                  }}
+                >
+                  <View style={styles.spread}>
+                    <Text style={{ color: p.text, fontWeight: "600" }}>
+                      #{selected.id} · {selected.status}
+                    </Text>
+                    <Button
+                      label="收起"
+                      palette={p}
+                      disabled={s.busy}
+                      onPress={() => {
+                        setSelected(undefined);
+                        setConfirmCancel(false);
+                      }}
+                    />
+                  </View>
+                  <Text style={{ color: p.secondary, fontSize: 12 }}>
+                    剩余 {selected.remainingQuantity ?? "—"} 股 ·{" "}
+                    {selected.enteredAt
+                      ? new Date(selected.enteredAt).toLocaleString()
+                      : "时间未知"}
+                  </Text>
+                  {confirmCancel && !s.quickMode ? (
+                    <>
+                      <Text style={{ color: p.text }}>
+                        确认撤销 {selected.symbol} 的{s.isDemo ? "演示" : "真实"}订单 #
+                        {selected.id}？
+                      </Text>
+                      <View style={styles.row}>
+                        <Button
+                          label="返回"
+                          palette={p}
+                          disabled={s.busy}
+                          onPress={() => setConfirmCancel(false)}
+                        />
+                        <Button
+                          label="确认撤单"
+                          palette={p}
+                          active
+                          disabled={s.busy || s.status.unresolvedOperation}
+                          onPress={() => cancelOrder(selected)}
+                        />
+                      </View>
+                    </>
+                  ) : (
+                    <>
+                      {!selected.cancelable && (
+                        <Text style={{ color: p.secondary, fontSize: 12 }}>
+                          {selected.cancelUnavailableReason ??
+                            "此订单当前不可撤销，请刷新状态。"}
+                        </Text>
+                      )}
+                      <View style={styles.row}>
+                        <Button
+                          label={s.quickMode && s.isDemo ? "模拟撤单" : "撤单"}
+                          palette={p}
+                          disabled={
+                            !selected.cancelable ||
+                            s.busy ||
+                            s.status.unresolvedOperation
+                          }
+                          onPress={() => s.quickMode ? cancelOrder(selected) : setConfirmCancel(true)}
+                        />
+                        {onReplace && (
+                          <Button
+                            label="修改订单"
+                            palette={p}
+                            disabled={
+                              !selected.editable ||
+                              !selected.isSimpleEquity ||
+                              s.busy ||
+                              s.status.unresolvedOperation
+                            }
+                            onPress={() => onReplace(selected)}
+                          />
+                        )}
+                      </View>
+                    </>
+                  )}
                 </View>
               )}
             </View>
@@ -1319,96 +1420,8 @@ export function OrderList({
       >
         {cancelOnly
           ? "显示最近 30 天、最多 200 笔订单中的未完成委托。点开可核对撤单状态；更早的委托请在 Schwab 查看。"
-          : "提交、撤单或修改的回执不代表最终状态。刷新后请以券商订单记录为准。"}
+          : "点订单查看股票行情，点订单详情核对或管理委托。订单自动更新，最终状态以券商记录为准。"}
       </Text>
-      {selected && (
-        <View
-          style={{
-            backgroundColor: p.background,
-            borderRadius: 12,
-            padding: 12,
-            gap: 10,
-          }}
-        >
-          <View style={styles.spread}>
-            <Text style={{ color: p.text, fontWeight: "600" }}>
-              #{selected.id} · {selected.status}
-            </Text>
-            <Button
-              label="收起"
-              palette={p}
-              disabled={s.busy}
-              onPress={() => {
-                setSelected(undefined);
-                setConfirmCancel(false);
-              }}
-            />
-          </View>
-          <Text style={{ color: p.secondary, fontSize: 12 }}>
-            剩余 {selected.remainingQuantity ?? "—"} 股 ·{" "}
-            {selected.enteredAt
-              ? new Date(selected.enteredAt).toLocaleString()
-              : "时间未知"}
-          </Text>
-          {confirmCancel && !s.quickMode ? (
-            <>
-              <Text style={{ color: p.text }}>
-                确认撤销 {selected.symbol} 的{s.isDemo ? "演示" : "真实"}订单 #
-                {selected.id}？
-              </Text>
-              <View style={styles.row}>
-                <Button
-                  label="返回"
-                  palette={p}
-                  disabled={s.busy}
-                  onPress={() => setConfirmCancel(false)}
-                />
-                <Button
-                  label="确认撤单"
-                  palette={p}
-                  active
-                  disabled={s.busy || s.status.unresolvedOperation}
-                  onPress={() => cancelOrder(selected)}
-                />
-              </View>
-            </>
-          ) : (
-            <>
-              {!selected.cancelable && (
-                <Text style={{ color: p.secondary, fontSize: 12 }}>
-                  {selected.cancelUnavailableReason ??
-                    "此订单当前不可撤销，请刷新状态。"}
-                </Text>
-              )}
-              <View style={styles.row}>
-                <Button
-                  label={s.quickMode && s.isDemo ? "模拟撤单" : "撤单"}
-                  palette={p}
-                  disabled={
-                    !selected.cancelable ||
-                    s.busy ||
-                    s.status.unresolvedOperation
-                  }
-                  onPress={() => s.quickMode ? cancelOrder(selected) : setConfirmCancel(true)}
-                />
-                {onReplace && (
-                  <Button
-                    label="修改订单"
-                    palette={p}
-                    disabled={
-                      !selected.editable ||
-                      !selected.isSimpleEquity ||
-                      s.busy ||
-                      s.status.unresolvedOperation
-                    }
-                    onPress={() => onReplace(selected)}
-                  />
-                )}
-              </View>
-            </>
-          )}
-        </View>
-      )}
     </View>
   );
 }

@@ -1,3 +1,9 @@
+# 2026-09-11: Order-row stock navigation (source update, no IPA)
+
+- OrderList in the Orders tab now routes a single valid stock symbol through App's existing openStock navigation. Tapping the order body/chevron opens that stock's chart; Back returns to Orders. Complex or invalid symbols keep the order-detail path instead of opening an invalid chart.
+- Added an explicit order-detail action and moved the existing detail/cancel/replace controls beneath the selected row, eliminating the previous offscreen expansion at the end of the list. Reused the existing guarded read and action handlers; cancel-only panels still open order details, never trigger cancellation from a row tap.
+- TypeScript, all 252 tests, whitespace check and web export passed. Browser checks in both themes at 390/509px verified AAPL row navigation, returning to Orders, selected-row inline expansion, collapse and retained modify control; no browser errors or document overflow. Visual review score 96, screenshots under ignored artifacts/order-navigation. No real trading, physical iPhone verification or IPA build.
+
 # 2026-09-11: Automatic execution-marker synchronization (source update, no IPA)
 
 - Root cause: post-submit refresh reads an accepted order once, but later fills were never fetched while viewing a chart. StockDetail already recalculates execution markers when shared orders change; no chart redraw workaround or synthetic fill is needed.

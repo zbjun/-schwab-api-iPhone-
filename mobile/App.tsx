@@ -406,6 +406,7 @@ function TradingApp() {
                 <OrderList
                   state={s}
                   palette={p}
+                  onStock={openStock}
                   onReplace={(order) => {
                     setReplacement(order);
                     setTradeSymbol(order.symbol);

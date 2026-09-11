@@ -5,6 +5,7 @@ import { createGateway } from '../server/gateway.mjs';
 import { ServerBroker } from '../mobile/src/ServerBroker.ts';
 import { SchwabBroker } from '../mobile/src/broker.ts';
 import { MarketHub } from '../server/market.ts';
+import { submitQuickOrder } from '../mobile/src/quickTrading.ts';
 
 // All credentials, orders and accounts are fictional. Only loopback HTTP is used.
 const base = 'https://gateway.example.test';
@@ -66,6 +67,35 @@ test('another device cannot submit a prepared order; owning device can submit on
   assert.equal((await a.submit(prepared)).orderID,'fictional-order');
   await assert.rejects(a.submit(prepared));
   assert.equal(broker.counts().submits,1);
+});
+
+test('quick orders tolerate server clock offset while the gateway enforces review expiry', async t => {
+  for (const offset of [-120_000, 120_000]) {
+    const broker = fakeBroker();
+    const prepare = broker.prepare;
+    broker.prepare = async (...args) => ({ ...await prepare(...args), preparedAt: Date.now() + offset });
+    const {a} = await fixture(t, broker);
+    for (const side of ['BUY', 'SELL']) {
+      const {result} = await submitQuickOrder({broker:a, accountID:'fictional-account',
+        draft:{symbol:'AAPL',side,kind:'LIMIT',quantity:1,limitPrice:'100',duration:'DAY'},
+        isDemo:false,isCurrent:()=>true});
+      assert.equal(result.orderID, 'fictional-order');
+    }
+    assert.equal(broker.counts().submits, 2);
+  }
+});
+
+test('normalizing device review time never bypasses server expiry or replays a quick order', async t => {
+  let serverNow = Date.now();
+  const broker = fakeBroker();
+  const {a} = await fixture(t, broker, {now:()=>serverNow});
+  let checks = 0;
+  await assert.rejects(submitQuickOrder({broker:a,accountID:'fictional-account',
+    draft:{symbol:'AAPL',side:'BUY',kind:'LIMIT',quantity:1,limitPrice:'100',duration:'DAY'},
+    isDemo:false,isCurrent:()=>{ if (++checks === 2) serverNow += 61_000; return true; }}),
+    {code:'reviewExpired'});
+  assert.equal(broker.counts().submits, 0);
+  assert.equal((await a.status()).unresolvedOperation, false);
 });
 test('two devices initiating login share one pending authorization and see completion', async t => {
   const broker = fakeBroker();

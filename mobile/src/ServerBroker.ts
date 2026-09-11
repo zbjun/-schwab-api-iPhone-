@@ -158,7 +158,16 @@ export class ServerBroker implements Broker {
   history(symbol: string, range: HistoryRange) { return this.rpc<History>("history", [symbol, range]); }
   orders(accountID: string) { return this.rpc<Order[]>("orders", [accountID]); }
   orderDetail(accountID: string, id: string) { return this.rpc<Order>("orderDetail", [accountID, id]); }
-  prepare(accountID: string, draft: Draft, replacementID?: string) { return this.rpc<Prepared>("prepare", replacementID === undefined ? [accountID, draft] : [accountID, draft, replacementID]); }
+  async prepare(accountID: string, draft: Draft, replacementID?: string): Promise<Prepared> {
+    // UI expiry is measured on the device clock; the server separately enforces
+    // its own one-use review deadline. Comparing the two wall clocks can reject
+    // a freshly prepared quick order before submit is ever called.
+    const startedAt = Date.now();
+    const prepared = await this.rpc<Prepared>("prepare", replacementID === undefined ? [accountID, draft] : [accountID, draft, replacementID]);
+    if (!prepared || !Number.isFinite(prepared.preparedAt) || typeof prepared.id !== "string" || !prepared.id)
+      throw failure("serverUnavailable", "服务器返回的订单核对信息无效，本次未提交订单。");
+    return { ...prepared, preparedAt: startedAt };
+  }
   subscribeMarket(symbol: string, callbacks: MarketStreamCallbacks): () => void {
     if (this.configuring) { callbacks.onStatus("fallback"); return () => {}; }
     this.stopMarket?.();

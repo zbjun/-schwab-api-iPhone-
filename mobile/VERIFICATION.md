@@ -292,3 +292,10 @@ The UI labels order-size estimates; the original 30-day / 200-order query limit 
 - Upload inspection: 56 allowlisted files, exact source match, no personal credential values. Local and cloud typecheck plus all 147 tests passed. Archive succeeded. Final IPA ZIP integrity, app ID/version, physical iOS arm64 executable, embedded Hermes bytecode (2,016,818 bytes), and all eight embedded frameworks' device platforms passed. Scan against local personal credential values found no credentials in the IPA. Validator fixtures reject simulator, unsafe ZIP paths and private files.
 - Output: `../artifacts/THS-0.5.0-unsigned.ipa`, 8,227,506 bytes. Local and cloud SHA256 agree: `8eda14f046a34414662b531182c843c99f3ef6537abe1d81c16ec852d4c45fea`.
 - Requires user's signing before installation. Physical iPhone launch, third-party signing and authenticated streaming remain unverified. Expo Go's SecureStore is not shared with this standalone app; import personal configuration on first use. No real brokerage writes were performed.
+# 0.6.1 急速下单修复
+
+- 服务器核对时间原先直接与手机时间比较；离线集成测试复现了时钟偏差导致急速下单在 submit 前失败。ServerBroker 现在以本机请求开始时间供界面计算有效期，服务器仍独立执行到期、设备归属和一次性提交检查。
+- 急速下单按钮旁显示处理状态和提交回执；提交成功后清空数量及金额。后续读取失败保留订单号，不把刷新失败误报为提交失败，不自动重试交易。
+- 本地验证：212 项 mobile 测试、9 项中央网关集成测试、TypeScript、6 项 IPA 配置注入测试、git diff --check 均通过。集成测试仅使用虚构账户和 loopback 模拟券商。
+- 用户确认先前查询到的成交来自关闭急速模式后的普通下单；这些成交不构成急速模式成功的证据。手机此次具体失败原因尚无错误文本，不能断言均由时钟偏差引起。
+- 浏览器验证工具本次连接失败，未完成 iPhone 界面/真实急速交易验证。未向真实账户提交、修改或撤销任何订单。

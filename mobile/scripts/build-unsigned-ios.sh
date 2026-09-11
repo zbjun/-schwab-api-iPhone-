@@ -24,8 +24,8 @@ test -d "$APP"
 test -s "$APP/main.jsbundle"
 mkdir -p "$OUTPUT/package/Payload"
 ditto "$APP" "$OUTPUT/package/Payload/THS.app"
-(cd "$OUTPUT/package" && /usr/bin/zip -qry "$OUTPUT/THS-0.6.0-unsigned.ipa" Payload)
-python3 scripts/verify-ipa.py "$OUTPUT/THS-0.6.0-unsigned.ipa" \
-  --bundle-id app.personal.ths.expo --version 0.6.0 \
+(cd "$OUTPUT/package" && /usr/bin/zip -qry "$OUTPUT/THS-0.6.1-unsigned.ipa" Payload)
+python3 scripts/verify-ipa.py "$OUTPUT/THS-0.6.1-unsigned.ipa" \
+  --bundle-id app.personal.ths.expo --version 0.6.1 \
   | tee "$OUTPUT/diagnostics/ipa-verification.json"
-shasum -a 256 "$OUTPUT/THS-0.6.0-unsigned.ipa"
+shasum -a 256 "$OUTPUT/THS-0.6.1-unsigned.ipa"

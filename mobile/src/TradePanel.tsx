@@ -21,6 +21,7 @@ import {
 } from "./orderRules.ts";
 import { Button, Input, money, styles } from "./ui.tsx";
 import { submitQuickOrder } from "./quickTrading.ts";
+import { completeQuickOrder, type QuickOrderFeedback } from "./quickOrderFeedback.ts";
 
 const kindLabels: Record<OrderKind, string> = {
   MARKET: "市价",
@@ -64,6 +65,7 @@ export function TradePanel({
   const [session, setSession] = useState<OrderSession>("NORMAL");
   const gtcAllowed = kind !== "MARKET" && session !== "AM" && session !== "PM";
   const [prepared, setPrepared] = useState<Prepared>();
+  const [quickFeedback, setQuickFeedback] = useState<QuickOrderFeedback>();
   const context = useRef(0);
   useLayoutEffect(() => {
     setPrepared(undefined);
@@ -144,17 +146,24 @@ export function TradePanel({
       ...(["STOP", "STOP_LIMIT"].includes(kind) ? { stopPrice: stop } : {}),
     };
     if (quickOrder) {
-      const { snapshot, result } = await submitQuickOrder({
-        broker: s.broker,
-        accountID: s.accountID,
-        draft,
-        isDemo: s.isDemo,
-        isCurrent: () => permitted && context.current === version,
+      await completeQuickOrder({
+        submit: () => submitQuickOrder({
+          broker: s.broker,
+          accountID: s.accountID,
+          draft,
+          isDemo: s.isDemo,
+          isCurrent: () => permitted && context.current === version,
+        }),
+        refresh: s.refresh,
+        onAccepted: () => {
+          setQuantity("");
+          setBudget("");
+        },
+        onFeedback: (value) => {
+          setQuickFeedback(value);
+          if (value.phase !== "pending") s.setMessage(value.message);
+        },
       });
-      s.setMessage(
-        `${snapshot.isDemo ? "演示" : ""}订单已提交${result.orderID ? ` #${result.orderID}` : ""}，请查看订单状态。`,
-      );
-      await s.refresh();
       onDone?.();
       return;
     }
@@ -694,8 +703,18 @@ export function TradePanel({
               <View
                 style={{
                   paddingTop: inline ? 2 : 12,
+                  gap: 8,
                 }}
               >
+                {quickOrder && quickFeedback && (
+                  <Text
+                    testID="trade.quick.feedback"
+                    accessibilityLiveRegion="polite"
+                    style={{ color: quickFeedback.phase === "error" ? p.up : p.accent, fontSize: 12 }}
+                  >
+                    {quickFeedback.message}
+                  </Text>
+                )}
                 <Button
                   label={
                     s.busy

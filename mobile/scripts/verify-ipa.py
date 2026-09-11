@@ -38,7 +38,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("ipa", type=Path)
     parser.add_argument("--bundle-id", default="app.personal.ths.expo")
-    parser.add_argument("--version", default="0.6.0")
+    parser.add_argument("--version", default="0.6.1")
     parser.add_argument("--allow-personal-config", action="store_true")
     args = parser.parse_args()
     with zipfile.ZipFile(args.ipa) as archive:

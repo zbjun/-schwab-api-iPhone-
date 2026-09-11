@@ -17,4 +17,4 @@ build:
         if: ${ success() }
         inputs:
           type: application-archive
-          path: build-output/THS-0.6.0-unsigned.ipa
+          path: build-output/THS-0.6.1-unsigned.ipa

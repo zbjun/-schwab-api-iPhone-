@@ -195,7 +195,7 @@ test("optional RPC arguments are omitted instead of JSON null for new orders and
   const requests: { method: string; args: unknown[] }[] = [];
   const f = await fixture(async (_url, init) => {
     requests.push(JSON.parse(String(init?.body)));
-    return response(null);
+    return response({ id: "fixture-review", preparedAt: Date.now() });
   });
   const draft = { symbol: "SNDU", side: "BUY", kind: "LIMIT", quantity: 1, limitPrice: "27", duration: "DAY" } as const;
   await f.broker.prepare("account", draft);
@@ -208,6 +208,24 @@ test("optional RPC arguments are omitted instead of JSON null for new orders and
     { method: "quotes", args: [["SNDU"]] },
     { method: "quotes", args: [["SNDU"], { fundamentals: true }] },
   ]);
+});
+
+test("remote review timestamps use the local request start and malformed reviews fail before submission", async () => {
+  const draft = { symbol: "SNDQ", side: "BUY", kind: "LIMIT", quantity: 1, limitPrice: "27", duration: "DAY" } as const;
+  for (const offset of [-120_000, 120_000]) {
+    const f = await fixture(async () => response({ id: "remote-review", preparedAt: Date.now() + offset }));
+    const before = Date.now();
+    const value = await f.broker.prepare("account", draft);
+    assert.ok(value.preparedAt >= before && value.preparedAt <= Date.now());
+    assert.equal(value.id, "remote-review");
+  }
+  for (const malformed of [null, {}, { id: "", preparedAt: 1 }, { id: "x", preparedAt: "1" }]) {
+    let calls = 0;
+    const f = await fixture(async () => { calls++; return response(malformed); });
+    await assert.rejects(f.broker.prepare("account", draft), {code: "serverUnavailable"});
+    assert.equal(calls, 1);
+    assert.equal(f.data.has("ths.server.operation.v1"), false);
+  }
 });
 
 test("stopping from status callback suppresses remaining quote and candle callbacks", async () => {

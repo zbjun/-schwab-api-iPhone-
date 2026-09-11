@@ -17,7 +17,6 @@ import type { Order, Palette, Quote } from "./src/types.ts";
 import {
   Button,
   dark,
-  groupBackground,
   Icon,
   Input,
   light,
@@ -31,6 +30,7 @@ import StockDetail from "./src/StockDetail.tsx";
 import Watchlist from "./src/Watchlist.tsx";
 import Accounts, { AccountSelector } from "./src/Accounts.tsx";
 import { DemoNotice } from "./src/DemoNotice.tsx";
+import { PageRefreshControl } from "./src/PageRefreshControl.tsx";
 import { validSymbol } from "./src/orderRules.ts";
 import FormingCandlePreview from "./src/FormingCandlePreview.tsx";
 import HistorySnapshotPreview from "./src/HistorySnapshotPreview.tsx";
@@ -119,9 +119,7 @@ function TradingApp() {
     Keyboard.dismiss();
     setStock(symbol);
   };
-  const large = !stock && ["accounts", "orders", "settings"].includes(tab);
-  const background =
-    stock || tab === "watchlist" ? p.background : groupBackground(p);
+  const background = p.background;
   const quote =
     lookedUp?.symbol === tradeSymbol ? lookedUp : s.quotes[tradeSymbol];
   async function lookup() {
@@ -137,144 +135,51 @@ function TradingApp() {
       style={{
         flex: 1,
         backgroundColor: background,
-        paddingTop: Platform.OS === "web" ? 54 : 0,
-        paddingBottom: Platform.OS === "web" ? 20 : 0,
+        paddingTop: Platform.OS === "web" ? 8 : 0,
+        paddingBottom: Platform.OS === "web" ? 12 : 0,
       }}
     >
       <StatusBar style={p === dark ? "light" : "dark"} />
       <View
         style={{ flex: 1, width: "100%", maxWidth: 760, alignSelf: "center" }}
       >
-        <View
-          style={{
-            height: 60,
-            paddingHorizontal: 16,
-            flexDirection: "row",
-            alignItems: "center",
-            justifyContent: "space-between",
-          }}
-        >
-          <View style={{ width: 104, alignItems: "flex-start" }}>
-            {stock ? (
-              <RoundButton
-                label="返回"
-                icon="back"
-                palette={p}
-                disabled={s.busy}
-                onPress={() => setStock(undefined)}
-              />
-            ) : tab === "watchlist" ? (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={editing ? "完成" : "编辑"}
-                disabled={s.busy}
-                onPress={() => setEditing(!editing)}
-                style={[
-                  capsule(p),
-                  {
-                    paddingHorizontal: 16,
-                    minHeight: 44,
-                    justifyContent: "center",
-                  },
-                ]}
-              >
-                <Text style={{ color: p.text, fontSize: 17 }}>
-                  {editing ? "完成" : "编辑"}
-                </Text>
-              </Pressable>
-            ) : null}
-          </View>
-          {!large && (
-            <View
-              style={{
-                position: "absolute",
-                left: 112,
-                right: 112,
-                alignItems: "center",
-              }}
-            >
-              <Text
-                numberOfLines={1}
-                style={{ color: p.text, fontSize: 17, fontWeight: "600" }}
-              >
-                {stock ? detailName : tabs.find((t) => t[0] === tab)?.[1]}
+        {stock ? (
+          <View style={[styles.pageHeader, { minHeight: 60 }]}>
+            <RoundButton label="返回" icon="back" palette={p} disabled={s.busy}
+              onPress={() => setStock(undefined)} />
+            <View style={{ flex: 1, alignItems: "center", minWidth: 0 }}>
+              <Text numberOfLines={1} style={{ color: p.text, fontSize: 17, fontWeight: "600" }}>
+                {detailName}
               </Text>
-              {stock && (
-                <Text
-                  style={{ color: p.secondary, fontSize: 11, marginTop: 3 }}
-                >
-                  {stock} · USD
-                </Text>
-              )}
+              <Text style={{ color: p.secondary, fontSize: 11, marginTop: 3 }}>{stock} · USD</Text>
             </View>
-          )}
-          <View style={{ width: 104, alignItems: "flex-end" }}>
-            {(tab !== "settings" && tab !== "accounts") || stock ? (
-              <View
-                style={[
-                  capsule(p),
-                  {
-                    flexDirection: "row",
-                    alignItems: "center",
-                    paddingHorizontal: stock || tab === "watchlist" ? 4 : 0,
-                  },
-                ]}
-              >
-                {stock && (
-                  <RoundButton
-                    label={
-                      s.watchlist.includes(stock) ? "移除自选" : "添加自选"
-                    }
-                    icon={s.watchlist.includes(stock) ? "star" : "star-outline"}
-                    palette={p}
-                    bare
-                    disabled={s.busy}
-                    onPress={() => {
-                      if (s.watchlist.includes(stock))
-                        s.setWatchlist(s.watchlist.filter((v) => v !== stock));
-                      else if (s.watchlist.length < 50)
-                        s.setWatchlist([...s.watchlist, stock]);
-                      else s.setMessage("自选最多 50 个。");
-                    }}
-                  />
-                )}
-                <RoundButton
-                  label="刷新"
-                  icon="refresh"
-                  palette={p}
-                  color={large ? p.accent : p.text}
-                  bare
-                  disabled={s.busy}
-                  onPress={() => void s.run(s.refresh)}
-                />
-                {!stock && tab === "watchlist" && (
-                  <RoundButton
-                    label="添加自选"
-                    icon="plus"
-                    palette={p}
-                    bare
-                    disabled={s.busy}
-                    onPress={() => setAdding(true)}
-                  />
-                )}
-              </View>
-            ) : null}
+            <View style={[capsule(p), styles.row, { gap: 0 }]}>
+              <RoundButton label={s.watchlist.includes(stock) ? "移除自选" : "添加自选"}
+                icon={s.watchlist.includes(stock) ? "star" : "star-outline"}
+                palette={p} bare disabled={s.busy} onPress={() => {
+                  if (s.watchlist.includes(stock)) s.setWatchlist(s.watchlist.filter(v => v !== stock));
+                  else if (s.watchlist.length < 50) s.setWatchlist([...s.watchlist, stock]);
+                  else s.setMessage("自选最多 50 个。");
+                }} />
+              <RoundButton label="刷新" icon="refresh" palette={p} bare disabled={s.busy}
+                onPress={() => void s.run(s.refresh)} />
+            </View>
           </View>
-        </View>
-        {large && (
-          <Text
-            style={[
-              styles.title,
-              {
-                color: p.text,
-                marginHorizontal: 16,
-                marginTop: 9,
-                marginBottom: 12,
-              },
-            ]}
-          >
-            {tabs.find((t) => t[0] === tab)?.[1]}
-          </Text>
+        ) : (
+          <View testID="page.header" style={styles.pageHeader}>
+            <Text accessibilityRole="header" testID="page.title" style={[styles.pageTitle, { color: p.text }]}>
+              {tabs.find(t => t[0] === tab)?.[1]}
+            </Text>
+            {tab === "watchlist" && <View style={[capsule(p), styles.row, { gap: 0 }]}>
+              <Pressable accessibilityRole="button" accessibilityLabel={editing ? "完成" : "编辑"}
+                disabled={s.busy} onPress={() => setEditing(!editing)}
+                style={{ paddingHorizontal: 14, minHeight: 44, justifyContent: "center" }}>
+                <Text style={{ color: p.accent, fontSize: 15, fontWeight: "600" }}>{editing ? "完成" : "编辑"}</Text>
+              </Pressable>
+              <RoundButton label="添加自选" icon="plus" palette={p} bare disabled={s.busy}
+                onPress={() => setAdding(true)} />
+            </View>}
+          </View>
         )}
         {s.busy && <ActivityIndicator color={p.accent} size="small" />}
         {!!s.message && (
@@ -344,11 +249,12 @@ function TradingApp() {
                 <ScrollView
                   showsVerticalScrollIndicator={false}
                   keyboardShouldPersistTaps="handled"
-                  contentContainerStyle={{
-                    paddingHorizontal: 16,
-                    paddingTop: 34,
-                    paddingBottom: 110,
-                  }}
+                  alwaysBounceVertical
+                  refreshControl={<PageRefreshControl state={s} palette={p} refresh={async () => {
+                    await s.refresh();
+                    await lookup();
+                  }} />}
+                  contentContainerStyle={styles.pageContent}
                 >
                   <View
                     style={{
@@ -484,13 +390,12 @@ function TradingApp() {
             {tab === "orders" && (
               <ScrollView
                 showsVerticalScrollIndicator={false}
-                contentContainerStyle={{
-                  paddingHorizontal: 16,
-                  paddingBottom: 110,
-                }}
+                alwaysBounceVertical
+                refreshControl={<PageRefreshControl state={s} palette={p} />}
+                contentContainerStyle={styles.pageContent}
               >
                 {s.isDemo && (
-                  <View style={{ marginBottom: 32 }}>
+                  <View style={{ marginBottom: 12 }}>
                     <DemoNotice palette={p} card />
                   </View>
                 )}
@@ -582,7 +487,7 @@ function sectionCaption(p: Palette) {
     color: p.secondary,
     fontSize: 16,
     fontWeight: "600" as const,
-    marginTop: 30,
+    marginTop: 24,
     marginBottom: 12,
     paddingHorizontal: 16,
   };

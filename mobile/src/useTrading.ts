@@ -56,7 +56,7 @@ export function useTrading() {
   const [foreground, setForeground] = useState(AppState.currentState !== "background" && AppState.currentState !== "inactive");
   const [accountsUpdatedAt, setAccountsUpdatedAt] = useState<number>();
   const [accountRefreshError, setAccountRefreshError] = useState("");
-  const [accountRefreshing, setAccountRefreshing] = useState(false);
+  const [pullRefreshing, setPullRefreshing] = useState(false);
   const accountReader = useRef(createAccountReader<Account[]>()).current;
   const accountGeneration = useRef<object>({});
   const fullRefreshes = useRef(0);
@@ -285,12 +285,12 @@ export function useTrading() {
     polling.setActive(true);
     return () => { active = false; polling.stop(); };
   }, [accountVisible, foreground, storageReady, status.authenticated, broker, accountID]);
-  async function pullRefreshAccounts() {
+  async function pullRefresh(work: () => Promise<void> = refresh) {
     if (pullLock.current || actionLock.current) return;
     pullLock.current = true;
-    setAccountRefreshing(true);
-    try { await run(refresh); }
-    finally { pullLock.current = false; setAccountRefreshing(false); }
+    setPullRefreshing(true);
+    try { await run(work); }
+    finally { pullLock.current = false; setPullRefreshing(false); }
   }
   useEffect(() => {
     if (!status.authenticated) return;
@@ -390,8 +390,8 @@ export function useTrading() {
     setAccountVisible,
     accountsUpdatedAt,
     accountRefreshError,
-    accountRefreshing,
-    pullRefreshAccounts,
+    pullRefreshing,
+    pullRefresh,
     accountID,
     selectAccount,
     account: accounts.find((a) => a.id === accountID),

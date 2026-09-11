@@ -11,6 +11,7 @@ import type { History, Palette, Quote } from "./types.ts";
 import type { TradingState } from "./useTrading.ts";
 import { Button, elevated, Icon, Input, money, signed, styles } from "./ui.tsx";
 import { DemoNotice } from "./DemoNotice.tsx";
+import { PageRefreshControl } from "./PageRefreshControl.tsx";
 import { validSymbol } from "./orderRules.ts";
 import MarketChart from "./MarketChart.tsx";
 import {
@@ -90,11 +91,13 @@ export default function Watchlist({
       <ScrollView
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        alwaysBounceVertical
+        refreshControl={<PageRefreshControl state={s} palette={p} />}
         {...pan.panHandlers}
-        contentContainerStyle={{ paddingBottom: 104 }}
+        contentContainerStyle={styles.pageContent}
       >
         <View
-          style={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 12 }}
+          style={{ paddingBottom: 12 }}
         >
           <View
             style={{
@@ -129,9 +132,9 @@ export default function Watchlist({
               onPress={lookup}
             />
           </View>
-          <View style={[styles.spread, { paddingTop: 20, paddingBottom: 16 }]}>
+          <View style={[styles.spread, { paddingTop: 16, paddingBottom: 12 }]}>
             <View style={[styles.row, { gap: 8 }]}>
-              <Text style={{ color: p.text, fontSize: 20, fontWeight: "600" }}>
+              <Text style={{ color: p.text, fontSize: 17, fontWeight: "600" }}>
                 自选股
               </Text>
               <Text style={{ color: p.secondary, fontSize: 16 }}>
@@ -187,7 +190,7 @@ export default function Watchlist({
             <Icon name="info" color={p.secondary} size={13} />
           </Pressable>
         </View>
-        <View style={{ backgroundColor: p.surface, paddingHorizontal: 16 }}>
+        <View style={{ backgroundColor: p.surface, borderRadius: 26, paddingHorizontal: 16 }}>
           <View
             style={{
               flexDirection: "row",

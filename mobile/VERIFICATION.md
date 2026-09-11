@@ -1,3 +1,11 @@
+# 2026-09-11: Consistent primary tabs (source update, no IPA)
+
+- Account, Watchlist, Trade, Orders and Settings now share a left-aligned 28-point title in a 64-point header, 16-point side margins, 8-point content inset, rounded surface cards and the same system-theme background. Removed the empty large-title toolbar, the fake 54-point web top inset and the account card's extra 35-point gap.
+- Removed primary-tab toolbar refresh buttons. Account, Watchlist, Trade and Orders share one native refresh control and the existing serialized refresh lock; Trade also refreshes its selected quote. Settings contains local preferences and has no data-refresh action. The account's foreground automatic refresh remains intact. Stock-detail navigation and its dedicated refresh action remain available.
+- Browser screenshots reviewed for all five tabs in both themes. Automated assertions passed for 30 tab/theme/width combinations (320, 390 and 760 pixels): equal title placement and header height, visible content, no primary-header refresh buttons and no document overflow. Mounted refresh callbacks were exercised on all four data tabs using isolated demo state; watchlist edit/add controls passed; no browser page errors.
+- Visual QA caught and fixed a RefreshControl wrapper that dropped ScrollView-injected children on web; all injected props are now forwarded. Physical iPhone pull recognition remains unverified because RN-web does not implement the native pull gesture.
+- TypeScript and all 250 tests passed; web export (329 modules) and diff check passed. No dependencies added, no real trades and no IPA build.
+
 # 2026-09-11: Midpoint slippage and settings-only controls (source update)
 
 - Local-market pricing now uses `(bid + ask) / 2`, adding configured percentage slippage for buys and subtracting it for sells. Both sides must be finite, positive and non-crossed; missing or invalid sides stop the strategy without substituting last trade or a one-sided quote. Locked quotes remain valid.

@@ -17,7 +17,8 @@ export default function Settings({ state: s, palette: p }: { state: TradingState
     </View>
     <Connection state={s} palette={p} />
   </View>;
-  return <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 120 }}>
+  return <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled"
+    contentContainerStyle={styles.pageContent}>
     <View style={[styles.card, { backgroundColor: p.surface, gap: 12 }]}>
       <View style={styles.spread}>
         <View style={styles.row}>

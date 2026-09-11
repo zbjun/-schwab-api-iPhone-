@@ -1,9 +1,10 @@
 import React, { useState } from "react";
-import { Modal, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
+import { Modal, Pressable, ScrollView, Text, View } from "react-native";
 import type { Palette } from "./types.ts";
 import type { TradingState } from "./useTrading.ts";
 import { Button, Icon, money, signed, styles } from "./ui.tsx";
 import { DemoNotice } from "./DemoNotice.tsx";
+import { PageRefreshControl } from "./PageRefreshControl.tsx";
 
 export function AccountSelector({
   state: s,
@@ -92,23 +93,16 @@ export default function Accounts({
     <ScrollView
       showsVerticalScrollIndicator={false}
       alwaysBounceVertical
-      refreshControl={<RefreshControl
-        refreshing={s.accountRefreshing}
-        onRefresh={() => void s.pullRefreshAccounts()}
-        enabled={!s.busy}
-        tintColor={p.accent}
-        colors={[p.accent]}
-      />}
-      contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 110 }}
+      refreshControl={<PageRefreshControl state={s} palette={p} />}
+      contentContainerStyle={styles.pageContent}
     >
-      {s.isDemo && <DemoNotice palette={p} card />}
+      {s.isDemo && <View style={{ marginBottom: 12 }}><DemoNotice palette={p} card /></View>}
       <View
         style={{
           backgroundColor: p.surface,
           borderRadius: 26,
           paddingHorizontal: 16,
           paddingBottom: 20,
-          marginTop: 35,
         }}
       >
         <AccountSelector state={s} palette={p} />
@@ -176,7 +170,7 @@ export default function Accounts({
       <View
         style={[
           styles.spread,
-          { paddingHorizontal: 16, marginTop: 38, marginBottom: 10 },
+          { paddingHorizontal: 16, marginTop: 24, marginBottom: 10 },
         ]}
       >
         <Text style={{ color: p.secondary, fontSize: 16, fontWeight: "600" }}>
@@ -273,7 +267,7 @@ export default function Accounts({
           backgroundColor: p.surface,
           borderRadius: 24,
           padding: 18,
-          marginTop: 30,
+          marginTop: 24,
           flexDirection: "row",
           gap: 16,
         }}

@@ -51,6 +51,10 @@ export const compactNumber = (value?: number) =>
         ? `${money(value / 1e4)}万`
         : money(value, 0);
 export const styles = StyleSheet.create({
+  pageContent: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 100 },
+  pageHeader: { minHeight: 64, paddingHorizontal: 16, paddingVertical: 10,
+    flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
+  pageTitle: { fontSize: 28, fontWeight: "700" },
   row: { flexDirection: "row", alignItems: "center", gap: 8 },
   spread: {
     flexDirection: "row",

@@ -1176,6 +1176,89 @@ test("preparation uses fresh accounts, quotes and orders and returns a deeply fr
   );
 });
 
+test("fresh validation starts orders and replacement detail after hash without waiting for accounts or quotes", async () => {
+  for (const stage of ["prepare", "submit"] as const) {
+    for (const replacementID of [undefined, "123"]) {
+      const f = fixture();
+      await f.authorize();
+      const ticket = { ...draft, side: "SELL" as const };
+      const review = stage === "submit"
+        ? await f.broker.prepare(ACCOUNT, ticket, replacementID) : undefined;
+      const hashGate = deferred<void>(), accountGate = deferred<void>(), quoteGate = deferred<void>(),
+        ordersGate = deferred<void>(), detailGate = deferred<void>();
+      const started = new Set<string>();
+      f.state.onRequest = async (url, init) => {
+        if (init.method !== "GET") return undefined;
+        const path = new URL(url).pathname;
+        started.add(path);
+        if (path.endsWith("/accountNumbers")) await hashGate.promise;
+        else if (path === "/trader/v1/accounts") await accountGate.promise;
+        else if (path === "/marketdata/v1/quotes") await quoteGate.promise;
+        else if (path.endsWith("/orders")) await ordersGate.promise;
+        else if (path.endsWith("/orders/123")) await detailGate.promise;
+        return undefined;
+      };
+      let completed = false;
+      const operation = (review ? f.broker.submit(review) : f.broker.prepare(ACCOUNT, ticket, replacementID))
+        .then(value => { completed = true; return value; });
+      const ordersPath = `/trader/v1/accounts/${HASH}/orders`;
+      try {
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.equal(started.has("/trader/v1/accounts"), true);
+        assert.equal(started.has("/marketdata/v1/quotes"), true);
+        assert.equal(started.has(ordersPath), false, "orders must depend on the fresh account hash");
+        hashGate.resolve();
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.equal(started.has(ordersPath), true, `${stage}: slow accounts/quotes must not delay orders`);
+        assert.equal(started.has(`${ordersPath}/123`), replacementID !== undefined,
+          "replacement detail starts alongside orders, only for replacements");
+        ordersGate.resolve();
+        detailGate.resolve();
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.equal(completed, false);
+        assert.equal(f.writes().length, 0, "pending account/quote checks must still block writes");
+        accountGate.resolve();
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.equal(completed, false, "the final quote check must also finish");
+        assert.equal(f.writes().length, 0);
+      } finally {
+        hashGate.resolve(); accountGate.resolve(); quoteGate.resolve();
+        ordersGate.resolve(); detailGate.resolve();
+        await operation;
+      }
+      assert.equal(f.writes().length, stage === "submit" ? 1 : 0);
+    }
+  }
+});
+
+test("a failed parallel validation read cannot enter the order write boundary", async () => {
+  for (const failurePath of ["/trader/v1/accounts", "/marketdata/v1/quotes",
+    "/trader/v1/accounts/accountNumbers", `/trader/v1/accounts/${HASH}/orders`,
+    `/trader/v1/accounts/${HASH}/orders/123`]) {
+    const f = fixture();
+    await f.authorize();
+    const review = await f.broker.prepare(ACCOUNT, { ...draft, side: "SELL" }, "123");
+    const gate = deferred<void>();
+    f.state.onRequest = async (url, init) => {
+      if (init.method === "GET" && new URL(url).pathname === failurePath) {
+        await gate.promise;
+        return response(url, {}, 503);
+      }
+      return undefined;
+    };
+    const operation = rejectsCode(f.broker.submit(review), "httpStatus");
+    try {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      assert.equal(f.writes().length, 0);
+    } finally {
+      gate.resolve();
+      await operation;
+    }
+    assert.equal(f.writes().length, 0, failurePath);
+    assert.equal(f.vault.values.has(MARKER), false);
+  }
+});
+
 test("double tapping a reviewed order sends one write, with marker persisted before fetch", async () => {
   const f = fixture();
   await f.authorize();

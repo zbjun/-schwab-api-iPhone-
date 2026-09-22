@@ -1183,14 +1183,24 @@ export class SchwabBroker implements Broker {
     availableShares: number;
     price?: number;
   }> {
-    const [accounts, quotes, hash] = await Promise.all([
+    const [accounts, quotes, { hash, orders, replacement }] = await Promise.all([
       this.read(
         "/trader/v1/accounts",
         new URLSearchParams({ fields: "positions" }),
         expected,
       ).then(decodeAccounts),
       this.executableQuotes([draft.symbol], expected),
-      this.hash(accountID, true, expected),
+      // Orders depend on the fresh account hash, not on accounts or quotes.
+      // Start both order reads immediately while the independent checks finish.
+      this.hash(accountID, true, expected).then(async (hash) => {
+        const [orders, replacement] = await Promise.all([
+          this.ordersWithHash(hash, expected),
+          replacementID === undefined
+            ? Promise.resolve(undefined)
+            : this.detailWithHash(hash, replacementID, expected),
+        ]);
+        return { hash, orders, replacement };
+      }),
     ]);
     this.assertGeneration(expected);
     const account = accounts.find((a) => a.id === accountID),
@@ -1198,13 +1208,8 @@ export class SchwabBroker implements Broker {
     if (!account) throw error("invalidTradingAccount");
     if (!quote || !isStockAsset(quote.assetMainType))
       throw error("unsupportedAsset");
-    const orders = await this.ordersWithHash(hash, expected);
     if (orders.length >= 200) throw error("ordersTruncated");
-    if (replacementID !== undefined)
-      validateReplacement(
-        await this.detailWithHash(hash, replacementID, expected),
-        draft,
-      );
+    if (replacement !== undefined) validateReplacement(replacement, draft);
     this.assertGeneration(expected);
     const availableShares = maximumSell(
       account,

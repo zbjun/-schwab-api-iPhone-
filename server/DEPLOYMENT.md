@@ -1,3 +1,7 @@
+# 2026-09-22 deployment update
+
+Current release symlink selects `releases/latency-20260922`. This isolated update changes only broker `freshContext` scheduling: fresh-hash-dependent orders/replacement reads overlap accounts and quotes. Existing validation, write markers, gateway configuration and deployed history handling are preserved. The prior release `303757f` remains available for rollback. Both device status checks report authenticated with no unresolved operation; live account reads succeed. Before activation, 79 broker/server tests passed. Client background post-trade refresh is a separate source update and is not included in the existing 0.6.3 IPA. The following is the historical initial deployment record.
+
 # Shared server deployment · 2026-09-10
 
 The gateway is running at **<gateway-origin>**, using the existing domain and certificate. The existing website still serves `/`; exact `/rpc`, `/market` and `/oauth/callback` locations proxy to the new service. Phone clients use the origin only, without a path.

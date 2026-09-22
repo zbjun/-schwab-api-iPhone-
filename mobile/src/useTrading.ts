@@ -100,7 +100,7 @@ export function useTrading() {
   }
   useEffect(() => {
     const listener = AppState.addEventListener("change", (value) => setForeground(value === "active"));
-    return () => listener.remove();
+    return () => { listener.remove(); ++epoch.current; };
   }, []);
   useEffect(() => {
     Promise.all([
@@ -226,6 +226,34 @@ export function useTrading() {
       q.status === "rejected" ? readFailure("行情", q.reason) : "",
     ].filter(Boolean);
     if (failures.length) throw new Error(failures.join("\n"));
+  }
+  function syncAfterTrade() {
+    // A broker acknowledgement completes the write. Read-only reconciliation must
+    // not hold the trade button while every watchlist quote/history is reloaded.
+    const version = epoch.current, selected = accountID;
+    const ticket = ++request.current;
+    const accountKey = accountGeneration.current = {};
+    const orderKey = orderGeneration.current = {};
+    const fresh = () => version === epoch.current && ticket === request.current &&
+      current.current.broker === broker && current.current.accountID === selected;
+    void accountReader.read(accountKey, () => broker.accounts()).then(values => {
+      if (!fresh() || accountGeneration.current !== accountKey) return;
+      setAccounts(values);
+      setAccountsUpdatedAt(Date.now());
+      setAccountRefreshError("");
+    }, error => {
+      if (fresh() && accountGeneration.current === accountKey)
+        setAccountRefreshError(readFailure("账户", error));
+    });
+    if (selected) void orderReader.read(orderKey, () => broker.orders(selected)).then(values => {
+      if (!fresh() || orderGeneration.current !== orderKey) return;
+      setOrders(values);
+      setOrdersLoaded(true);
+      setOrdersError("");
+    }, error => {
+      if (fresh() && orderGeneration.current === orderKey)
+        setOrdersError(readFailure("订单", error));
+    });
   }
   async function run(work: () => Promise<void>) {
     if (actionLock.current) return;
@@ -445,6 +473,7 @@ export function useTrading() {
     message,
     setMessage,
     refresh,
+    syncAfterTrade,
     run,
     revision,
   };

@@ -1,3 +1,13 @@
+# 2026-09-22: Order submission latency
+
+- Root cause: prepare and submit each perform fresh account, quote, account-hash and order checks. Orders previously waited for every independent read; accepted submissions then waited for a full status/accounts/watchlist/orders refresh before releasing the form. Validation count and submission freshness are intentionally retained.
+- broker.ts now starts orders and optional replacement detail as soon as the fresh account hash arrives, overlapping slow accounts/quotes. Deferred regression failed on the original scheduling and passes for prepare/submit and new/replacement orders. Five read-failure cases confirm no write or operation marker is created.
+- useTrading.ts adds generation-guarded background post-trade reconciliation; TradePanel.tsx uses it after acknowledged submit/cancel and local strategy termination. Account and order results apply independently, read errors retain accepted receipts, and no watchlist/history reload is initiated. The action's final status reconciliation still runs, and later submissions still validate fresh balances/reserved shares at the broker.
+- Local TypeScript, 254 mobile tests, 28 server tests and web export passed. tools/verify-post-trade-sync.cjs verifies completion before delayed reads, independent updates, error/receipt separation and stale account response suppression in isolated browser demo state. No live orders were used.
+- Read-only live sample before deployment: status 994 ms cold / 18 ms warm, accounts 717 ms, quotes 399 ms, orders 798 ms. These are individual RPC observations, not measured order-to-acknowledgement or fill latency.
+- Server staged at /opt/ths-gateway/releases/latency-20260922; 79 broker/server tests passed under deployed Node. Only freshContext was replaced in the deployed broker, preserving the pre-existing history decoder invocation. Graceful stop/start switched the current symlink; previous release retained. Verified deployed broker SHA-256 794a8c41a43b8c4f0149b11ecbfb42411027a606cfbe1302107ca2821dc5630f, service active, both devices authenticated with no unresolved operation, and account read succeeds.
+- Server change is live for existing server-mode clients; client background-refresh change requires a later IPA. No IPA built, no physical-device latency or real-trade/fill-time claim.
+
 # 2026-09-11: 0.6.3 (10) two-device IPA delivery
 
 - Source: `cc19367`; EAS build `776e920e-b860-4a3c-b0fd-528f8fccfd33` finished successfully. Includes the price-priority engine/settings, unified primary tabs, automatic execution markers and order-row stock navigation described below.

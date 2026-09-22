@@ -182,8 +182,7 @@ export function TradePanel({
       s.setMessage(message);
     } finally {
       if (mounted.current) setLocalRunning(false);
-      try { await s.refresh(); }
-      catch { s.setMessage("交易状态刷新失败，请到订单页核对，勿重复下单。"); }
+      s.syncAfterTrade();
     }
   }
   async function review() {
@@ -223,7 +222,7 @@ export function TradePanel({
           isDemo: s.isDemo,
           isCurrent: () => permitted && context.current === version,
         }),
-        refresh: s.refresh,
+        refresh: async () => { s.syncAfterTrade(); },
         onAccepted: () => {
           setQuantity("");
           setBudget("");
@@ -459,7 +458,7 @@ export function TradePanel({
                   s.setMessage(
                     `${snapshot.isDemo ? "演示" : ""}订单已提交${result.orderID ? ` #${result.orderID}` : ""}，请查看订单状态。`,
                   );
-                  await s.refresh();
+                  s.syncAfterTrade();
                   onDone?.();
                 })
               }
@@ -1085,7 +1084,7 @@ export function OrderList({
         setSelected(undefined);
         setConfirmCancel(false);
       }
-      await s.refresh();
+      s.syncAfterTrade();
       s.setMessage("撤单请求已提交，请以最新订单状态为准。");
     });
   }

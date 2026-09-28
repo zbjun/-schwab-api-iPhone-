@@ -1,3 +1,9 @@
+# 2026-09-28 authorization retry fix — source only, deployment blocked
+
+The gateway previously retained its cached authorization URL for up to nine minutes when callback completion failed. The broker consumes pending OAuth state before token exchange, so a subsequent login could reuse an already consumed attempt. The source now evicts the cached URL after expired/declined attempts and exchange failures; an unrelated invalid callback still preserves the active attempt. Thirty server tests pass, including a regression that failed before the fix.
+
+Live device status checks on September 28 returned configured=true, authenticated=false, unresolvedOperation=false for both devices. This does not establish the first failed exchange's cause. SSH port 22 accepted TCP then closed before the SSH banner over both the normal and configured proxy paths; no deployment/restart was performed. The fix is not yet confirmed on the live server. Do not present the source patch as deployed or authorization as complete.
+
 # 2026-09-22 deployment update
 
 Current release symlink selects `releases/latency-20260922`. This isolated update changes only broker `freshContext` scheduling: fresh-hash-dependent orders/replacement reads overlap accounts and quotes. Existing validation, write markers, gateway configuration and deployed history handling are preserved. The prior release `303757f` remains available for rollback. Both device status checks report authenticated with no unresolved operation; live account reads succeed. Before activation, 79 broker/server tests passed. Client background post-trade refresh is a separate source update and is not included in the existing 0.6.3 IPA. The following is the historical initial deployment record.

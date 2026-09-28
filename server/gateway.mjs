@@ -79,6 +79,14 @@ export function createGateway({ broker, devices, callbackURL = 'https://127.0.0.
     // The Broker owns the persisted one-use state and validates it even after restart.
     authCompleting = broker.completeAuthorization(url);
     try { await authCompleting; authPending = undefined; reviews.clear(); }
+    catch (error) {
+      // The broker consumes pending state before exchanging the one-use code.
+      // A failed exchange must not keep returning that spent URL on retry.
+      // Invalid callbacks are rejected before consumption: preserve the valid
+      // attempt so an unrelated browser request cannot invalidate its state.
+      if (!(error instanceof TradingError && error.code === 'invalidCallback')) authPending = undefined;
+      throw error;
+    }
     finally { authCompleting = undefined; }
   };
   const dispatch = async (device, method, args) => {

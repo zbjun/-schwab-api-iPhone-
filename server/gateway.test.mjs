@@ -135,6 +135,35 @@ test('OAuth initiation coalesces; configured origin is used and broker validates
   assert.equal((await rpc('status', [], 1)).body.result.authenticated, true);
   assert.equal((await fetch(base + '/oauth/callback?code=fixture&state=fictional')).status, 400);
 });
+test('consumed or expired authorization failures evict the cached login link immediately', async t => {
+  for (const code of ['authorizationExpired', 'authorizationDeclined', 'httpStatus', 'networkUnavailable']) {
+    const broker = brokerFixture(); broker.setAuthenticated(false);
+    let sequence = 0;
+    broker.authorizationURL = async () => `https://api.schwabapi.com/v1/oauth/authorize?state=fixture-${++sequence}`;
+    broker.completeAuthorization = async () => { throw new TradingError(code, 'Fixture failure'); };
+    const { rpc, base } = await fixture(t, { broker, callbackURL: 'https://personal.example/oauth/callback' });
+    const first = (await rpc('authorizationURL')).body.result;
+    assert.equal((await rpc('authorizationURL', [], 1)).body.result, first);
+    const failure = await fetch(base + '/oauth/callback?code=fixture&state=fixture-1');
+    assert.equal(failure.status, 400);
+    const second = (await rpc('authorizationURL', [], 1)).body.result;
+    assert.notEqual(second, first, `${code} must not reuse a consumed login link`);
+    assert.equal(sequence, 2);
+  }
+});
+
+test('an unrelated invalid callback preserves a valid shared login attempt', async t => {
+  const broker = brokerFixture(); broker.setAuthenticated(false);
+  let sequence = 0;
+  broker.authorizationURL = async () => `https://api.schwabapi.com/v1/oauth/authorize?state=fixture-${++sequence}`;
+  broker.completeAuthorization = async () => { throw new TradingError('invalidCallback', 'Wrong state'); };
+  const { rpc, base } = await fixture(t, { broker, callbackURL: 'https://personal.example/oauth/callback' });
+  const first = (await rpc('authorizationURL')).body.result;
+  assert.equal((await fetch(base + '/oauth/callback?code=unrelated&state=wrong')).status, 400);
+  assert.equal((await rpc('authorizationURL', [], 1)).body.result, first);
+  assert.equal(sequence, 1);
+});
+
 test('shared market endpoints require device authentication and isolate release by device', async t => {
   const calls = [], marketHub = {
     poll: async (...args) => { calls.push(['poll', ...args.slice(0, 4)]); return { cursor: 1, status: { connected: true }, candles: [], formingCandles: [] }; },

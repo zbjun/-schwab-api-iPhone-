@@ -8,7 +8,7 @@ export async function submitQuickOrder({
   isDemo,
   isCurrent,
 }: {
-  broker: Pick<Broker, "prepare" | "submit">;
+  broker: Pick<Broker, "prepare" | "submit" | "submitQuick">;
   accountID: string;
   draft: Draft;
   isDemo: boolean;
@@ -16,6 +16,11 @@ export async function submitQuickOrder({
 }) {
   const changed = () => new Error("账户、交易模式或订单内容已变化，请重新下单。");
   if (!isCurrent()) throw changed();
+  if (!isDemo && broker.submitQuick) {
+    // Atomic brokers validate and submit in one operation. Once dispatched, a
+    // context change cannot unsend it: preserve its receipt and never replay it.
+    return broker.submitQuick(accountID, Object.freeze({ ...draft }));
+  }
   const snapshot = await broker.prepare(accountID, Object.freeze({ ...draft }));
   if (!isCurrent() || snapshot.accountID !== accountID || snapshot.isDemo !== isDemo)
     throw changed();

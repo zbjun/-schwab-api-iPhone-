@@ -186,3 +186,67 @@ test('unexpected backend errors do not return raw provider responses or secrets'
   assert.equal(response.status, 500);
   assert.equal(JSON.stringify(response.body).includes('PRIVATE_PROVIDER_BODY'), false);
 });
+
+test('atomic quick order uses one broker operation and device-bound replay receipts', async t => {
+  const broker = brokerFixture();
+  let calls = 0;
+  broker.submitQuick = async (accountID, value) => {
+    calls++;
+    return { snapshot: { accountID, draft: value, isDemo: false }, result: { orderID: 'quick-order' } };
+  };
+  const { rpc } = await fixture(t, { broker });
+  const requestID = 'fixture-request-0001';
+  const first = await rpc('submitQuick', ['account', draft, requestID]);
+  assert.equal(first.body.result.result.orderID, 'quick-order');
+  assert.deepEqual((await rpc('submitQuick', ['account', draft, requestID])).body, first.body);
+  assert.equal((await rpc('submitQuick', ['account', draft, requestID], 1)).body.error.code, 'invalidRequest');
+  assert.equal((await rpc('submitQuick', ['account', { ...draft, quantity: 2 }, requestID])).body.error.code, 'invalidRequest');
+  assert.equal((await rpc('submitQuick', ['account', draft, 'short'])).body.error.code, 'invalidRequest');
+  assert.equal(calls, 1);
+  assert.deepEqual(broker.calls, [], 'no duplicate prepare/submit validation rounds');
+});
+
+test('atomic quick order serializes both devices, invalidates old review, and caches unknown outcome', async t => {
+  const broker = brokerFixture(), entered = deferred(), finish = deferred();
+  let calls = 0;
+  broker.submitQuick = async () => { calls++; entered.resolve(); await finish.promise; throw new TradingError('orderOutcomeUnknown', 'Verify'); };
+  const { rpc } = await fixture(t, { broker });
+  const review = (await rpc('prepare', ['account', draft])).body.result;
+  const args = ['account', draft, 'fixture-request-0002'];
+  const pending = rpc('submitQuick', args);
+  await entered.promise;
+  for (const [method, values] of [['submitQuick', ['account', draft, 'fixture-request-0003']], ['prepare', ['account', draft]], ['cancel', ['account', 'order']]])
+    assert.equal((await rpc(method, values, 1)).body.error.code, 'operationBusy');
+  finish.resolve();
+  assert.equal((await pending).body.error.code, 'orderOutcomeUnknown');
+  assert.equal((await rpc('submitQuick', args)).body.error.code, 'orderOutcomeUnknown');
+  assert.equal((await rpc('submit', [{ id: review.id }])).body.error.code, 'reviewExpired');
+  assert.equal(calls, 1);
+});
+
+test('account activity routes are authenticated and validate device-scoped cursor and wait', async t => {
+  const calls = [], marketHub = {
+    pollActivity: async (...args) => { calls.push(['poll', ...args.slice(0, 3)]); assert.ok(args[3] instanceof AbortSignal); return { cursor: 4, status: 'live' }; },
+    releaseActivity: id => { calls.push(['release', id]); },
+  };
+  const { base } = await fixture(t, { marketHub });
+  assert.equal((await fetch(base + '/activity', { method: 'POST' })).status, 401);
+  const headers = { Authorization: 'Bearer ' + devices[1].token, 'Content-Type': 'application/json' };
+  const valid = await fetch(base + '/activity', { method: 'POST', headers, body: JSON.stringify({ cursor: 3, waitMs: 20_000 }) });
+  assert.deepEqual((await valid.json()).result, { cursor: 4, status: 'live' });
+  for (const body of [{ cursor: -1 }, { waitMs: 20_001 }, { unknown: true }])
+    assert.equal((await fetch(base + '/activity', { method: 'POST', headers, body: JSON.stringify(body) })).status, 400);
+  await fetch(base + '/activity', { method: 'DELETE', headers });
+  assert.deepEqual(calls, [['poll', 'phone-b', 3, 20_000], ['release', 'phone-b']]);
+});
+
+test('retained history augments provider result without hiding it on storage failure', async t => {
+  const broker = brokerFixture(), history = { symbol: 'AAPL', candles: [] };
+  broker.history = async () => history;
+  let broken = false;
+  const marketHub = { mergeHistory: async (value, range) => { assert.equal(value, history); assert.equal(range, 'minute1'); if (broken) throw new Error(); return { ...value, retained: true }; } };
+  const { rpc } = await fixture(t, { broker, marketHub });
+  assert.equal((await rpc('history', ['AAPL', 'minute1'])).body.result.retained, true);
+  broken = true;
+  assert.deepEqual((await rpc('history', ['AAPL', 'minute1'])).body.result, history);
+});

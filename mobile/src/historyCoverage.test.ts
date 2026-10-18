@@ -53,3 +53,15 @@ test("calendar candles at midnight never claim overnight coverage", () => {
     assert.match(historyCoverageReport(h, range), /不作夜盘覆盖判断/);
   }
 });
+
+test("retained server coverage remains visible when only persistence status changes", () => {
+  const candles = [{ time: Date.parse("2026-09-10T06:00Z"), open: 1, high: 1, low: 1, close: 1, retained: true }];
+  const old = { symbol: "QQQ", candles, retainedCoverage: { receivedAt: 1, minutes: 1,
+    decoded: historyCoverage(candles), persistence: "memory" as const } };
+  const next = { ...old, retainedCoverage: { ...old.retainedCoverage, persistence: "saved" as const } };
+  const merged = shareHistory(old, next);
+  assert.equal(merged.candles, old.candles);
+  assert.equal(merged.retainedCoverage?.persistence, "saved");
+  assert.match(historyCoverageReport(merged, "minute1"), /已加密保存/);
+  assert.match(historyCoverageReport(merged, "minute1"), /服务器观测留存/);
+});

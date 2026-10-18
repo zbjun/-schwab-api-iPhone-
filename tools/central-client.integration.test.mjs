@@ -46,6 +46,10 @@ function fakeBroker() {
     disconnect: async () => { disconnects++; authenticated = false; },
     prepare: async (accountID,draft) => Object.freeze({id:'fake-private-id', accountID, accountDisplay:'fictional',draft:Object.freeze({...draft}),quote:{symbol:draft.symbol},availableShares:10,preparedAt:Date.now(),isDemo:false}),
     submit: async () => { submits++; return {orderID:'fictional-order'}; },
+    async submitQuick(accountID, draft) {
+      const snapshot = await this.prepare(accountID, draft);
+      return { snapshot, result: await this.submit(snapshot) };
+    },
   };
 }
 test('two mobile connections share authorization; forgetting one does not log out the broker', async t => {
@@ -69,7 +73,7 @@ test('another device cannot submit a prepared order; owning device can submit on
   assert.equal(broker.counts().submits,1);
 });
 
-test('quick orders tolerate server clock offset while the gateway enforces review expiry', async t => {
+test('atomic quick receipts tolerate server clock offset', async t => {
   for (const offset of [-120_000, 120_000]) {
     const broker = fakeBroker();
     const prepare = broker.prepare;
@@ -85,15 +89,14 @@ test('quick orders tolerate server clock offset while the gateway enforces revie
   }
 });
 
-test('normalizing device review time never bypasses server expiry or replays a quick order', async t => {
+test('normalizing device review time never bypasses ordinary review expiry or replays an order', async t => {
   let serverNow = Date.now();
   const broker = fakeBroker();
   const {a} = await fixture(t, broker, {now:()=>serverNow});
-  let checks = 0;
-  await assert.rejects(submitQuickOrder({broker:a,accountID:'fictional-account',
-    draft:{symbol:'AAPL',side:'BUY',kind:'LIMIT',quantity:1,limitPrice:'100',duration:'DAY'},
-    isDemo:false,isCurrent:()=>{ if (++checks === 2) serverNow += 61_000; return true; }}),
-    {code:'reviewExpired'});
+  const review = await a.prepare('fictional-account', {symbol:'AAPL',side:'BUY',kind:'LIMIT',quantity:1,limitPrice:'100',duration:'DAY'});
+  serverNow += 61_000;
+  await assert.rejects(a.submit(review), {code:'reviewExpired'});
+  await assert.rejects(a.submit(review), {code:'reviewExpired'});
   assert.equal(broker.counts().submits, 0);
   assert.equal((await a.status()).unresolvedOperation, false);
 });
@@ -211,9 +214,10 @@ test('two actual mobile streams share a gateway upstream and one device can leav
   await until(()=>closes===1);
 });
 
-test('new order passes real broker preparation over JSON RPC and submits the server snapshot unchanged', async t => {
+test('real broker keeps ordinary private reviews and atomic quick mode halves validation reads', async t => {
   const now = Date.now(), accountID = '12345678', hash = 'FixtureAccountHash_A';
   let writes = 0;
+  const reads = [];
   const state = {version:1,credentials:{clientID:'fictional-client',clientSecret:'fictional-secret'},token:{accessToken:'fictional-access',refreshToken:'fictional-refresh',expiresAt:now+1_800_000}};
   const broker = new SchwabBroker(vault([['ths.schwab.session.v1',JSON.stringify(state)]]), {
     randomState:()=> 'f'.repeat(64), now:()=>now,
@@ -230,6 +234,7 @@ test('new order passes real broker preparation over JSON RPC and submits the ser
         headers={location:`https://api.schwabapi.com/trader/v1/accounts/${hash}/orders/123`};
       } else {
         assert.equal(init.method,'GET');
+        reads.push(url.pathname);
         if(url.pathname==='/trader/v1/accounts') data=[{securitiesAccount:{accountNumber:accountID,type:'CASH',currentBalances:{liquidationValue:1000,cashBalance:1000,buyingPower:1000},positions:[]}}];
         else if(url.pathname==='/trader/v1/accounts/accountNumbers') data=[{accountNumber:accountID,hashValue:hash}];
         else if(url.pathname==='/marketdata/v1/quotes') data={AAPL:{symbol:'AAPL',realtime:true,assetMainType:'EQUITY',reference:{description:'Fixture'},quote:{lastPrice:100,bidPrice:99.98,askPrice:100.02,quoteTime:now,totalVolume:12345}}};
@@ -249,4 +254,49 @@ test('new order passes real broker preparation over JSON RPC and submits the ser
   prepared.draft.quantity=999;
   assert.equal((await a.submit(prepared)).orderID,'123');
   assert.equal(writes,1);
+  assert.equal(reads.length,8,'ordinary review and submit each validate fresh account/quote/hash/orders');
+  const before = reads.length;
+  const receipt = await submitQuickOrder({broker:b,accountID,isDemo:false,isCurrent:()=>true,
+    draft:{symbol:'AAPL',side:'BUY',kind:'LIMIT',quantity:1,limitPrice:'100',duration:'DAY'}});
+  assert.equal(receipt.result.orderID,'123');
+  assert.equal(receipt.snapshot.accountID,accountID);
+  assert.equal(writes,2);
+  assert.deepEqual(reads.slice(before).sort(),[
+    '/trader/v1/accounts','/trader/v1/accounts/accountNumbers',
+    '/marketdata/v1/quotes',`/trader/v1/accounts/${hash}/orders`,
+  ].sort(),'one fresh validation round inside atomic submit');
+});
+
+test('two mobile activity clients receive shared events and one can disconnect without interrupting the other', async t => {
+  let upstream, opens=0, closes=0;
+  const hub = new MarketHub(async () => { throw new Error('No real credentials'); }, {
+    openStream(symbols,_credentials,callbacks) {
+      assert.deepEqual(symbols,[]);
+      upstream=callbacks; opens++;
+      callbacks.onAccountActivityStatus?.('live');
+      return Object.assign(()=>{closes++;},{setSymbols:()=>{}});
+    },
+  });
+  t.after(()=>hub.close());
+  const {a,b}=await fixture(t,fakeBroker(),{marketHub:hub});
+  const statusesA=[],statusesB=[];
+  let eventsA=0,eventsB=0;
+  const stopA=a.subscribeAccountActivity(()=>{eventsA++;},status=>statusesA.push(status));
+  const stopB=b.subscribeAccountActivity(()=>{eventsB++;},status=>statusesB.push(status));
+  t.after(()=>{stopA();stopB();});
+  const until=async predicate=>{
+    for(let i=0;i<200&&!predicate();i++) await new Promise(resolve=>setTimeout(resolve,10));
+    assert.ok(predicate(),'activity event delivered over loopback');
+  };
+  await until(()=>statusesA.includes('live')&&statusesB.includes('live'));
+  upstream.onAccountActivity?.({messageType:'OrderFill',sequence:1});
+  await until(()=>eventsA===1&&eventsB===1);
+  assert.equal(opens,1);
+  await a.disconnect();
+  assert.equal(closes,0);
+  upstream.onAccountActivity?.({messageType:'OrderCancel',sequence:2});
+  await until(()=>eventsB===2);
+  assert.equal(eventsA,1);
+  await b.disconnect();
+  assert.equal(closes,1);
 });

@@ -1,6 +1,6 @@
 {
   "name": "ths-expo-personal",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "main": "index.ts",
   "dependencies": {
     "@expo/metro-runtime": "~57.0.15",

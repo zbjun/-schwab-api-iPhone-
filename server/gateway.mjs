@@ -5,6 +5,8 @@ import { TradingError } from '../mobile/src/orderRules.ts';
 const MAX_BODY = 24 * 1024;
 const REVIEW_TTL = 60_000;
 const AUTH_TTL = 9 * 60_000;
+const QUICK_TTL = 10 * 60_000;
+const MAX_QUICK_RECEIPTS = 512;
 const digest = value => createHash('sha256').update(value).digest();
 const object = value => !!value && typeof value === 'object' && !Array.isArray(value);
 const fail = (code, message) => { throw new TradingError(code, message); };
@@ -57,10 +59,12 @@ export function createGateway({ broker, devices, callbackURL = 'https://127.0.0.
     throw new Error('Invalid HTTPS callback');
   const automaticCallback = callback.pathname === '/oauth/callback';
   const reviews = new Map();
+  const quickReceipts = new Map();
   let prepareBusy = false, writeBusy = false;
   let authPending, authInitiating, authCompleting;
   const prune = () => {
     for (const [id, review] of reviews) if (review.expires <= now()) reviews.delete(id);
+    for (const [id, receipt] of quickReceipts) if (!receipt.pending && receipt.expires <= now()) quickReceipts.delete(id);
   };
   const beginAuthorization = () => {
     if (authCompleting) fail('operationBusy', '授权正在完成，请稍候刷新连接状态。');
@@ -97,7 +101,12 @@ export function createGateway({ broker, devices, callbackURL = 'https://127.0.0.
       case 'status': length(0); return broker.status();
       case 'accounts': length(0); return broker.accounts();
       case 'quotes': length(1, 2); if (!Array.isArray(args[0])) fail('invalidRequest', '股票列表无效。'); return broker.quotes(...args);
-      case 'history': length(2); return broker.history(...args);
+      case 'history': {
+        length(2);
+        const history = await broker.history(...args);
+        try { return marketHub?.mergeHistory ? await marketHub.mergeHistory(history, args[1]) : history; }
+        catch { return history; } // Retention must never hide a successful provider response.
+      }
       case 'orders': length(1); return broker.orders(...args);
       case 'orderDetail': length(2); return broker.orderDetail(...args);
       case 'authorizationURL': length(0); return beginAuthorization();
@@ -127,6 +136,32 @@ export function createGateway({ broker, devices, callbackURL = 'https://127.0.0.
         try { return await broker.submit(review.prepared); }
         finally { writeBusy = false; }
       }
+      case 'submitQuick': {
+        length(3);
+        const [accountID, draft, requestID] = args;
+        if (typeof accountID !== 'string' || !accountID || !object(draft) ||
+            typeof requestID !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(requestID))
+          fail('invalidRequest', '快速委托参数无效。');
+        const fingerprint = JSON.stringify([accountID, draft]);
+        const previous = quickReceipts.get(requestID);
+        if (previous) {
+          if (previous.device !== device || previous.fingerprint !== fingerprint)
+            fail('invalidRequest', '快速委托编号与设备或委托内容不一致。');
+          if (previous.pending) fail('operationBusy', '快速委托正在处理中，请等待结果。');
+          if (previous.error) throw previous.error;
+          return previous.result;
+        }
+        if (writeBusy || prepareBusy) fail('operationBusy', '另一台设备正在处理委托，请稍候。');
+        if (typeof broker.submitQuick !== 'function') fail('methodNotAllowed', '服务器尚不支持快速委托，请更新服务器。');
+        if (quickReceipts.size >= MAX_QUICK_RECEIPTS) fail('operationBusy', '快速委托记录暂满，请稍后重试。');
+        const receipt = { device, fingerprint, pending: true, expires: now() + QUICK_TTL };
+        quickReceipts.set(requestID, receipt);
+        writeBusy = true;
+        reviews.clear();
+        try { receipt.result = await broker.submitQuick(accountID, draft); return receipt.result; }
+        catch (error) { receipt.error = error; throw error; }
+        finally { receipt.pending = false; receipt.expires = now() + QUICK_TTL; writeBusy = false; }
+      }
       case 'cancel': {
         length(2);
         if (writeBusy || prepareBusy) fail('operationBusy', '另一台设备正在处理委托，请稍候。');
@@ -155,6 +190,23 @@ export function createGateway({ broker, devices, callbackURL = 'https://127.0.0.
       if (request.headers.origin) { json(response, 403, { error: { code: 'originRejected', message: '请从 App 连接服务器。' } }); return; }
       const device = authenticate(request);
       if (!device) { json(response, 401, { error: { code: 'deviceUnauthorized', message: '设备连接密钥无效或已撤销。' } }); return; }
+      if (request.url === '/activity' && marketHub) {
+        if (request.method === 'DELETE') { marketHub.releaseActivity(device); json(response, 200, { result: null }); return; }
+        if (request.method !== 'POST') fail('methodNotAllowed', '账户事件接口仅接受订阅和释放请求。');
+        const body = await readBody(request);
+        if (!object(body) || Object.keys(body).some(key => !['cursor', 'waitMs'].includes(key)) ||
+            (body.cursor !== undefined && (!Number.isSafeInteger(body.cursor) || body.cursor < 0)) ||
+            (body.waitMs !== undefined && (!Number.isInteger(body.waitMs) || body.waitMs < 0 || body.waitMs > 20_000)))
+          fail('invalidRequest', '账户事件订阅参数无效。');
+        const controller = new AbortController();
+        const disconnected = () => controller.abort();
+        response.once('close', disconnected);
+        try {
+          const result = await marketHub.pollActivity(device, body.cursor, body.waitMs, controller.signal);
+          if (!response.destroyed) json(response, 200, { result });
+        } finally { response.off('close', disconnected); }
+        return;
+      }
       if (request.url === '/market' && marketHub) {
         if (request.method === 'DELETE') { marketHub.release(device); json(response, 200, { result: null }); return; }
         if (request.method !== 'POST') fail('methodNotAllowed', '行情接口仅接受订阅和释放请求。');

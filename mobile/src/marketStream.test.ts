@@ -633,3 +633,157 @@ test("multi-symbol forming extrema and chart sequences stay independent within a
   assert.deepEqual(candles.map(({ symbol, candle }) => [symbol, candle.close]), [["AAPL", 105], ["QQQ", 106]]);
   stop(); assert.equal(time.pending(), 0);
 });
+
+async function multiSetup(symbols = ["AAPL", "QQQ"], activity = true) {
+  const time = clock();
+  const sockets: Socket[] = [];
+  const quotes: Array<{ symbol: string; lastPrice?: number }> = [];
+  const events: Array<{ sequence?: number; messageType?: string }> = [];
+  const statuses: string[] = [];
+  const activityStatuses: string[] = [];
+  const stop = openMultiMarketStream(symbols, async () => auth, {
+    onQuote: (quote) => quotes.push(quote), onCandle: () => {},
+    onStatus: (status) => statuses.push(status),
+    ...(activity ? { onAccountActivity: (event: { sequence?: number; messageType?: string }) => events.push(event),
+      onAccountActivityStatus: (status: string) => activityStatuses.push(status) } : {}),
+  }, { ...time, createWebSocket: () => { const socket = new Socket(); sockets.push(socket); return socket; } });
+  await settle();
+  return { time, sockets, quotes, events, statuses, activityStatuses, stop, socket: sockets[0] };
+}
+function ackRequests(socket: Socket, batch: number) {
+  for (const request of socket.sent[batch].requests)
+    socket.ack(request.requestid, request.service, request.command);
+}
+
+test("delta subscriptions keep the shared socket and unrelated quote sequences intact", async () => {
+  const h = await multiSetup(undefined, false); h.socket.live();
+  h.socket.quote({ key: "QQQ", seq: 20, "3": 500 }); h.time.advance(250);
+  h.stop.setSymbols(["QQQ", "MSFT"]);
+  assert.equal(h.sockets.length, 1); assert.equal(h.socket.closed, false);
+  assert.deepEqual(h.socket.sent[2].requests.map((r) => [r.service, r.command, r.parameters.keys]),
+    [["LEVELONE_EQUITIES", "UNSUBS", "AAPL"], ["CHART_EQUITY", "UNSUBS", "AAPL"]]);
+  h.socket.quote({ key: "AAPL", seq: 100, "3": 1 });
+  h.socket.quote({ key: "QQQ", seq: 19, "3": 1 });
+  h.socket.quote({ key: "QQQ", seq: 21, "3": 501 }); h.time.advance(250);
+  assert.equal(h.quotes.at(-1)?.lastPrice, 501);
+  ackRequests(h.socket, 2);
+  const added = h.socket.sent.slice(3).flatMap((batch) => batch.requests);
+  assert.deepEqual(added.map((r) => [r.service, r.command, r.parameters.keys]),
+    [["LEVELONE_EQUITIES", "ADD", "MSFT"], ["CHART_EQUITY", "ADD", "MSFT"]]);
+  for (const request of added) h.socket.ack(request.requestid, request.service, request.command);
+  h.socket.quote({ key: "MSFT", seq: 1, "3": 400 }); h.time.advance(250);
+  assert.equal(h.quotes.at(-1)?.symbol, "MSFT");
+  assert.deepEqual(h.statuses, ["connecting", "live", "live"]);
+  h.socket.onclose?.(); h.time.advance(5000); await settle(); h.sockets[1].live();
+  assert.equal(h.sockets[1].sent[1].requests[0].parameters.keys, "QQQ,MSFT");
+  h.stop(); assert.equal(h.time.pending(), 0);
+});
+
+test("rapid symbol changes coalesce behind service acknowledgments and late removed data is ignored", async () => {
+  const h = await multiSetup(["AAPL"], false); h.socket.live();
+  h.stop.setSymbols(["AAPL", "QQQ"]);
+  h.stop.setSymbols(["AAPL", "MSFT"]);
+  assert.equal(h.socket.sent.length, 3);
+  ackRequests(h.socket, 2);
+  const removing = h.socket.sent.slice(3).flatMap((b) => b.requests);
+  assert.ok(removing.every((r) => r.command === "UNSUBS" && r.parameters.keys === "QQQ"));
+  for (const request of removing) h.socket.ack(request.requestid, request.service, request.command);
+  const adding = h.socket.sent.slice(5).flatMap((b) => b.requests);
+  assert.ok(adding.every((r) => r.command === "ADD" && r.parameters.keys === "MSFT"));
+  for (const request of adding) h.socket.ack(request.requestid, request.service, request.command);
+  h.socket.quote({ key: "QQQ", "3": 500 }); h.time.advance(250);
+  assert.equal(h.quotes.length, 0); assert.equal(h.sockets.length, 1);
+  h.stop(); assert.equal(h.time.pending(), 0);
+});
+
+test("account subscription acknowledgement invalidates once and events never disclose account payloads", async () => {
+  const h = await multiSetup(); h.socket.live();
+  assert.deepEqual(h.socket.sent[2].requests.map((r) => [r.service, r.command, r.parameters]),
+    [["ACCT_ACTIVITY", "SUBS", { keys: "Account Activity", fields: "0,1,2,3" }]]);
+  const event = (seq: number, kind = "OrderFillCompleted") => h.socket.message({ data: [{ service: "ACCT_ACTIVITY",
+    content: [{ seq, key: "private-account-key", "1": "private-account", "2": kind, "3": "private-payload" }] }] });
+  event(1); assert.equal(h.events.length, 0);
+  h.socket.ack("3", "CHART_EQUITY", "SUBS"); assert.equal(h.events.length, 0);
+  h.socket.ack("3", "ACCT_ACTIVITY", "SUBS");
+  assert.deepEqual(h.events, [{}]); assert.equal(h.activityStatuses.at(-1), "live");
+  event(10); event(10); event(9); event(14, "FutureMessageType"); event(15, "private-token-contents");
+  assert.deepEqual(h.events, [{}, { sequence: 10, messageType: "OrderFillCompleted" }, { sequence: 14 }, { sequence: 15 }]);
+  assert.equal(JSON.stringify(h.events).includes("private"), false);
+  h.socket.onclose?.(); h.time.advance(5000); await settle(); h.sockets[1].live();
+  h.sockets[1].ack("3", "ACCT_ACTIVITY", "SUBS"); assert.deepEqual(h.events.at(-1), {});
+  h.stop(); assert.equal(h.time.pending(), 0);
+});
+
+test("account rejection and timeout do not claim account live or interrupt equity quotes", async () => {
+  for (const reject of [true, false]) {
+    const h = await multiSetup(); h.socket.live();
+    if (reject) h.socket.ack("3", "ACCT_ACTIVITY", "SUBS", 3);
+    else h.time.advance(10000);
+    assert.equal(h.activityStatuses.at(-1), "fallback"); assert.equal(h.events.length, 0);
+    assert.equal(h.statuses.at(-1), "live"); assert.equal(h.socket.closed, false);
+    h.socket.message({ data: [{ service: "ACCT_ACTIVITY", content: [{ seq: 1, "2": "OrderCreated" }] }] });
+    assert.equal(h.events.length, 0);
+    h.socket.quote({ key: "AAPL", "3": 100 }); h.time.advance(250);
+    assert.equal(h.quotes[0].lastPrice, 100);
+    h.stop(); assert.equal(h.time.pending(), 0);
+  }
+});
+
+test("account-only connection waits for account ack, accepts equity addition, and reports rejected activity fallback", async () => {
+  for (const reject of [true, false]) {
+    const h = await multiSetup([]); h.socket.onopen?.(); h.socket.ack("0", "ADMIN", "LOGIN");
+    assert.equal(h.socket.sent.length, 2);
+    assert.equal(h.socket.sent[1].requests[0].service, "ACCT_ACTIVITY");
+    assert.deepEqual(h.statuses, ["connecting"]);
+    h.socket.ack("3", "ACCT_ACTIVITY", "SUBS", reject ? 3 : 0);
+    assert.equal(h.statuses.at(-1), reject ? "fallback" : "live");
+    h.stop.setSymbols(["QQQ"]); ackRequests(h.socket, 2);
+    assert.equal(h.statuses.at(-1), "live"); assert.equal(h.sockets.length, 1);
+    h.stop.setSymbols([]);
+    const batches = h.socket.sent.slice(3);
+    for (const batch of batches) for (const r of batch.requests) h.socket.ack(r.requestid, r.service, r.command);
+    assert.equal(h.socket.closed, false);
+    assert.equal(h.socket.sent.flatMap((b) => b.requests).filter((r) => r.service === "ACCT_ACTIVITY").length, 1);
+    h.stop(); assert.equal(h.time.pending(), 0);
+  }
+});
+
+test("delta command acknowledgments must match service and command; timeout reconnects latest symbols", async () => {
+  const h = await multiSetup(["AAPL"], false); h.socket.live();
+  h.stop.setSymbols(["AAPL", "QQQ"]);
+  const [quote, chart] = h.socket.sent[2].requests;
+  h.socket.ack(quote.requestid, quote.service, "SUBS");
+  h.socket.ack(chart.requestid, "LEVELONE_EQUITIES", chart.command);
+  h.time.advance(10000);
+  assert.equal(h.socket.closed, true); assert.equal(h.statuses.at(-1), "fallback");
+  h.time.advance(5000); await settle(); h.sockets[1].live();
+  assert.equal(h.sockets[1].sent[1].requests[0].parameters.keys, "AAPL,QQQ");
+  h.stop(); assert.equal(h.time.pending(), 0);
+});
+
+test("stopping from subscription status callback cannot leave timers or emit activity after shutdown", async () => {
+  const time = clock(); const socket = new Socket();
+  const stop = openMultiMarketStream(["AAPL"], async () => auth, {
+    onQuote: () => {}, onCandle: () => {},
+    onStatus: (status) => { if (status === "live") stop(); },
+  }, { ...time, createWebSocket: () => socket });
+  await settle(); socket.live();
+  assert.equal(socket.closed, true); assert.equal(time.pending(), 0);
+});
+
+test("new symbol consumers receive one live notification after both delta acknowledgments", async () => {
+  const h = await multiSetup(["AAPL"], false); h.socket.live();
+  h.stop.setSymbols(["AAPL", "QQQ"]);
+  const [quote, chart] = h.socket.sent[2].requests;
+  assert.deepEqual(h.statuses, ["connecting", "live"]);
+  h.socket.ack(quote.requestid, quote.service, quote.command);
+  assert.deepEqual(h.statuses, ["connecting", "live"]);
+  h.socket.ack(chart.requestid, chart.service, chart.command);
+  assert.deepEqual(h.statuses, ["connecting", "live", "live"]);
+  h.socket.ack(chart.requestid, chart.service, chart.command);
+  h.stop.setSymbols(["QQQ", "AAPL"]);
+  h.socket.quote({ key: "QQQ", "3": 500 }); h.time.advance(250);
+  assert.equal(h.statuses.length, 3);
+  assert.equal(h.socket.sent.length, 3);
+  h.stop(); assert.equal(h.time.pending(), 0);
+});

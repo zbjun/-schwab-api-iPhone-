@@ -20,8 +20,12 @@ export async function seedBundledServer(
   vault: Pick<Vault, "get" | "set">,
   readBundle: () => Promise<string | undefined>,
   activate: () => Promise<void> = async () => {},
+  options: { restoreMissing?: boolean } = {},
 ): Promise<boolean> {
-  if (await vault.get(IMPORTED)) return false;
+  // Only an explicit user recovery may bypass the one-time import marker.
+  // Never replace a configured device identity, including on recovery.
+  if (options.restoreMissing && await broker.configuration()) return false;
+  if (!options.restoreMissing && await vault.get(IMPORTED)) return false;
   const raw = await readBundle();
   if (raw === undefined) return false;
   const config = parseBundledServer(raw);

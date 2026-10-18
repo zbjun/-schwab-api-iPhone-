@@ -2,9 +2,9 @@
 
 > 2026-09-22：下单核对并行优化已部署服务器；客户端提交后改为后台同步账户和订单，源码已更新，尚未重新构建 IPA。
 
-当前开发客户端使用 **Expo SDK 57 / React Native 0.86 / React 19.2**，应用配置为 **0.6.3（iOS build 10）**。项目入口、功能概览见[仓库首页](../README.md)，详细证据见[验证记录](VERIFICATION.md)。
+当前开发客户端使用 **Expo SDK 57 / React Native 0.86 / React 19.2**，应用配置为 **0.6.4（iOS build 11）**。项目入口、功能概览见[仓库首页](../README.md)，详细证据见[验证记录](VERIFICATION.md)。
 
-截至 2026-09-11，最近交付的 **0.6.3（10）IPA** 来自 `cc19367`，已包含价格优先本地市价、统一页面布局、自动同步 B/S 点和订单导航。仅交付 device1 / device2 两个自用包；通用未签名归档仅作为本地注入配置的中间产物。安装包已通过结构及配置校验，仍需自行签名安装，尚未实测物理 iPhone。
+截至 2026-09-28，最近交付的 **0.6.4（11）IPA** 来自 Expo 构建 `c6c99824-d602-4eba-beba-0389322f15d1`，包含授权恢复、账户事件同步、极速单次核对和增量行情订阅等更新。配套服务器已部署。仅交付 device1 / device2 两个自用包；通用未签名归档仅作为本地注入配置的中间产物。安装包已通过结构及配置校验，仍需自行签名安装，尚未实测物理 iPhone。
 
 ## 本地预览与 Expo Go
 
@@ -102,7 +102,7 @@ JavaScript、TypeScript 和界面修改通过 Fast Refresh 更新，不触发 EA
 
 ## 独立 IPA
 
-在 `mobile/` 内使用 `eas.json` 的 `unsigned` 配置构建。云端 macOS/Xcode 生成 Release 真机包并嵌入 Hermes bundle，当前脚本输出 `THS-0.6.3-unsigned.ipa`。需用自己的证书签名安装，之后不依赖 Metro、Expo Go 或电脑。推送源码不会触发 IPA 构建。
+在 `mobile/` 内使用 `eas.json` 的 `unsigned` 配置构建。云端 macOS/Xcode 生成 Release 真机包并嵌入 Hermes bundle，当前脚本输出 `THS-0.6.4-unsigned.ipa`。需用自己的证书签名安装，之后不依赖 Metro、Expo Go 或电脑。推送源码不会触发 IPA 构建。
 
 明确需要新 IPA 并核对 EAS 账户额度后，在本目录执行：
 

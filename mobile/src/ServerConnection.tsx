@@ -3,6 +3,7 @@ import { AppState, Linking, Platform, Switch, Text, View } from "react-native";
 import type { TradingState } from "./useTrading.ts";
 import type { Palette } from "./types.ts";
 import { Button, Input, styles } from "./ui.tsx";
+import { hasBundledServerConfiguration, restoreBundledServer } from "./device.ts";
 
 export default function ServerConnection({ state: s, palette: p }: { state: TradingState; palette: Palette }) {
   const [origin, setOrigin] = useState("");
@@ -11,10 +12,17 @@ export default function ServerConnection({ state: s, palette: p }: { state: Trad
   const [manual, setManual] = useState(false);
   const [reconcile, setReconcile] = useState(false);
   const [configured, setConfigured] = useState(false);
+  const [bundled, setBundled] = useState(false);
+  const [configurationIssue, setConfigurationIssue] = useState("");
   const server = s.serverBroker;
   useEffect(() => {
     let active = true;
-    void server?.configuration().then(value => { if (active) { setOrigin(value?.origin ?? ""); setConfigured(!!value); } }).catch(() => {});
+    void server?.configuration().then(value => {
+      if (active) { setOrigin(value?.origin ?? ""); setConfigured(!!value); setConfigurationIssue(""); }
+    }).catch(() => {
+      if (active) setConfigurationIssue("本机设备配置读取失败，请解锁手机后重新进入此页。");
+    });
+    void hasBundledServerConfiguration().then(value => { if (active) setBundled(value); }).catch(() => {});
     return () => { active = false; };
   }, [server]);
   // An HTTPS server callback completes OAuth in the browser; refresh when returning.
@@ -33,12 +41,26 @@ export default function ServerConnection({ state: s, palette: p }: { state: Trad
     </View>
     <View style={[styles.card, { backgroundColor: p.surface, gap: 10 }]}>
       <Text style={[styles.heading, { color: p.text }]}>本机设备连接</Text>
+      {!!configurationIssue && <Text accessibilityRole="alert" style={{ color: p.up }}>{configurationIssue}</Text>}
+      {!configured && !configurationIssue && <Text style={{ color: p.secondary, fontSize: 12, lineHeight: 19 }}>
+        此手机尚未保存设备连接。连接配置与服务器的 Schwab 授权分开保存，恢复连接后先检查服务器状态。
+      </Text>}
+      {!configured && !configurationIssue && bundled && <Button label="恢复安装包内置连接" palette={p} disabled={disabled}
+        onPress={() => void s.run(async () => {
+          if (!server) throw new Error("设备连接尚未初始化，请重新进入此页。");
+          await restoreBundledServer(server, async () => {}, true);
+          const value = await server.configuration();
+          if (!value) throw new Error("安装包内置连接未能恢复，请填写此设备的服务器配置。");
+          setOrigin(value.origin); setDeviceKey(""); setConfigured(true);
+          s.setMessage("本机设备连接已恢复，正在检查共享授权。");
+          if (!s.isDemo) await s.refresh();
+        })} />}
       <Input palette={p} accessibilityLabel="服务器地址" placeholder="HTTPS 服务器地址" autoCapitalize="none" value={origin} onChangeText={setOrigin} editable={!disabled} />
       <Input palette={p} accessibilityLabel="设备访问密钥" placeholder={configured ? "更换配置时填写设备访问密钥" : "服务器生成的本机设备访问密钥"} autoCapitalize="none" secureTextEntry value={deviceKey} onChangeText={setDeviceKey} editable={!disabled} />
       <Button label="保存设备连接" palette={p} disabled={disabled || !origin.trim() || !deviceKey.trim()} onPress={() => void s.run(async () => {
         if (!server) return;
         await server.configureServer(origin, deviceKey);
-        setDeviceKey(""); setConfigured(true);
+        setDeviceKey(""); setConfigured(true); setConfigurationIssue("");
         if (!s.isDemo) await s.refresh();
         s.setMessage("设备连接已保存。关闭演示模式后使用服务器中的账户授权。");
       })} />
@@ -46,9 +68,13 @@ export default function ServerConnection({ state: s, palette: p }: { state: Trad
     </View>
     {!s.isDemo && <>
       <View style={[styles.card, { backgroundColor: p.surface, gap: 10 }]}>
-        <Text style={{ color: s.status.authenticated ? p.down : p.text }}>{s.status.authenticated ? "服务器账户已授权，可直接使用" : "检查服务器账户授权"}</Text>
+        <Text style={{ color: s.status.authenticated ? p.down : p.text }}>{s.status.authenticated ? "服务器账户已授权，可直接使用" : configured ? "检查服务器账户授权" : "先恢复本机设备连接"}</Text>
+        {s.status.refreshExpiresAt !== undefined && <Text style={{ color: p.secondary, fontSize: 12 }}>
+          本次授权预计有效至 {new Date(s.status.refreshExpiresAt).toLocaleString()}；访问令牌由服务器自动刷新，到期需重新登录一次。
+        </Text>}
+        {s.status.reauthorizationRequired && <Text style={{ color: p.up }}>共享授权需要更新，请在一台设备完成官方授权。</Text>}
         <Button label="刷新服务器连接" palette={p} disabled={disabled || !configured} onPress={() => void s.run(s.refresh)} />
-        {!s.status.authenticated && <>
+        {configured && !s.status.authenticated && <>
           <Text style={{ color: p.secondary }}>先刷新检查共享授权；只有服务器确实尚未授权时，才需要登录。请勿在两台设备同时发起授权。</Text>
           <Button label="在官方页面授权服务器" palette={p} disabled={disabled || !configured} onPress={() => void s.run(async () => { await Linking.openURL(await s.broker.authorizationURL()); })} />
           <Button label={manual ? "隐藏手动回调" : "手动粘贴授权回调"} palette={p} disabled={disabled} onPress={() => setManual(!manual)} />

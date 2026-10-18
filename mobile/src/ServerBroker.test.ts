@@ -242,3 +242,82 @@ test("stopping from status callback suppresses remaining quote and candle callba
   await until(() => deletes === 1);
   assert.equal(emitted, 0);
 });
+
+test("atomic quick submit sends one RPC and validates receipt before clearing pending marker", async () => {
+  const draft = { symbol: "SNDU", side: "BUY", kind: "LIMIT", quantity: 1, limitPrice: "27", duration: "DAY" } as const;
+  const snapshot = { id: "quick-review", draft: { ...draft, session: "NORMAL" }, accountID: "account", accountDisplay: "fixture", isDemo: false, preparedAt: 1, availableShares: 25, quote: { symbol: "SNDU" } };
+  let calls = 0;
+  const f = await fixture(async (_url, init) => {
+    calls++;
+    const { method, args } = JSON.parse(String(init?.body));
+    assert.equal(method, "submitQuick");
+    assert.deepEqual(args.slice(0, 2), ["account", { ...draft, session: "NORMAL" }]);
+    assert.match(args[2], /^[A-Za-z0-9_-]{16,128}$/);
+    return response({ snapshot, result: { orderID: "quick-order" } });
+  });
+  const startedAt = Date.now();
+  const value = await f.broker.submitQuick("account", draft);
+  assert.equal(value.result.orderID, "quick-order");
+  assert.ok(value.snapshot.preparedAt >= startedAt);
+  assert.equal(f.data.has("ths.server.operation.v1"), false);
+  assert.equal(calls, 1);
+  for (const malformed of [null, { snapshot, result: null }, { snapshot: { ...snapshot, accountID: "wrong" }, result: {} }, { snapshot: { ...snapshot, draft: { ...snapshot.draft, quantity: 100 } }, result: {} }]) {
+    let attempts = 0;
+    const invalid = await fixture(async () => { attempts++; return response(malformed); });
+    await assert.rejects(invalid.broker.submitQuick("account", draft), { code: "orderOutcomeUnknown" });
+    assert.equal(invalid.data.has("ths.server.operation.v1"), true);
+    await assert.rejects(invalid.broker.submitQuick("account", draft), { code: "orderOutcomeUnknown" });
+    assert.equal(attempts, 1);
+  }
+});
+
+test("account activity long poll forwards changes and reset, then aborts and releases on disconnect", async () => {
+  let posts = 0, deletes = 0, changes = 0;
+  let lastSignal: AbortSignal | null | undefined;
+  const statuses: string[] = [];
+  const f = await fixture(async (url, init) => {
+    assert.equal(url, `${ORIGIN}/activity`);
+    if (init?.method === "DELETE") { deletes++; return response(null); }
+    const body = JSON.parse(String(init?.body));
+    assert.equal(body.waitMs, 20_000);
+    lastSignal = init?.signal;
+    posts++;
+    if (posts === 1) return response({ cursor: 5, status: "live" });
+    if (posts === 2) { assert.equal(body.cursor, 5); return response({ cursor: 6, status: "live" }); }
+    if (posts === 3) return response({ cursor: 0, status: "connecting" });
+    return new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("stopped"))));
+  }, 5);
+  f.broker.subscribeAccountActivity(() => { changes++; }, status => statuses.push(status));
+  await until(() => posts === 4);
+  assert.equal(changes, 2);
+  assert.deepEqual(statuses, ["connecting", "live", "live", "connecting"]);
+  await f.broker.disconnect();
+  assert.equal(lastSignal?.aborted, true);
+  assert.equal(deletes, 1);
+  assert.equal(await f.broker.configuration(), null);
+});
+
+test("atomic receipt is checked against the dispatched copy when caller mutates its draft", async () => {
+  const draft = { symbol: "SNDU", side: "BUY", kind: "LIMIT", quantity: 1, limitPrice: "27", duration: "DAY" } as const;
+  let finish!: (r: Response) => void;
+  const f = await fixture(async (_url, init) => {
+    const { args } = JSON.parse(String(init?.body));
+    const snapshot = { id: "quick-review", draft: args[1], accountID: args[0], accountDisplay: "fixture", isDemo: false, preparedAt: 1, availableShares: 25, quote: { symbol: args[1].symbol } };
+    return new Promise<Response>(resolve => { finish = () => resolve(response({ snapshot, result: { orderID: "accepted" } })); });
+  });
+  const pending = f.broker.submitQuick("account", draft);
+  await until(() => !!finish);
+  Object.assign(draft, { symbol: "QQQ", quantity: 100 });
+  finish(response(null));
+  assert.equal((await pending).result.orderID, "accepted");
+  assert.equal(f.data.has("ths.server.operation.v1"), false);
+});
+
+test("auth failure messages are local and explain callback expiration without leaking provider content", async () => {
+  const f = await fixture(async () => response({ error: { code: "authorizationExpired", message: "PRIVATE_PROVIDER_BODY" } }, 400));
+  await assert.rejects(f.broker.completeAuthorization("https://fixture/callback"), error => {
+    assert.match((error as Error).message, /旧链接/);
+    assert.equal((error as Error).message.includes("PRIVATE_PROVIDER_BODY"), false);
+    return true;
+  });
+});

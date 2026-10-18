@@ -104,6 +104,13 @@ const quoteFields = {
 } as const;
 const fields =
   "0,1,2,3,8,10,11,12,13,15,17,18,19,20,21,28,29,30,31,32,33,34,35,36,42";
+const activityMessageTypes = new Set([
+  "SUBSCRIBED", "ERROR", "OrderCreated", "OrderAccepted", "OrderRejected",
+  "OrderCanceled", "OrderCancelRequested", "OrderReplaced", "OrderReplaceRequested",
+  "OrderFill", "OrderPartialFill", "OrderFillCompleted", "ExecutionCreated",
+  "OrderMonitorCreated", "OrderMonitorCompleted", "OrderMonitorUpdated",
+  "ExecutionRequested", "ExecutionRequestCreated", "ExecutionRequestCompleted",
+]);
 
 /** Backwards-compatible single-symbol client. */
 export function openMarketStream(
@@ -125,6 +132,14 @@ export interface MultiMarketStreamCallbacks {
   onFormingCandle?: (symbol: string, candle: Candle) => void;
   onCandle: (symbol: string, candle: Candle) => void;
   onStatus: MarketStreamCallbacks["onStatus"];
+  /** Invalidation only: callers must reconcile orders/balances using REST. */
+  onAccountActivity?: (event: { sequence?: number; messageType?: string }) => void;
+  onAccountActivityStatus?: MarketStreamCallbacks["onStatus"];
+}
+
+export interface MarketStreamHandle {
+  (): void;
+  setSymbols(symbols: string[]): void;
 }
 
 /** One authenticated socket for a bounded symbol set; sequences stay per symbol. */
@@ -133,10 +148,14 @@ export function openMultiMarketStream(
   credentials: () => Promise<StreamCredentials>,
   callbacks: MultiMarketStreamCallbacks,
   options: MarketStreamOptions = {},
-): () => void {
-  symbols = [...new Set(symbols)];
-  if (!symbols.length || symbols.length > 32 || symbols.some((symbol) => !/^[A-Z0-9][A-Z0-9.\/-]{0,19}$/.test(symbol)))
-    throw new Error("Invalid market symbol set");
+): MarketStreamHandle {
+  function validateSymbols(values: string[]) {
+    const unique = [...new Set(values)];
+    if ((!unique.length && !callbacks.onAccountActivity) || unique.length > 32 || unique.some((symbol) => !/^[A-Z0-9][A-Z0-9.\/-]{0,19}$/.test(symbol)))
+      throw new Error("Invalid market symbol set");
+    return unique;
+  }
+  symbols = validateSymbols(symbols);
   const now = options.now ?? Date.now;
   const schedule = options.setTimeout ?? setTimeout;
   const cancel = options.clearTimeout ?? clearTimeout;
@@ -153,6 +172,10 @@ export function openMultiMarketStream(
   let heartbeat: Timer | undefined;
   let reconnect: Timer | undefined;
   let flushTimer: Timer | undefined;
+  let activityDeadline: Timer | undefined;
+  let updateSubscriptions: (() => void) | undefined;
+  let lastStatus: Parameters<MarketStreamCallbacks["onStatus"]>[0] | undefined;
+  let subscriptionChanged = false;
   function freshState(symbol: string) {
     return {
       quote: { symbol } as StreamQuote,
@@ -172,18 +195,23 @@ export function openMultiMarketStream(
     }
   }
 
-  function report(status: Parameters<MarketStreamCallbacks["onStatus"]>[0]) {
-    if (!stopped) callbacks.onStatus(status);
+  function report(status: Parameters<MarketStreamCallbacks["onStatus"]>[0], force = false) {
+    if (!stopped && (status !== lastStatus || force)) {
+      lastStatus = status;
+      callbacks.onStatus(status);
+    }
   }
   function clearTimers() {
-    for (const timer of [deadline, heartbeat, reconnect, flushTimer]) {
+    for (const timer of [deadline, heartbeat, reconnect, flushTimer, activityDeadline]) {
       if (timer !== undefined) cancel(timer);
     }
     deadline = heartbeat = reconnect = flushTimer = undefined;
+    activityDeadline = undefined;
   }
   function closeSocket() {
     const previous = socket;
     socket = undefined;
+    updateSubscriptions = undefined;
     if (!previous) return;
     previous.onopen =
       previous.onmessage =
@@ -203,6 +231,7 @@ export function openMultiMarketStream(
     closeSocket();
     clearPending();
     report("fallback");
+    if (!stopped) callbacks.onAccountActivityStatus?.("fallback");
     if (stopped) return;
     const delay = Math.min(60_000, 5_000 * 2 ** Math.min(retry++, 4));
     reconnect = schedule(() => {
@@ -219,7 +248,7 @@ export function openMultiMarketStream(
     heartbeat = schedule(fail, 45_000);
   }
   function queueFlush() {
-    if (phase !== "live" || flushTimer !== undefined) return;
+    if (stopped || phase !== "live" || flushTimer !== undefined) return;
     flushTimer = schedule(() => {
       flushTimer = undefined;
       for (const [symbol, state] of states) {
@@ -404,8 +433,10 @@ export function openMultiMarketStream(
     const current = ++generation;
     const active = () => !stopped && current === generation;
     phase = "connecting";
+    states.clear();
     for (const symbol of symbols) states.set(symbol, freshState(symbol));
     report("connecting");
+    if (active()) callbacks.onAccountActivityStatus?.("connecting");
     if (!active()) return;
     armDeadline();
     try {
@@ -424,7 +455,15 @@ export function openMultiMarketStream(
         throw new Error("Invalid stream credentials");
       const ws = createSocket(auth.url);
       socket = ws;
-      const acknowledged = new Set<string>();
+      const subscribed = new Map<string, Set<string>>([
+        ["LEVELONE_EQUITIES", new Set()], ["CHART_EQUITY", new Set()],
+      ]);
+      const initialized = new Set<string>();
+      const pending = new Map<string, { service: string; command: string; symbols: string[] }>();
+      let serial = 3;
+      let loggedIn = false;
+      let activityState: "pending" | "live" | "fallback" = "pending";
+      let activitySequence = -1;
       const request = (
         id: string,
         service: string,
@@ -438,6 +477,62 @@ export function openMultiMarketStream(
         SchwabClientCorrelId: auth.correlId,
         parameters,
       });
+      function marketReady() {
+        return [...subscribed.entries()].every(([service, present]) =>
+          (!symbols.length || initialized.has(service)) &&
+          symbols.every((symbol) => present.has(symbol)) &&
+          ![...pending.values()].some((item) => item.service === service));
+      }
+      function reportReady() {
+        if (!active()) return;
+        if (marketReady()) {
+          if (deadline !== undefined) cancel(deadline);
+          deadline = undefined;
+          if (symbols.length || activityState === "live") {
+            phase = "live";
+            retry = 0;
+            // Newly attached hub consumers start connecting; notify them once
+            // both services acknowledge the desired set, even on a live socket.
+            const changed = subscriptionChanged;
+            subscriptionChanged = false;
+            report("live", changed);
+            queueFlush();
+          } else if (activityState === "fallback") report("fallback");
+        }
+      }
+      function activityStatus(status: "live" | "fallback") {
+        activityState = status;
+        if (activityDeadline !== undefined) cancel(activityDeadline);
+        activityDeadline = undefined;
+        callbacks.onAccountActivityStatus?.(status);
+        // Reconcile after every successful subscription, including reconnect gaps.
+        if (active() && status === "live") callbacks.onAccountActivity?.({});
+        reportReady();
+      }
+      updateSubscriptions = () => {
+        if (!active() || !loggedIn) return;
+        const requests: ReturnType<typeof request>[] = [];
+        for (const [service, present] of subscribed) {
+          if ([...pending.values()].some((item) => item.service === service)) continue;
+          const removed = [...present].filter((symbol) => !symbols.includes(symbol));
+          const added = symbols.filter((symbol) => !present.has(symbol));
+          const command = removed.length ? "UNSUBS" : initialized.has(service) ? "ADD" : "SUBS";
+          const changed = removed.length ? removed : added;
+          if (!changed.length) continue;
+          const id = !initialized.has(service) && command === "SUBS"
+            ? service === "LEVELONE_EQUITIES" ? "1" : "2" : String(++serial);
+          pending.set(id, { service, command, symbols: changed });
+          requests.push(request(id, service, command, {
+            keys: changed.join(","),
+            ...(command === "UNSUBS" ? {} : { fields: service === "LEVELONE_EQUITIES" ? fields : "0,1,2,3,4,5,6,7,8" }),
+          }));
+        }
+        if (requests.length) {
+          armDeadline();
+          try { ws.send(JSON.stringify({ requests })); } catch { fail(); }
+        }
+        reportReady();
+      };
       ws.onopen = () => {
         if (!active() || phase !== "connecting") return;
         phase = "login";
@@ -484,7 +579,7 @@ export function openMultiMarketStream(
               typeof response.requestid === "number" &&
               Number.isInteger(response.requestid) &&
               response.requestid >= 0 &&
-              response.requestid <= 2
+              Number.isSafeInteger(response.requestid)
                 ? String(response.requestid)
                 : response.requestid;
             const login =
@@ -492,49 +587,44 @@ export function openMultiMarketStream(
               id === "0" &&
               response.service === "ADMIN" &&
               response.command === "LOGIN";
-            const subscription =
-              phase === "subscribing" &&
-              response.command === "SUBS" &&
-              ((id === "1" && response.service === "LEVELONE_EQUITIES") ||
-                (id === "2" && response.service === "CHART_EQUITY"));
-            if (!login && !subscription) continue;
+            const subscription = typeof id === "string" ? pending.get(id) : undefined;
+            const activity = callbacks.onAccountActivity && loggedIn && id === "3" && response.service === "ACCT_ACTIVITY" &&
+              response.command === "SUBS" && activityState === "pending";
+            const matchesSubscription = subscription && response.service === subscription.service &&
+              response.command === subscription.command;
+            if (!login && !matchesSubscription && !activity) continue;
+            if (activity) {
+              activityStatus(response.content.code === 0 ? "live" : "fallback");
+              continue;
+            }
             if (response.content.code !== 0) {
               fail();
               return;
             }
             if (login) {
               phase = "subscribing";
-              armDeadline();
-              try {
-                ws.send(
-                  JSON.stringify({
-                    requests: [
-                      request("1", "LEVELONE_EQUITIES", "SUBS", {
-                        keys: symbols.join(","),
-                        fields,
-                      }),
-                      request("2", "CHART_EQUITY", "SUBS", {
-                        keys: symbols.join(","),
-                        fields: "0,1,2,3,4,5,6,7,8",
-                      }),
-                    ],
-                  }),
-                );
-              } catch {
-                fail();
-                return;
+              loggedIn = true;
+              updateSubscriptions?.();
+              if (!active()) return;
+              if (callbacks.onAccountActivity) {
+                activityDeadline = schedule(() => {
+                  if (active() && activityState === "pending") activityStatus("fallback");
+                }, 10_000);
+                try {
+                  ws.send(JSON.stringify({ requests: [request("3", "ACCT_ACTIVITY", "SUBS", {
+                    keys: "Account Activity", fields: "0,1,2,3",
+                  })] }));
+                } catch { fail(); return; }
               }
-            } else {
-              acknowledged.add(id as string);
-              if (acknowledged.size === 2) {
-                phase = "live";
-                retry = 0;
-                if (deadline !== undefined) cancel(deadline);
-                deadline = undefined;
-                report("live");
-                if (active() && [...states.values()].some((state) => state.pendingQuote || state.pendingCandles.size))
-                  queueFlush();
+            } else if (subscription) {
+              pending.delete(id as string);
+              const present = subscribed.get(subscription.service)!;
+              initialized.add(subscription.service);
+              for (const symbol of subscription.symbols) {
+                if (subscription.command === "UNSUBS") present.delete(symbol);
+                else present.add(symbol);
               }
+              updateSubscriptions?.();
             }
           }
         if (
@@ -547,6 +637,21 @@ export function openMultiMarketStream(
           if (!object(update) || !Array.isArray(update.content)) continue;
           for (const entry of update.content) {
             if (!object(entry)) continue;
+            if (update.service === "ACCT_ACTIVITY") {
+              if (activityState !== "live" || !callbacks.onAccountActivity) continue;
+              // Every valid notification (including unknown types or sequence gaps)
+              // invalidates REST state. Never expose account IDs or message payloads.
+              const sequence = finite(entry.seq) && Number.isSafeInteger(entry.seq) && entry.seq >= 0
+                ? entry.seq : undefined;
+              if (sequence !== undefined && sequence <= activitySequence) continue;
+              if (sequence !== undefined) activitySequence = sequence;
+              const messageType = typeof entry["2"] === "string" && activityMessageTypes.has(entry["2"])
+                ? entry["2"] : undefined;
+              callbacks.onAccountActivity({ ...(sequence === undefined ? {} : { sequence }),
+                ...(messageType === undefined ? {} : { messageType }) });
+              if (!active()) return;
+              continue;
+            }
             const symbol = typeof entry.key === "string" ? entry.key : entry["0"];
             if (typeof symbol !== "string") continue;
             const state = states.get(symbol);
@@ -564,12 +669,23 @@ export function openMultiMarketStream(
     }
   }
   void connect();
-  return () => {
+  const stop = (() => {
     if (stopped) return;
     stopped = true;
     generation++;
     clearTimers();
     closeSocket();
     clearPending();
+  }) as MarketStreamHandle;
+  stop.setSymbols = (nextSymbols) => {
+    if (stopped) return;
+    const next = validateSymbols(nextSymbols);
+    if (symbols.length === next.length && symbols.every((symbol) => next.includes(symbol))) return;
+    symbols = next;
+    subscriptionChanged = true;
+    for (const symbol of states.keys()) if (!symbols.includes(symbol)) states.delete(symbol);
+    for (const symbol of symbols) if (!states.has(symbol)) states.set(symbol, freshState(symbol));
+    updateSubscriptions?.();
   };
+  return stop;
 }

@@ -865,6 +865,8 @@ test("credentials and usable authorization survive reload; saving the same keys 
     configured: true,
     authenticated: false,
     expiresAt: undefined,
+    refreshExpiresAt: undefined,
+    reauthorizationRequired: true,
     unresolvedOperation: false,
   });
   await f.broker.disconnect(true);
@@ -1020,9 +1022,9 @@ test("refresh rejection invalidates persisted authentication without leaking pro
   f.clock.value += 2_000;
   f.state.onRequest = async (url, init) =>
     new URLSearchParams(String(init.body)).get("grant_type") === "refresh_token"
-      ? response(url, { error_description: SECRET }, 400)
+      ? response(url, { error: "invalid_grant", error_description: SECRET }, 400)
       : undefined;
-  await rejectsCode(f.broker.accounts(), "httpStatus");
+  await rejectsCode(f.broker.accounts(), "authorizationRequired");
   assert.equal((await f.create().status()).authenticated, false);
 });
 
@@ -1039,14 +1041,13 @@ test("failed secure-store reads can retry, malformed stored sessions fail closed
   assert.equal((await f.create().status()).configured, false);
 });
 
-test("API 401 drops tokens, errors and redirected responses cannot expose their payload", async () => {
+test("API errors retain refresh credentials and never expose response payload", async () => {
   for (const status of [401, 403]) {
     const f = fixture();
     await f.authorize();
     f.state.onRequest = async (raw) => response(raw, SECRET, status);
     await rejectsCode(f.broker.accounts(), "httpStatus");
-    if (status === 401)
-      assert.equal((await f.create().status()).authenticated, false);
+    assert.equal((await f.create().status()).authenticated, true);
   }
   const f = fixture();
   await f.authorize();
@@ -1379,8 +1380,7 @@ test("definitive order rejections clear reconciliation without write or authenti
     await rejectsCode(f.broker.submit(review), "httpStatus");
     assert.equal(f.writes().length, 1);
     assert.equal((await f.create().status()).unresolvedOperation, false);
-    if (status === 401)
-      assert.equal((await f.create().status()).authenticated, false);
+    assert.equal((await f.create().status()).authenticated, true);
   }
 });
 
@@ -1671,4 +1671,258 @@ test("malformed tokens and duplicate account mappings never establish usable acc
       : undefined;
   await rejectsCode(f.broker.prepare(ACCOUNT, draft), "invalidResponse");
   assert.equal(f.writes().length, 0);
+});
+
+
+test("GET 401 recovery refreshes once across concurrent rejected reads and bounds retries", async () => {
+  const f = fixture();
+  await f.authorize();
+  let refreshes = 0;
+  f.state.onRequest = async (url, init) => {
+    if (url.includes("/oauth/token")) {
+      refreshes++;
+      return response(url, { access_token: "new_access", expires_in: 1800 });
+    }
+    if (init.headers && (init.headers as Record<string, string>).Authorization === "Bearer fixture_access_token")
+      return response(url, {}, 401);
+    return undefined;
+  };
+  await Promise.all([f.broker.accounts(), f.broker.accounts(), f.broker.quotes(["AAPL"])]);
+  assert.equal(refreshes, 1);
+  f.state.onRequest = async (url) => url.includes("/oauth/token")
+    ? response(url, { access_token: "another_access", expires_in: 1800 })
+    : response(url, {}, 401);
+  const start = f.requests.length;
+  await rejectsCode(f.broker.accounts(), "httpStatus");
+  assert.equal(f.requests.length - start, 3);
+  assert.equal((await f.create().status()).authenticated, true);
+});
+
+test("transient and configuration refresh errors preserve credentials and original refresh expiry", async () => {
+  for (const providerError of ["invalid_client", "temporarily_unavailable", undefined]) {
+    const f = fixture();
+    await f.authorize();
+    const before = JSON.parse(f.vault.values.get(SESSION)!).token;
+    assert.equal(before.refreshIssuedAt, initialTime);
+    assert.equal(before.refreshExpiresAt, initialTime + 7 * 86_400_000);
+    f.clock.value += 1_800_000;
+    f.state.onRequest = async (url) => response(url, { error: providerError, error_description: SECRET }, 400);
+    await rejectsCode(f.broker.maintainAuthorization(), "httpStatus");
+    assert.deepEqual(JSON.parse(f.vault.values.get(SESSION)!).token, before);
+    f.state.onRequest = undefined;
+    await f.broker.maintainAuthorization();
+    const after = JSON.parse(f.vault.values.get(SESSION)!).token;
+    assert.equal(after.refreshIssuedAt, before.refreshIssuedAt);
+    assert.equal(after.refreshExpiresAt, before.refreshExpiresAt);
+  }
+});
+
+test("legacy refresh metadata remains unknown and known expiry requests reauthorization", async () => {
+  const f = fixture();
+  await f.authorize();
+  const session = JSON.parse(f.vault.values.get(SESSION)!);
+  delete session.token.refreshIssuedAt;
+  delete session.token.refreshExpiresAt;
+  f.vault.values.set(SESSION, JSON.stringify(session));
+  f.clock.value += 1_800_000;
+  const legacy = f.create();
+  await legacy.maintainAuthorization();
+  assert.equal((await legacy.status()).refreshExpiresAt, undefined);
+  session.token.refreshExpiresAt = initialTime + 1000;
+  f.vault.values.set(SESSION, JSON.stringify(session));
+  const expired = f.create();
+  assert.equal((await expired.status()).reauthorizationRequired, true);
+  await rejectsCode(expired.maintainAuthorization(), "authorizationRequired");
+});
+
+test("atomic quick submit uses one fresh validation and returns immutable non-replayable receipt snapshot", async () => {
+  const f = fixture();
+  await f.authorize();
+  const start = f.requests.length;
+  const { snapshot, result } = await f.broker.submitQuick(ACCOUNT, draft);
+  assert.deepEqual(result, { orderID: "456" });
+  assert.equal(f.requests.slice(start).filter(r => r.init.method === "GET").length, 4);
+  assert.equal(f.writes().length, 1);
+  assert.equal(Object.isFrozen(snapshot.draft), true);
+  await rejectsCode(f.broker.submit(snapshot), "reviewExpired");
+});
+
+test("atomic quick submit rejects insufficient funds and preserves unknown-outcome blockade", async () => {
+  const f = fixture();
+  await f.authorize();
+  f.state.accounts = accountDTO(0);
+  await rejectsCode(f.broker.submitQuick(ACCOUNT, draft), "insufficientFunds");
+  assert.equal(f.writes().length, 0);
+  f.state.accounts = accountDTO();
+  f.state.onRequest = async (url, init) => init.method === "POST" ? response(url, {}, 500) : undefined;
+  await rejectsCode(f.broker.submitQuick(ACCOUNT, draft), "orderOutcomeUnknown");
+  await rejectsCode(f.broker.submitQuick(ACCOUNT, draft), "orderOutcomeUnknown");
+  assert.equal(f.writes().length, 1);
+});
+
+
+test("quick submission freezes input, serializes competing writes and invalidates older reviews", async () => {
+  const f = fixture();
+  await f.authorize();
+  const review = await f.broker.prepare(ACCOUNT, draft);
+  const gate = deferred<void>(), entered = deferred<void>();
+  f.state.onRequest = async (url, init) => {
+    if (init.method === "GET" && url.endsWith("/accountNumbers")) {
+      entered.resolve();
+      await gate.promise;
+    }
+    return undefined;
+  };
+  const mutable = { ...draft };
+  const pending = f.broker.submitQuick(ACCOUNT, mutable);
+  await entered.promise;
+  mutable.quantity = 5000;
+  await rejectsCode(f.broker.submitQuick(ACCOUNT, draft), "operationBusy");
+  await rejectsCode(f.broker.cancel(ACCOUNT, "123"), "operationBusy");
+  gate.resolve();
+  const receipt = await pending;
+  assert.equal(receipt.snapshot.draft.quantity, 5);
+  assert.equal(JSON.parse(String(f.writes()[0].init.body)).orderLegCollection[0].quantity, 5);
+  await rejectsCode(f.broker.submit(review), "reviewExpired");
+});
+
+test("quick submission aborted by disconnect never crosses the order write boundary", async () => {
+  const f = fixture();
+  await f.authorize();
+  const gate = deferred<void>(), entered = deferred<void>();
+  f.state.onRequest = async (url, init) => {
+    if (init.method === "GET" && url.endsWith("/accountNumbers")) {
+      entered.resolve(); await gate.promise;
+    }
+    return undefined;
+  };
+  const pending = f.broker.submitQuick(ACCOUNT, draft);
+  await entered.promise;
+  await f.broker.disconnect();
+  gate.resolve();
+  await rejectsCode(pending, "sessionChanged");
+  assert.equal(f.writes().length, 0);
+});
+
+
+test("quick submission rejects validation aged over a minute before any write", async () => {
+  const f = fixture();
+  await f.authorize();
+  f.state.onRequest = async (url, init) => {
+    if (init.method === "GET" && url.includes("/orders?")) f.clock.value += 60_001;
+    return undefined;
+  };
+  await rejectsCode(f.broker.submitQuick(ACCOUNT, draft), "reviewExpired");
+  assert.equal(f.writes().length, 0);
+});
+
+test("late 401 from an older token reuses the completed refresh without a second exchange", async () => {
+  const f = fixture();
+  await f.authorize();
+  const entered = deferred<void>(), gate = deferred<void>();
+  let staleReads = 0, refreshes = 0;
+  f.state.onRequest = async (url, init) => {
+    if (url.includes("/oauth/token")) {
+      refreshes++;
+      return response(url, { access_token: "new_access", expires_in: 1800 });
+    }
+    if ((init.headers as Record<string, string>).Authorization === "Bearer fixture_access_token") {
+      if (++staleReads === 1) { entered.resolve(); await gate.promise; }
+      return response(url, {}, 401);
+    }
+    return undefined;
+  };
+  const late = f.broker.accounts();
+  await entered.promise;
+  await f.broker.accounts();
+  gate.resolve();
+  await late;
+  assert.equal(refreshes, 1);
+});
+
+
+test("quick submission rechecks freshness after token renewal before marking or sending", async () => {
+  const f = fixture();
+  f.state.tokenSeconds = 61;
+  await f.authorize();
+  f.state.onRequest = async (url, init) => {
+    if (init.method === "GET" && url.includes("/orders?")) f.clock.value += 2000;
+    if (new URLSearchParams(String(init.body)).get("grant_type") === "refresh_token")
+      f.clock.value += 60_001;
+    return undefined;
+  };
+  await rejectsCode(f.broker.submitQuick(ACCOUNT, draft), "reviewExpired");
+  assert.equal(f.writes().length, 0);
+  assert.equal(f.vault.values.has(MARKER), false);
+});
+
+test("quick submission rechecks freshness after slow marker storage and cleans definite unsent state", async () => {
+  for (const cleanupFails of [false, true]) {
+    const f = fixture();
+    await f.authorize();
+    const set = f.vault.set.bind(f.vault);
+    f.vault.set = async (key, value) => {
+      await set(key, value);
+      if (key === MARKER) f.clock.value += 60_001;
+    };
+    f.vault.failRemove = cleanupFails;
+    await rejectsCode(f.broker.submitQuick(ACCOUNT, draft), cleanupFails ? "orderOutcomeUnknown" : "reviewExpired");
+    assert.equal(f.writes().length, 0);
+    assert.equal(f.vault.values.has(MARKER), cleanupFails);
+    assert.equal((await f.broker.status()).unresolvedOperation, cleanupFails);
+  }
+});
+
+
+test("opt-in phase timings expose only bounded metadata and observer throws cannot change acceptance", async () => {
+  const f = fixture();
+  const samples: { phase: string; durationMs: number; outcome: string }[] = [];
+  const broker = new SchwabBroker(f.vault, {
+    fetch: f.fetcher, now: () => f.clock.value, randomState: () => "a".repeat(64),
+    onTiming: sample => { samples.push(sample); throw new Error(SECRET); },
+  });
+  await f.authorize(broker);
+  f.state.onRequest = async (_url, init) => {
+    f.clock.value += init.method === "POST" ? 25 : 10;
+    return undefined;
+  };
+  const result = await broker.submitQuick(ACCOUNT, draft);
+  assert.equal(result.result.orderID, "456");
+  assert.equal((await broker.status()).unresolvedOperation, false);
+  assert.deepEqual(samples.map(s => [s.phase, s.outcome]), [["validation", "ok"], ["submit", "ok"]]);
+  assert.equal(samples[1].durationMs, 25);
+  for (const sample of samples) {
+    assert.deepEqual(Object.keys(sample).sort(), ["durationMs", "outcome", "phase"]);
+    assert.ok(Number.isFinite(sample.durationMs) && sample.durationMs >= 0 && sample.durationMs <= 300_000);
+  }
+  assert.equal(JSON.stringify(samples).includes(SECRET), false);
+});
+
+test("phase timings include validation, refresh and write failures without provider text", async () => {
+  const f = fixture();
+  const samples: { phase: string; durationMs: number; outcome: string }[] = [];
+  const broker = new SchwabBroker(f.vault, {
+    fetch: f.fetcher, now: () => f.clock.value, randomState: () => "a".repeat(64),
+    onTiming: sample => { samples.push(sample); },
+  });
+  await f.authorize(broker);
+  f.state.accounts = accountDTO(0);
+  await rejectsCode(broker.submitQuick(ACCOUNT, draft), "insufficientFunds");
+  assert.equal(samples.at(-1)?.outcome, "error");
+  f.state.accounts = accountDTO();
+  f.clock.value += 1_800_000;
+  f.state.onRequest = async (url) => { f.clock.value -= 100; return response(url, { error: "invalid_client", error_description: SECRET }, 400); };
+  await rejectsCode(broker.maintainAuthorization(), "httpStatus");
+  assert.deepEqual(samples.at(-1), { phase: "refresh", outcome: "error", durationMs: 0 });
+  f.state.onRequest = undefined;
+  await broker.maintainAuthorization();
+  assert.equal(samples.at(-1)?.phase, "refresh");
+  assert.equal(samples.at(-1)?.outcome, "ok");
+  f.state.onRequest = async (url, init) => {
+    if (init.method === "POST") { f.clock.value += 900_000; return response(url, { description: SECRET }, 503); }
+    return undefined;
+  };
+  await rejectsCode(broker.submitQuick(ACCOUNT, draft), "orderOutcomeUnknown");
+  assert.deepEqual(samples.at(-1), { phase: "submit", outcome: "error", durationMs: 300_000 });
+  assert.equal(JSON.stringify(samples).includes(SECRET), false);
 });

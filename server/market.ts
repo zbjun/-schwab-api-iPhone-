@@ -1,6 +1,7 @@
 import { openMultiMarketStream } from "../mobile/src/marketStream.ts";
 import type { MarketStreamCallbacks, StreamCredentials } from "../mobile/src/marketStream.ts";
-import type { Candle } from "../mobile/src/types.ts";
+import type { Candle, History, HistoryRange } from "../mobile/src/types.ts";
+import type { MinuteArchive } from "./minuteArchive.ts";
 
 type Quote = Parameters<MarketStreamCallbacks["onQuote"]>[0];
 type Status = Parameters<MarketStreamCallbacks["onStatus"]>[0];
@@ -30,6 +31,8 @@ export interface MarketHubOptions {
   openStream?: typeof openMultiMarketStream;
   setTimeout?: typeof setTimeout;
   clearTimeout?: typeof clearTimeout;
+  archive?: MinuteArchive;
+  collectSymbols?: string[];
 }
 
 /** Server-local relay. Device identities must be authenticated by the HTTP handler. */
@@ -38,7 +41,12 @@ export class MarketHub {
   private symbols = new Map<string, SymbolState>();
   private revision = 0;
   private generation = 0;
-  private stop?: () => void;
+  private stop?: (() => void) & { setSymbols?: (symbols: string[]) => void };
+  private activityDevices = new Map<string, Device>();
+  private activityRevision = 0;
+  private activityStatus: Status = "connecting";
+  private readonly collectSymbols: string[];
+  private readonly archive?: MinuteArchive;
   private closed = false;
   private readonly openStream: typeof openMultiMarketStream;
   private readonly schedule: typeof setTimeout;
@@ -50,6 +58,12 @@ export class MarketHub {
     this.openStream = options.openStream ?? openMultiMarketStream;
     this.schedule = options.setTimeout ?? setTimeout;
     this.cancel = options.clearTimeout ?? clearTimeout;
+    const collect = options.collectSymbols ?? [];
+    if (!Array.isArray(collect) || collect.length > 8 || collect.some(s => typeof s !== "string" || !/^[A-Z0-9][A-Z0-9.\/-]{0,19}$/.test(s)))
+      throw new Error("Invalid collection symbols (maximum 8)");
+    this.collectSymbols = [...new Set(collect)].sort();
+    this.archive = options.archive;
+    if (collect.length) this.rebuild();
   }
 
   private renew(id: string, device: Device) {
@@ -70,6 +84,7 @@ export class MarketHub {
   private candle(symbol: string, candle: Candle, kind: Event["kind"]) {
     const state = this.symbols.get(symbol);
     if (!state) return;
+    this.archive?.observe(symbol, { ...candle, ...(kind === "forming" ? { provisional: true } : {}) });
     if (kind === "forming") {
       const old = state.forming.get(candle.time);
       candle = { ...candle, open: old?.open ?? candle.open,
@@ -87,23 +102,28 @@ export class MarketHub {
   }
 
   private rebuild() {
-    const wanted = [...new Set([...this.devices.values()].map((device) => device.symbol))].sort();
-    if (wanted.join(",") === [...this.symbols.keys()].sort().join(",")) return;
-    const epoch = ++this.generation;
-    this.stop?.();
-    this.stop = undefined;
+    if (this.closed) return;
+    const wanted = [...new Set([...this.collectSymbols, ...[...this.devices.values()].map((device) => device.symbol)])].sort();
+    if (this.stop && (wanted.length || this.activityDevices.size) && wanted.join(",") === [...this.symbols.keys()].sort().join(",")) return;
     for (const symbol of this.symbols.keys()) if (!wanted.includes(symbol)) this.symbols.delete(symbol);
     for (const symbol of wanted) {
       if (!this.symbols.has(symbol)) this.symbols.set(symbol, {
         revision: ++this.revision, status: "connecting", events: [], forming: new Map(), candles: new Map(),
       });
     }
-    if (!wanted.length || this.closed) return;
+    if (this.stop?.setSymbols && (wanted.length || this.activityDevices.size)) {
+      this.stop.setSymbols(wanted);
+      return;
+    }
+    const epoch = ++this.generation;
+    this.stop?.();
+    this.stop = undefined;
+    if (!wanted.length && !this.activityDevices.size) return;
     const active = () => !this.closed && epoch === this.generation;
     this.stop = this.openStream(wanted, this.credentials, {
       onStatus: (status) => {
         if (!active()) return;
-        for (const symbol of wanted) {
+        for (const symbol of this.symbols.keys()) {
           const state = this.symbols.get(symbol)!;
           state.status = status;
           this.publish(symbol);
@@ -118,7 +138,66 @@ export class MarketHub {
       },
       onFormingCandle: (symbol, candle) => { if (active()) this.candle(symbol, candle, "forming"); },
       onCandle: (symbol, candle) => { if (active()) this.candle(symbol, candle, "candle"); },
+      onAccountActivity: () => { if (active()) this.activityChanged(); },
+      onAccountActivityStatus: (status) => {
+        if (!active() || this.activityStatus === status) return;
+        this.activityStatus = status;
+        this.activityChanged();
+      },
     });
+  }
+
+  mergeHistory(history: History, range: HistoryRange): History {
+    return this.archive?.merge(history, range) ?? history;
+  }
+
+  private activityChanged() {
+    this.activityRevision++;
+    for (const device of this.activityDevices.values()) device.wake?.();
+  }
+
+  private renewActivity(id: string, device: Device) {
+    if (device.expiry !== undefined) this.cancel(device.expiry);
+    device.expiry = this.schedule(() => this.releaseActivity(id), 45_000);
+    device.expiry.unref?.();
+  }
+
+  async pollActivity(id: string, cursor?: number, waitMs = 20_000, signal?: AbortSignal) {
+    if (this.closed || !id || (cursor !== undefined && (!Number.isSafeInteger(cursor) || cursor < 0)) ||
+        !Number.isFinite(waitMs) || waitMs < 0 || waitMs > 20_000) throw new Error("Invalid activity request");
+    let device = this.activityDevices.get(id);
+    if (device?.wake) throw new Error("Activity request already pending");
+    if (!device && this.activityDevices.size >= 16) throw new Error("Activity device limit reached");
+    if (!device) { cursor = undefined; device = { symbol: "" }; this.activityDevices.set(id, device); }
+    this.renewActivity(id, device);
+    this.rebuild();
+    if (!signal?.aborted && cursor === this.activityRevision && waitMs) {
+      await new Promise<void>(resolve => {
+        let timer: Timer | undefined;
+        const done = () => {
+          if (device!.wake !== done) return;
+          device!.wake = undefined;
+          if (timer !== undefined) this.cancel(timer);
+          signal?.removeEventListener("abort", done);
+          resolve();
+        };
+        device!.wake = done;
+        timer = this.schedule(done, waitMs);
+        signal?.addEventListener("abort", done, { once: true });
+        if (signal?.aborted) done();
+      });
+    }
+    if (this.activityDevices.get(id) === device) this.renewActivity(id, device);
+    return { cursor: this.activityRevision, status: this.activityStatus };
+  }
+
+  releaseActivity(id: string) {
+    const device = this.activityDevices.get(id);
+    if (!device) return;
+    if (device.expiry !== undefined) this.cancel(device.expiry);
+    this.activityDevices.delete(id);
+    device.wake?.();
+    this.rebuild();
   }
 
   private snapshot(symbol: string, cursor?: number): MarketSnapshot {
@@ -190,6 +269,7 @@ export class MarketHub {
     this.stop?.();
     this.stop = undefined;
     for (const id of [...this.devices.keys()]) this.release(id);
+    for (const id of [...this.activityDevices.keys()]) this.releaseActivity(id);
     this.symbols.clear();
   }
 }

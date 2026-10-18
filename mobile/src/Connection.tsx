@@ -293,6 +293,9 @@ export default function Connection({
               >
                 {s.status.authenticated ? "账户已授权" : "尚未授权账户"}
               </Text>
+              {s.status.refreshExpiresAt !== undefined && <Text style={{ color: p.secondary, fontSize: 12 }}>
+                本次授权预计有效至 {new Date(s.status.refreshExpiresAt).toLocaleString()}；到期后需重新登录。
+              </Text>}
             </View>
             {s.status.unresolvedOperation && (
               <View

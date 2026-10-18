@@ -6,6 +6,7 @@ import { createRealBroker, createServerBroker, restoreBundledConfiguration, rest
 import { FINAL_STATUSES, TradingError } from "./orderRules.ts";
 import type { Account, Broker, Order, Quote, SessionStatus } from "./types.ts";
 import { createAccountReader } from "./accountRefresh.ts";
+import { createActivitySync } from "./activitySync.ts";
 import { startMarketPolling } from "./marketPolling.ts";
 import { createLocalMarketPreferenceWriter, decodeLocalMarketPreferences, emptyLocalMarketPreferences,
   localMarketSettingsKey, type LocalMarketPreferences } from "./localMarketPreferences.ts";
@@ -295,6 +296,51 @@ export function useTrading() {
     });
   }, [broker]);
   useEffect(() => {
+    if (!foreground || !storageReady || !status.authenticated || !accountID || !broker.subscribeAccountActivity) return;
+    let active = true, streamLive = false;
+    const version = epoch.current;
+    const contextCurrent = () => active && version === epoch.current &&
+      broker === current.current.broker && accountID === current.current.accountID;
+    const sync = createActivitySync({ read: async () => {
+      if (!contextCurrent()) return;
+      if (fullRefreshes.current) { sync.notify(); return; }
+      const accountKey = accountGeneration.current = {};
+      const orderKey = orderGeneration.current = {};
+      let failed = false;
+      await Promise.all([
+        accountReader.read(accountKey, () => broker.accounts()).then(values => {
+          if (!contextCurrent() || accountGeneration.current !== accountKey) return;
+          setAccounts(values); setAccountsUpdatedAt(Date.now()); setAccountRefreshError("");
+        }, error => {
+          failed = true;
+          if (contextCurrent() && accountGeneration.current === accountKey) setAccountRefreshError(readFailure("账户", error));
+        }),
+        orderReader.read(orderKey, () => broker.orders(accountID)).then(values => {
+          if (!contextCurrent() || orderGeneration.current !== orderKey) return;
+          setOrders(values); setOrdersLoaded(true); setOrdersError("");
+        }, error => {
+          failed = true;
+          if (contextCurrent() && orderGeneration.current === orderKey) setOrdersError(readFailure("订单", error));
+        }),
+      ]);
+      if (failed) throw new Error("Account reconciliation failed");
+    } });
+    const stop = broker.subscribeAccountActivity(() => {
+      if (!contextCurrent()) return;
+      // Invalidate an older read immediately, before the coalesced trailing read.
+      accountGeneration.current = {}; orderGeneration.current = {};
+      sync.notify();
+    }, status => { streamLive = status === "live"; });
+    // Live events handle prompt updates; this timer reconciles missed notifications,
+    // and becomes the normal fallback when account activity is unavailable.
+    const fallback = startMarketPolling({ interval: () => streamLive ? 30_000 :
+      latestOrders.current.some(order => !FINAL_STATUSES.has(order.status)) ? 2000 : 5000,
+      cadence: "completion", run: () => sync.poll() });
+    fallback.setActive(true);
+    return () => { active = false; stop(); fallback.stop(); sync.stop(); };
+  }, [broker, accountID, status.authenticated, foreground, storageReady]);
+  useEffect(() => {
+    if (broker.subscribeAccountActivity) return;
     if (!accountVisible || !foreground || !storageReady || !status.authenticated || !accountID) return;
     let active = true;
     const version = epoch.current;
@@ -323,6 +369,7 @@ export function useTrading() {
     return () => { active = false; polling.stop(); };
   }, [accountVisible, foreground, storageReady, status.authenticated, broker, accountID]);
   useEffect(() => {
+    if (broker.subscribeAccountActivity) return;
     if (!ordersVisible || !foreground || !storageReady || !status.authenticated || !accountID) return;
     let active = true;
     const version = epoch.current;

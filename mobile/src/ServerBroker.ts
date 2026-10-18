@@ -27,6 +27,9 @@ export class ServerBroker implements Broker {
   private generation = 0;
   private stopMarket?: () => void;
   private marketRelease: Promise<unknown> = Promise.resolve();
+  private stopActivity?: () => void;
+  private activityRelease: Promise<unknown> = Promise.resolve();
+  private requestSequence = 0;
   constructor(vault: Vault, options: { fetch?: FetchTransport; timeoutMilliseconds?: number } = {}) {
     this.vault = vault;
     this.transport = options.fetch ?? ((url, init) => fetch(url, init));
@@ -52,7 +55,8 @@ export class ServerBroker implements Broker {
     this.configuring = true;
     try {
       this.stopMarket?.();
-      await this.marketRelease;
+      this.stopActivity?.();
+      await Promise.all([this.marketRelease, this.activityRelease]);
       await this.vault.set(CONNECTION, JSON.stringify({ origin: normalized, deviceKey: deviceKey.trim() }));
       ++this.generation;
     } finally { this.configuring = false; }
@@ -90,6 +94,13 @@ export class ServerBroker implements Broker {
           // Only expose local, known messages; gateway text may contain upstream secrets.
           const messages: Record<string, string> = {
             authorizationRequired: "服务器尚未授权 Schwab，请由一台设备完成授权。",
+            authorizationExpired: "本次授权链接已过期或已使用，请重新发起授权，不要重复打开旧链接。",
+            authorizationDeclined: "Schwab 授权未获同意，请重新发起授权并完成账户选择。",
+            invalidCallback: "授权回调与本次登录不匹配，请使用最新授权链接完成登录。",
+            authorizationConfiguration: "服务器的 Schwab 应用配置无效，请检查 Client ID 和 Secret；反复登录无法解决。",
+            authorizationPermission: "Schwab 未允许访问此接口，请检查应用 API 权限；无需反复登录。",
+            alreadyAuthenticated: "服务器已完成 Schwab 授权，请刷新连接状态。",
+            methodNotAllowed: "服务器尚不支持此操作，请先更新服务器。",
             orderOutcomeUnknown: "服务器有尚未确认的交易，请先核实订单，勿重复提交。",
             reviewExpired: "订单核对已过期，请重新核对。",
             operationBusy: "服务器正在处理另一笔交易，请等待结果。",
@@ -138,7 +149,8 @@ export class ServerBroker implements Broker {
     this.configuring = true;
     try {
       this.stopMarket?.();
-      await this.marketRelease;
+      this.stopActivity?.();
+      await Promise.all([this.marketRelease, this.activityRelease]);
       await this.vault.remove(CONNECTION);
       ++this.generation;
     } finally { this.configuring = false; }
@@ -216,7 +228,56 @@ export class ServerBroker implements Broker {
     this.stopMarket = stop;
     return stop;
   }
-  private async write<T>(method: string, args: unknown[]): Promise<T> {
+  subscribeAccountActivity(onChange: () => void, onStatus?: (status: "connecting" | "live" | "fallback") => void): () => void {
+    if (this.configuring) { onStatus?.("fallback"); return () => {}; }
+    this.stopActivity?.();
+    const previousRelease = this.activityRelease;
+    const controller = new AbortController();
+    const generation = this.generation;
+    let stopped = false;
+    let cursor: number | undefined;
+    let retry = 1000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let inFlight: Promise<void> = Promise.resolve();
+    const active = () => !stopped && generation === this.generation;
+    const poll = async () => {
+      if (!active()) return;
+      try {
+        const value = await this.rpc<{ cursor: number; status: "connecting" | "live" | "fallback" }>("activity", [], {
+          path: "/activity", body: { cursor, waitMs: 20_000 }, signal: controller.signal, timeout: Math.max(25_000, this.timeout),
+        });
+        if (!active()) return;
+        if (!value || !Number.isSafeInteger(value.cursor) || value.cursor < 0 || !["connecting", "live", "fallback"].includes(value.status)) throw new Error();
+        // Also reconcile after a server restart resets the cursor. A first poll
+        // establishes the baseline; normal UI loading already fetches account data.
+        const changed = cursor !== undefined && value.cursor !== cursor;
+        cursor = value.cursor;
+        retry = 1000;
+        onStatus?.(value.status);
+        if (active() && changed) onChange();
+        if (active()) timer = setTimeout(startPoll, 100);
+      } catch {
+        if (!active()) return;
+        onStatus?.("fallback");
+        if (active()) timer = setTimeout(startPoll, retry);
+        retry = Math.min(10_000, retry * 2);
+      }
+    };
+    const startPoll = () => { inFlight = poll(); };
+    onStatus?.("connecting");
+    inFlight = previousRelease.then(() => { if (active()) return poll(); });
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      controller.abort();
+      if (timer) clearTimeout(timer);
+      this.activityRelease = inFlight.catch(() => {}).then(() => this.rpc("releaseActivity", [], { path: "/activity", method: "DELETE", timeout: 5000 })).catch(() => {});
+      if (this.stopActivity === stop) this.stopActivity = undefined;
+    };
+    this.stopActivity = stop;
+    return stop;
+  }
+  private async write<T>(method: string, args: unknown[], validate?: (result: T) => T): Promise<T> {
     if (this.writing || this.configuring) throw failure("operationBusy", "设备配置或交易请求正在处理中。");
     this.writing = true;
     try {
@@ -224,12 +285,34 @@ export class ServerBroker implements Broker {
       if (!await this.config()) throw failure("serverConfiguration", "请先连接服务器。");
       await this.vault.set(OPERATION, JSON.stringify({ method, time: Date.now() }));
       let result: T;
-      try { result = await this.rpc<T>(method, args); }
+      try {
+        result = await this.rpc<T>(method, args);
+        if (validate) result = validate(result);
+      }
       catch (error) { if (error instanceof KnownRejection) await this.vault.remove(OPERATION); throw error; }
       await this.vault.remove(OPERATION);
       return result;
     } finally { this.writing = false; }
   }
   submit(prepared: Prepared) { return this.write<{ orderID?: string }>("submit", [{ id: prepared.id }]); }
+  submitQuick(accountID: string, draft: Draft): Promise<{ snapshot: Prepared; result: { orderID?: string } }> {
+    const startedAt = Date.now();
+    // Correlation/replay identifier, not an authentication credential. Device
+    // authentication remains the independent vault-backed bearer key.
+    const requestID = `${startedAt.toString(36)}-${++this.requestSequence}-${Math.random().toString(36).slice(2).padEnd(12, "0")}-${Math.random().toString(36).slice(2).padEnd(12, "0")}`;
+    const submittedDraft = { ...draft, session: draft.session ?? "NORMAL" };
+    return this.write("submitQuick", [accountID, submittedDraft, requestID], (value: { snapshot: Prepared; result: { orderID?: string } }) => {
+      const snapshot = value?.snapshot, result = value?.result;
+      const draftKeys: (keyof Draft)[] = ["symbol", "side", "kind", "quantity", "limitPrice", "stopPrice", "duration", "session"];
+      const matches = snapshot?.draft && draftKeys.every(key => snapshot.draft[key] === submittedDraft[key]);
+      if (!snapshot || typeof snapshot.id !== "string" || !snapshot.id || snapshot.accountID !== accountID || snapshot.isDemo !== false ||
+          !Number.isFinite(snapshot.preparedAt) || typeof snapshot.accountDisplay !== "string" || snapshot.quote?.symbol !== submittedDraft.symbol ||
+          !Number.isFinite(snapshot.availableShares) || snapshot.availableShares < 0 || !matches ||
+          !result || typeof result !== "object" || Array.isArray(result) ||
+          (result.orderID !== undefined && (typeof result.orderID !== "string" || !result.orderID || result.orderID.length > 128)))
+        throw failure("orderOutcomeUnknown", "服务器交易回执无效，请先核实订单，勿重复提交。");
+      return { snapshot: Object.freeze({ ...snapshot, draft: Object.freeze({ ...snapshot.draft }), preparedAt: startedAt }), result };
+    });
+  }
   cancel(accountID: string, orderID: string) { return this.write<void>("cancel", [accountID, orderID]); }
 }

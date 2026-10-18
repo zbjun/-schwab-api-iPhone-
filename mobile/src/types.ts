@@ -25,6 +25,12 @@ export interface History {
   symbol: string;
   candles: Candle[];
   previousClose?: number;
+  retainedCoverage?: {
+    receivedAt: number;
+    minutes: number;
+    decoded: import("./historyCoverage.ts").Coverage;
+    persistence: "saved" | "memory";
+  };
   sourceCoverage?: {
     receivedAt: number;
     range: HistoryRange;
@@ -135,6 +141,8 @@ export interface SessionStatus {
   configured: boolean;
   authenticated: boolean;
   expiresAt?: number;
+  refreshExpiresAt?: number;
+  reauthorizationRequired?: boolean;
   unresolvedOperation: boolean;
 }
 export interface Vault {
@@ -143,6 +151,7 @@ export interface Vault {
   remove(key: string): Promise<void>;
 }
 export interface Broker {
+  subscribeAccountActivity?(onChange: () => void, onStatus?: (status: "connecting" | "live" | "fallback") => void): () => void;
   subscribeMarket?(
     symbol: string,
     callbacks: import("./marketStream.ts").MarketStreamCallbacks,
@@ -167,6 +176,7 @@ export interface Broker {
     replacementID?: string,
   ): Promise<Prepared>;
   submit(prepared: Prepared): Promise<{ orderID?: string }>;
+  submitQuick?(accountID: string, draft: Draft): Promise<{ snapshot: Prepared; result: { orderID?: string } }>;
   cancel(accountID: string, orderID: string): Promise<void>;
 }
 export interface Palette {

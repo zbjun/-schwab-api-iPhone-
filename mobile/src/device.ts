@@ -8,7 +8,7 @@ import type { Vault } from "./types.ts";
 import { SchwabBroker } from "./broker.ts";
 import { ServerBroker } from "./ServerBroker.ts";
 import { PERSONAL_CONFIG_RESOURCE, parsePersonalConfiguration, seedPersonalConfiguration } from "./personalConfiguration.ts";
-import { seedBundledServer } from "./bundledServer.ts";
+import { parseBundledServer, seedBundledServer } from "./bundledServer.ts";
 
 const key = (value: string) =>
   `ths.expo.v1.${[...value].map((c) => c.charCodeAt(0).toString(16).padStart(4, "0")).join("")}`;
@@ -57,14 +57,20 @@ export async function restoreBundledConfiguration(broker: SchwabBroker) {
     return raw;
   });
 }
-export async function restoreBundledServer(broker: ServerBroker, activate: () => Promise<void>) {
+async function readBundledServer() {
+  const file = new File(Paths.bundle, PERSONAL_CONFIG_RESOURCE);
+  if (!file.exists) return undefined;
+  if (file.size > 16384) throw new Error("内置配置文件格式不正确。");
+  return file.text();
+}
+export async function hasBundledServerConfiguration() {
   if (Platform.OS !== "ios") return false;
-  return seedBundledServer(broker, vault, async () => {
-    const file = new File(Paths.bundle, PERSONAL_CONFIG_RESOURCE);
-    if (!file.exists) return undefined;
-    if (file.size > 16384) throw new Error("内置配置文件格式不正确。");
-    return file.text();
-  }, activate);
+  const raw = await readBundledServer();
+  return raw !== undefined && !!parseBundledServer(raw);
+}
+export async function restoreBundledServer(broker: ServerBroker, activate: () => Promise<void>, restoreMissing = false) {
+  if (Platform.OS !== "ios") return false;
+  return seedBundledServer(broker, vault, readBundledServer, activate, { restoreMissing });
 }
 export async function importConfiguration(): Promise<
   { clientID: string; clientSecret: string } | undefined

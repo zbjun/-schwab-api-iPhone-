@@ -50,7 +50,14 @@ export type FetchTransport = (
   url: string,
   init: RequestInit,
 ) => Promise<Response>;
+export interface BrokerTiming {
+  phase: "validation" | "submit" | "refresh";
+  durationMs: number;
+  outcome: "ok" | "error";
+}
 export interface SchwabBrokerOptions {
+  /** Opt-in diagnostics: never includes identifiers, credentials or payloads. */
+  onTiming?: (sample: BrokerTiming) => void;
   /** Server deployment only; must exactly match the registered HTTPS callback. */
   callbackURL?: string;
   stream?: typeof openMarketStream;
@@ -67,6 +74,8 @@ interface Token {
   accessToken: string;
   refreshToken?: string;
   expiresAt: number;
+  refreshIssuedAt?: number;
+  refreshExpiresAt?: number;
 }
 interface Pending {
   state: string;
@@ -126,7 +135,7 @@ function error(code: string): TradingError {
 function httpError(status: number): TradingError {
   const specific: Record<number, string> = {
     400: "Schwab 未接受请求，请检查填写内容或应用配置。",
-    401: "Schwab 授权已失效，请重新登录。",
+    401: "Schwab 未接受当前授权，请重试；持续失败请检查应用权限或重新授权。",
     403: "当前应用或账户没有此接口的访问权限。",
     429: "请求过于频繁，请稍后重试。",
   };
@@ -456,6 +465,7 @@ export class SchwabBroker implements Broker {
   private readonly makeState: () => string | Promise<string>;
   private readonly now: () => number;
   private readonly timeout: number;
+  private readonly onTiming?: (sample: BrokerTiming) => void;
   private readonly callbackURL: string;
   private state: StoredSession = { version: 1 };
   private loaded = false;
@@ -485,6 +495,7 @@ export class SchwabBroker implements Broker {
       options.fetch ?? ((url, init) => globalThis.fetch(url, init));
     this.makeState = options.randomState ?? randomState;
     this.now = options.now ?? Date.now;
+    this.onTiming = options.onTiming;
     this.timeout = options.timeoutMilliseconds ?? 20_000;
     if (
       !Number.isFinite(this.timeout) ||
@@ -492,6 +503,26 @@ export class SchwabBroker implements Broker {
       this.timeout > 60_000
     )
       throw invalidResponse();
+  }
+
+  private async measured<T>(
+    phase: BrokerTiming["phase"],
+    action: () => Promise<T>,
+    succeeded: (value: T) => boolean = () => true,
+  ): Promise<T> {
+    const started = this.now();
+    let outcome: BrokerTiming["outcome"] = "error";
+    try {
+      const result = await action();
+      outcome = succeeded(result) ? "ok" : "error";
+      return result;
+    } finally {
+      // Diagnostic observers cannot change a trading result, even after an ACK.
+      try {
+        const elapsed = this.now() - started;
+        this.onTiming?.({ phase, outcome, durationMs: Number.isFinite(elapsed) ? Math.min(300_000, Math.max(0, elapsed)) : 0 });
+      } catch { /* diagnostics are best effort and carry no private data */ }
+    }
   }
 
   private serial<T>(action: () => Promise<T>): Promise<T> {
@@ -526,7 +557,9 @@ export class SchwabBroker implements Broker {
             !isObject(t) ||
             !validToken(t.accessToken) ||
             !validTime(t.expiresAt) ||
-            (t.refreshToken !== undefined && !validToken(t.refreshToken)))
+            (t.refreshToken !== undefined && !validToken(t.refreshToken)) ||
+            (t.refreshIssuedAt !== undefined && !validTime(t.refreshIssuedAt)) ||
+            (t.refreshExpiresAt !== undefined && !validTime(t.refreshExpiresAt)))
         )
           throw error("secureStorage");
         if (
@@ -589,13 +622,18 @@ export class SchwabBroker implements Broker {
     await this.load();
     const unresolvedOperation = await this.readMarker();
     const token = this.state.token;
+    const refreshUsable = !!token?.refreshToken &&
+      (token.refreshExpiresAt === undefined || token.refreshExpiresAt > this.now());
     return {
       configured: !!this.state.credentials,
       authenticated:
         !!this.state.credentials &&
         !!token &&
-        (token.expiresAt > this.now() || !!token.refreshToken),
+        (token.expiresAt > this.now() || refreshUsable),
       expiresAt: token?.expiresAt,
+      refreshExpiresAt: token?.refreshExpiresAt,
+      reauthorizationRequired: !!this.state.credentials && !refreshUsable &&
+        (!token || token.expiresAt <= this.now()),
       unresolvedOperation,
     };
   }
@@ -762,23 +800,34 @@ export class SchwabBroker implements Broker {
     }
   }
 
-  private async ensureToken(expected: number): Promise<Token> {
+  /** Server maintenance is non-interactive and shares the request refresh flight. */
+  async maintainAuthorization(): Promise<void> {
+    await this.load();
+    if (!this.state.token || !this.state.credentials) return;
+    await this.ensureToken(this.generation);
+  }
+
+  private async ensureToken(expected: number, rejectedToken?: Token): Promise<Token> {
     await this.load();
     this.assertGeneration(expected);
     const token = this.state.token,
       credentials = this.state.credentials;
     if (!token || !credentials) throw error("authorizationRequired");
-    if (token.expiresAt - this.now() > 60_000) return token;
+    // A delayed 401 must reuse the token already refreshed by another read.
+    if (rejectedToken && token !== rejectedToken && token.expiresAt - this.now() > 60_000) return token;
     if (this.refresh) return this.refresh;
-    if (!token.refreshToken) throw error("authorizationRequired");
-    const task = (async () => {
+    if (!rejectedToken && token.expiresAt - this.now() > 60_000) return token;
+    if (!token.refreshToken ||
+        (token.refreshExpiresAt !== undefined && token.refreshExpiresAt <= this.now()))
+      throw error("authorizationRequired");
+    const task = this.measured("refresh", async () => {
       try {
         const response = await this.exchange(
           credentials,
           { grant_type: "refresh_token", refresh_token: token.refreshToken! },
           expected,
         );
-        const next = this.decodeToken(response.text, token.refreshToken);
+        const next = this.decodeToken(response.text, token);
         await this.serial(async () => {
           this.assertGeneration(expected);
           await this.persist({ ...this.state, token: next });
@@ -788,7 +837,7 @@ export class SchwabBroker implements Broker {
         this.assertGeneration(expected);
         if (
           e instanceof TradingError &&
-          (e.httpStatus === 400 || e.httpStatus === 401)
+          e.code === "authorizationRequired"
         ) {
           await this.serial(async () => {
             this.assertGeneration(expected);
@@ -798,7 +847,7 @@ export class SchwabBroker implements Broker {
         }
         throw sanitized(e);
       }
-    })();
+    });
     this.refresh = task;
     try {
       return await task;
@@ -806,7 +855,7 @@ export class SchwabBroker implements Broker {
       if (this.refresh === task) this.refresh = undefined;
     }
   }
-  private decodeToken(text: string, previousRefreshToken?: string): Token {
+  private decodeToken(text: string, previous?: Token): Token {
     const value = json(text);
     if (
       !isObject(value) ||
@@ -826,8 +875,12 @@ export class SchwabBroker implements Broker {
     return {
       accessToken: value.access_token,
       refreshToken:
-        (value.refresh_token as string | undefined) ?? previousRefreshToken,
+        (value.refresh_token as string | undefined) ?? previous?.refreshToken,
       expiresAt,
+      // Rotating the refresh token does not extend the original authorization.
+      // Older sessions have unknown age; never invent a fresh seven-day window.
+      refreshIssuedAt: previous ? previous.refreshIssuedAt : this.now(),
+      refreshExpiresAt: previous ? previous.refreshExpiresAt : this.now() + 7 * DAY,
     };
   }
   private async exchange(
@@ -845,7 +898,18 @@ export class SchwabBroker implements Broker {
       "application/x-www-form-urlencoded",
     );
     this.assertGeneration(expected);
-    if (response.status !== 200) throw httpError(response.status);
+    if (response.status !== 200) {
+      // Only a definitive OAuth invalid_grant means the refresh credential died.
+      // Never expose provider descriptions or erase tokens on network/config errors.
+      if (form.grant_type === "refresh_token" &&
+          (response.status === 400 || response.status === 401)) {
+        let problem: unknown;
+        try { problem = JSON.parse(response.text); } catch { /* sanitized below */ }
+        if (isObject(problem) && problem.error === "invalid_grant")
+          throw error("authorizationRequired");
+      }
+      throw httpError(response.status);
+    }
     return response;
   }
   private async send(
@@ -924,34 +988,21 @@ export class SchwabBroker implements Broker {
     query?: URLSearchParams,
     expected = this.generation,
   ): Promise<unknown> {
-    const token = await this.ensureToken(expected);
-    this.assertGeneration(expected);
-    try {
-      const result = await this.send(
-        path,
-        query,
-        "GET",
-        undefined,
-        "Bearer " + token.accessToken,
-      );
+    let token = await this.ensureToken(expected);
+    for (let attempt = 0; attempt < 2; attempt++) {
       this.assertGeneration(expected);
-      if (result.status === 401) {
-        await this.serial(async () => {
-          this.assertGeneration(expected);
-          if (this.state.token?.accessToken === token.accessToken) {
-            this.invalidate();
-            await this.persist({ ...this.state, token: undefined });
-          }
-        });
+      const result = await this.send(path, query, "GET", undefined, "Bearer " + token.accessToken);
+      this.assertGeneration(expected);
+      if (result.status === 401 && attempt === 0) {
+        token = await this.ensureToken(expected, token);
+        continue;
       }
       if (result.status !== 200) throw httpError(result.status);
       return json(result.text);
-    } catch (e) {
-      if (!(e instanceof TradingError && e.httpStatus === 401))
-        this.assertGeneration(expected);
-      throw sanitized(e);
     }
+    throw httpError(401);
   }
+
   private async hash(
     accountID: string,
     fresh = false,
@@ -1183,61 +1234,63 @@ export class SchwabBroker implements Broker {
     availableShares: number;
     price?: number;
   }> {
-    const [accounts, quotes, { hash, orders, replacement }] = await Promise.all([
-      this.read(
-        "/trader/v1/accounts",
-        new URLSearchParams({ fields: "positions" }),
-        expected,
-      ).then(decodeAccounts),
-      this.executableQuotes([draft.symbol], expected),
-      // Orders depend on the fresh account hash, not on accounts or quotes.
-      // Start both order reads immediately while the independent checks finish.
-      this.hash(accountID, true, expected).then(async (hash) => {
-        const [orders, replacement] = await Promise.all([
-          this.ordersWithHash(hash, expected),
-          replacementID === undefined
-            ? Promise.resolve(undefined)
-            : this.detailWithHash(hash, replacementID, expected),
-        ]);
-        return { hash, orders, replacement };
-      }),
-    ]);
-    this.assertGeneration(expected);
-    const account = accounts.find((a) => a.id === accountID),
-      quote = quotes.find((q) => q.symbol === draft.symbol);
-    if (!account) throw error("invalidTradingAccount");
-    if (!quote || !isStockAsset(quote.assetMainType))
-      throw error("unsupportedAsset");
-    if (orders.length >= 200) throw error("ordersTruncated");
-    if (replacement !== undefined) validateReplacement(replacement, draft);
-    this.assertGeneration(expected);
-    const availableShares = maximumSell(
-      account,
-      draft.symbol,
-      orders,
-      true,
-      replacementID,
-      quote,
-    );
-    if (
-      draft.side === "SELL" &&
-      (availableShares === undefined || draft.quantity > availableShares)
-    )
-      throw error("insufficientShares");
-    const price = referencePrice(draft, quote),
-      maxBuy = maximumBuy(account, price);
-    if (
-      draft.side === "BUY" &&
-      (maxBuy === undefined || draft.quantity > maxBuy)
-    )
-      throw error("insufficientFunds");
-    return {
-      account,
-      quote,
-      hash,
-      availableShares: availableShares ?? 0,
-      price,
-    };
+    return this.measured("validation", async () => {
+      const [accounts, quotes, { hash, orders, replacement }] = await Promise.all([
+        this.read(
+          "/trader/v1/accounts",
+          new URLSearchParams({ fields: "positions" }),
+          expected,
+        ).then(decodeAccounts),
+        this.executableQuotes([draft.symbol], expected),
+        // Orders depend on the fresh account hash, not on accounts or quotes.
+        // Start both order reads immediately while the independent checks finish.
+        this.hash(accountID, true, expected).then(async (hash) => {
+          const [orders, replacement] = await Promise.all([
+            this.ordersWithHash(hash, expected),
+            replacementID === undefined
+              ? Promise.resolve(undefined)
+              : this.detailWithHash(hash, replacementID, expected),
+          ]);
+          return { hash, orders, replacement };
+        }),
+      ]);
+      this.assertGeneration(expected);
+      const account = accounts.find((a) => a.id === accountID),
+        quote = quotes.find((q) => q.symbol === draft.symbol);
+      if (!account) throw error("invalidTradingAccount");
+      if (!quote || !isStockAsset(quote.assetMainType))
+        throw error("unsupportedAsset");
+      if (orders.length >= 200) throw error("ordersTruncated");
+      if (replacement !== undefined) validateReplacement(replacement, draft);
+      this.assertGeneration(expected);
+      const availableShares = maximumSell(
+        account,
+        draft.symbol,
+        orders,
+        true,
+        replacementID,
+        quote,
+      );
+      if (
+        draft.side === "SELL" &&
+        (availableShares === undefined || draft.quantity > availableShares)
+      )
+        throw error("insufficientShares");
+      const price = referencePrice(draft, quote),
+        maxBuy = maximumBuy(account, price);
+      if (
+        draft.side === "BUY" &&
+        (maxBuy === undefined || draft.quantity > maxBuy)
+      )
+        throw error("insufficientFunds");
+      return {
+        account,
+        quote,
+        hash,
+        availableShares: availableShares ?? 0,
+        price,
+      };
+    });
   }
   async prepare(
     accountID: string,
@@ -1272,6 +1325,23 @@ export class SchwabBroker implements Broker {
     this.assertGeneration(expected);
     if (sequence !== this.prepareSequence || this.writeBusy)
       throw error("reviewExpired");
+    const snapshot = await this.snapshot(accountID, copy, context, expected, replacementID);
+    if (sequence !== this.prepareSequence || this.writeBusy)
+      throw error("reviewExpired");
+    this.reviews.set(snapshot.id, {
+      snapshot,
+      generation: expected,
+      accountHash: context.hash,
+    });
+    return snapshot;
+  }
+  private async snapshot(
+    accountID: string,
+    copy: Draft,
+    context: Awaited<ReturnType<SchwabBroker["freshContext"]>>,
+    expected: number,
+    replacementID?: string,
+  ): Promise<Prepared> {
     let random: string;
     try {
       random = await this.makeState();
@@ -1281,11 +1351,9 @@ export class SchwabBroker implements Broker {
     if (typeof random !== "string" || !/^[a-f0-9]{64}$/.test(random))
       throw error("secureStorage");
     this.assertGeneration(expected);
-    if (sequence !== this.prepareSequence || this.writeBusy)
-      throw error("reviewExpired");
     const estimatedValue =
       context.price === undefined ? undefined : context.price * copy.quantity;
-    const snapshot: Prepared = Object.freeze({
+    return Object.freeze({
       id: random + "-" + ++this.nonce,
       draft: copy,
       accountID,
@@ -1301,12 +1369,38 @@ export class SchwabBroker implements Broker {
       replacementOrderID: replacementID,
       isDemo: false,
     });
-    this.reviews.set(snapshot.id, {
-      snapshot,
-      generation: expected,
-      accountHash: context.hash,
+  }
+  /** One locked validation/write boundary for explicit quick-mode submissions. */
+  async submitQuick(accountID: string, draft: Draft): Promise<{
+    snapshot: Prepared;
+    result: { orderID?: string };
+  }> {
+    if (this.writeBusy) throw error("operationBusy");
+    validateDraft(draft);
+    const copy: Draft = Object.freeze({
+      symbol: draft.symbol, side: draft.side, kind: draft.kind,
+      quantity: draft.quantity, limitPrice: draft.limitPrice,
+      stopPrice: draft.stopPrice, duration: draft.duration,
+      session: draft.session ?? "NORMAL",
     });
-    return snapshot;
+    this.writeBusy = true;
+    this.reviews.clear();
+    this.prepareSequence++;
+    try {
+      await this.load();
+      const expected = this.generation;
+      if (await this.readMarker()) throw error("orderOutcomeUnknown");
+      const validationStarted = this.now();
+      const context = await this.freshContext(accountID, copy, expected);
+      const snapshot = await this.snapshot(accountID, copy, context, expected);
+      const validationAge = this.now() - validationStarted;
+      if (!Number.isFinite(validationAge) || validationAge < 0 || validationAge > 60_000)
+        throw error("reviewExpired");
+      const result = await this.writeRequest(context.hash, "POST", expected, undefined, encodeDraft(copy), validationStarted);
+      return { snapshot, result };
+    } finally {
+      this.writeBusy = false;
+    }
   }
   async submit(prepared: Prepared): Promise<{ orderID?: string }> {
     if (this.writeBusy) throw error("operationBusy");
@@ -1368,11 +1462,18 @@ export class SchwabBroker implements Broker {
     expected: number,
     orderID?: string,
     body?: string,
+    validationStarted?: number,
   ): Promise<{ orderID?: string }> {
+    const validationExpired = () => {
+      if (validationStarted === undefined) return false;
+      const age = this.now() - validationStarted;
+      return !Number.isFinite(age) || age < 0 || age > 60_000;
+    };
     const token = await this.ensureToken(expected),
       path = pathForOrders(hash, orderID);
     const contentType = body ? "application/json" : undefined;
     validateRequest(ORIGIN + path, method, body, contentType);
+    if (validationExpired()) throw error("reviewExpired");
     await this.serial(async () => {
       this.assertGeneration(expected);
       try {
@@ -1391,18 +1492,32 @@ export class SchwabBroker implements Broker {
         throw e instanceof TradingError ? e : error("secureStorage");
       }
     });
+    // Token renewal and durable storage can be slow. Recheck immediately before
+    // dispatch, after all awaits; this branch definitively has not sent a write.
+    if (validationExpired()) {
+      try {
+        await this.serial(async () => {
+          this.assertGeneration(expected);
+          await this.vault.remove(OPERATION_KEY);
+          this.unresolved = false;
+        });
+      } catch {
+        throw error("orderOutcomeUnknown");
+      }
+      throw error("reviewExpired");
+    }
     let response: HTTPResult;
     try {
       this.assertGeneration(expected);
       // Never retry a POST, PUT, or DELETE, including token expiry or a lost response.
-      response = await this.send(
+      response = await this.measured("submit", () => this.send(
         path,
         undefined,
         method,
         body,
         "Bearer " + token.accessToken,
         contentType,
-      );
+      ), result => result.status === (method === "DELETE" ? 200 : 201));
       this.assertGeneration(expected);
     } catch {
       throw error("orderOutcomeUnknown");
@@ -1419,8 +1534,9 @@ export class SchwabBroker implements Broker {
             response.status === 401 &&
             this.state.token?.accessToken === token.accessToken
           ) {
-            this.invalidate();
-            await this.persist({ ...this.state, token: undefined });
+            // Rejected writes are never replayed. Preserve refresh credentials
+            // so the next independent request can recover authorization.
+            await this.persist({ ...this.state, token: { ...token, expiresAt: this.now() } });
           }
           await this.vault.remove(OPERATION_KEY);
           this.unresolved = false;

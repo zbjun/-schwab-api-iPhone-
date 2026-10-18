@@ -3,6 +3,8 @@
   "callbackURL": "https://127.0.0.1",
   "dataDirectory": "./data",
   "encryptionKeyFile": "./vault.key",
+  "collectSymbols": [],
+  "diagnostics": false,
   "clientID": "REPLACE_ON_SERVER",
   "clientSecret": "REPLACE_ON_SERVER",
   "devices": [

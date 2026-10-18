@@ -94,3 +94,32 @@ test("unknown submission outcome propagates without resubmitting", async () => {
   assert.equal(attempts, 1);
   assert.equal(f.counts().prepares, 1);
 });
+
+test("live atomic broker uses one call and preserves receipt after context changes", async () => {
+  const f = fixture();
+  let current = true, calls = 0;
+  const snapshot = { ...f.snapshot, isDemo: false };
+  const broker = { ...f.broker, async submitQuick(accountID: string, value: Draft) {
+    calls++;
+    assert.equal(accountID, snapshot.accountID);
+    assert.deepEqual(value, draft);
+    assert.ok(Object.isFrozen(value));
+    current = false;
+    return { snapshot, result: { orderID: "atomic-order" } };
+  } };
+  const result = await submitQuickOrder({ ...f.request, broker, isDemo: false, isCurrent: () => current });
+  assert.equal(result.result.orderID, "atomic-order");
+  assert.equal(calls, 1);
+  assert.deepEqual(f.counts(), { prepares: 0, submits: 0 });
+});
+
+test("atomic errors do not fall back to a second submission and demo keeps review path", async () => {
+  const f = fixture();
+  let atomicCalls = 0;
+  const broker = { ...f.broker, async submitQuick(): Promise<never> { atomicCalls++; throw new Error("uncertain"); } };
+  await assert.rejects(submitQuickOrder({ ...f.request, broker, isDemo: false }), /uncertain/);
+  assert.deepEqual(f.counts(), { prepares: 0, submits: 0 });
+  await submitQuickOrder({ ...f.request, broker });
+  assert.equal(atomicCalls, 1);
+  assert.deepEqual(f.counts(), { prepares: 1, submits: 1 });
+});

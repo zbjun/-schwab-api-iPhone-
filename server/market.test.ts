@@ -10,7 +10,7 @@ function fixture() {
       const stream = { symbols, callbacks, closed: false };
       streams.push(stream);
       callbacks.onStatus("connecting");
-      return () => { stream.closed = true; };
+      return Object.assign(() => { stream.closed = true; }, { setSymbols: (next: string[]) => { stream.symbols = [...next]; } });
     },
   });
   return { hub, streams };
@@ -21,21 +21,21 @@ test("two devices receive independent symbols through one union subscription and
   try {
     await hub.poll("phone", "AAPL");
     await hub.poll("tablet", "QQQ");
-    assert.equal(streams.length, 2);
-    assert.equal(streams[0].closed, true);
-    assert.deepEqual(streams[1].symbols, ["AAPL", "QQQ"]);
+    assert.equal(streams.length, 1);
+    assert.equal(streams[0].closed, false);
+    assert.deepEqual(streams[0].symbols, ["AAPL", "QQQ"]);
     assert.equal(streams.filter((stream) => !stream.closed).length, 1);
-    const stream = streams[1];
+    const stream = streams[0];
     stream.callbacks.onStatus("live");
     stream.callbacks.onQuote({ symbol: "AAPL", lastPrice: 200 });
     stream.callbacks.onQuote({ symbol: "QQQ", lastPrice: 500 });
     assert.equal((await hub.poll("phone", "AAPL")).quote?.lastPrice, 200);
     assert.equal((await hub.poll("tablet", "QQQ")).quote?.lastPrice, 500);
-    assert.equal(streams.length, 2);
+    assert.equal(streams.length, 1);
     hub.release("tablet");
-    assert.equal(stream.closed, true);
-    assert.deepEqual(streams[2].symbols, ["AAPL"]);
-    stream.callbacks.onQuote({ symbol: "AAPL", lastPrice: 1 });
+    assert.equal(stream.closed, false);
+    assert.deepEqual(stream.symbols, ["AAPL"]);
+    stream.callbacks.onQuote({ symbol: "QQQ", lastPrice: 1 });
     assert.equal((await hub.poll("phone", "AAPL")).quote?.lastPrice, 200);
     hub.release("phone");
     assert.equal(streams.every((entry) => entry.closed), true);
@@ -100,7 +100,7 @@ test("idle device expiry removes the union and closes the last upstream", async 
   const timers = new Map<object, { callback: () => void; delay: number }>();
   let closed = 0;
   const hub = new MarketHub(async () => { throw new Error("No credentials"); }, {
-    openStream: () => () => { closed++; },
+    openStream: () => Object.assign(() => { closed++; }, { setSymbols: () => {} }),
     setTimeout: ((callback: () => void, delay: number) => {
       const id = {}; timers.set(id, { callback, delay }); return id;
     }) as unknown as typeof setTimeout,
@@ -114,6 +114,46 @@ test("idle device expiry removes the union and closes the last upstream", async 
   assert.equal(closed, 1);
   assert.equal(timers.size, 0);
   hub.close();
+});
+
+test("account activity wakes both devices without symbol subscriptions and preserves the equity socket", async () => {
+  const { hub, streams } = fixture();
+  try {
+    await hub.pollActivity("phone", undefined, 0);
+    await hub.pollActivity("tablet", undefined, 0);
+    assert.equal(streams.length, 1);
+    assert.deepEqual(streams[0].symbols, []);
+    streams[0].callbacks.onAccountActivityStatus?.("live");
+    const initial = await hub.pollActivity("phone", undefined, 0);
+    const phone = hub.pollActivity("phone", initial.cursor);
+    const tablet = hub.pollActivity("tablet", initial.cursor);
+    streams[0].callbacks.onAccountActivity?.({ messageType: "OrderFill", sequence: 12 });
+    assert.ok((await phone).cursor > initial.cursor);
+    assert.equal((await tablet).status, "live");
+    await hub.poll("phone", "QQQ");
+    assert.equal(streams.length, 1);
+    assert.deepEqual(streams[0].symbols, ["QQQ"]);
+    hub.release("phone");
+    assert.equal(streams[0].closed, false);
+    hub.releaseActivity("phone"); hub.releaseActivity("tablet");
+    assert.equal(streams[0].closed, true);
+  } finally { hub.close(); }
+});
+
+test("activity abort/expiry/shutdown settle waits and failure status remains distinct from live equity", async () => {
+  const { hub, streams } = fixture();
+  await hub.poll("phone", "QQQ");
+  streams[0].callbacks.onStatus("live");
+  streams[0].callbacks.onAccountActivityStatus?.("fallback");
+  const first = await hub.pollActivity("phone", undefined, 0);
+  assert.equal(first.status, "fallback");
+  const abort = new AbortController();
+  const pending = hub.pollActivity("phone", first.cursor, 20000, abort.signal);
+  await assert.rejects(hub.pollActivity("phone", first.cursor), /pending/);
+  abort.abort(); await pending;
+  const waiting = hub.pollActivity("phone", first.cursor);
+  hub.close(); await waiting;
+  await assert.rejects(hub.pollActivity("phone"), /Invalid/);
 });
 
 test("a newly registered device ignores an earlier server cursor and receives a complete snapshot", async () => {

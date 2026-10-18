@@ -37,6 +37,7 @@ export function historyCoverageReport(history: History, range: HistoryRange): st
   const intraday = !["daily", "weekly", "monthly"].includes(range);
   const plotted = historyCoverage(history.candles, intraday);
   const source = history.sourceCoverage;
+  const retained = history.retainedCoverage;
   const rows = (coverage: Coverage) => !intraday ? "" : coverage.days.slice(-14).map(d =>
     `${d.date}：夜${d.night} / 前${d.pre} / 中${d.regular} / 后${d.post}`).join("\n");
   return [
@@ -46,6 +47,7 @@ export function historyCoverageReport(history: History, range: HistoryRange): st
     source ? `接口读取：${new Date(source.receivedAt).toISOString()}\n原始${source.rawBars}根 → 解码${source.decoded.total}根（重复时间戳合并）\n${source.decoded.first ?? "—"} 至 ${source.decoded.last ?? "—"}\n${rows(source.decoded)}`
       : "当前数据没有接口诊断信息；刷新后重试。",
     `图表全量：${plotted.total}根（含聚合/实时合并），缓存${history.candles.filter(c => c.retained).length}根，形成中${history.candles.filter(c => c.provisional).length}根\n${rows(plotted)}`,
+    ...(retained ? [`服务器观测留存：${retained.minutes}根分钟数据（${retained.persistence === "saved" ? "已加密保存" : "内存中，待保存"}）\n${rows(retained.decoded)}\n仅包含曾实际收到的数据；不完整采样保留估算标记。`] : []),
     "零根表示本次数据未包含对应时段，不表示零成交或没有交易资格。未列出的日期不在返回数据中。",
   ].join("\n\n");
 }

@@ -1,3 +1,26 @@
+# 2026-10-06: Missing device connection recovery (source only)
+
+- Live shared-server status checks succeed for both device keys: configured/authenticated=true, reauthorizationRequired=false and unresolvedOperation=false. The phone screenshot has blank local connection fields; its local loss cause is unverified.
+- Added explicit recovery from the personalized IPA resource even after the one-time import flag. Startup still respects an explicit disconnect. Recovery preserves an existing device identity; storage errors propagate and failed restores can retry.
+- Connection UI distinguishes absent configuration from unreadable storage, offers recovery when a valid bundled configuration exists, and shows OAuth actions only after a local connection is configured.
+- Two new regression tests failed before the change and pass after it. All 287 mobile tests, TypeScript and web export pass. Changed bundledServer.ts/test, device.ts and ServerConnection.tsx. No dependencies, server deployment or IPA build were needed; physical iPhone restoration is not verified. Existing 0.6.4 packages require manual re-entry of the matching private device configuration for immediate recovery.
+
+# 2026-09-28: 0.6.4 (11) release build
+
+- Expo build `c6c99824-d602-4eba-beba-0389322f15d1` completed successfully for `ths-expo-personal`, version 0.6.4/build 11. One cloud build supplies both device variants.
+- Local checks: 285 mobile tests, 51 server/integration tests, TypeScript and six packaging fixtures passed. Archive inspection verified 88 allowlisted mobile files and excluded server vaults and personal/device credentials.
+- The matching server release `optimization-20260928` passed 115 tests on Linux before activation. Deployed broker/gateway/market/archive hashes match local source. `/activity` forwarding is active, both device sessions remain authenticated without uncertain operations, and a live read-only account request succeeds.
+- Physical iPhone interaction, real trade latency/fills and live account-event entitlement are not verified. Both personalized IPAs passed ZIP/path, arm64 physical-iPhone, version/build, embedded Hermes and server-config checks. Every original archive entry is byte-identical to the cloud artifact; only the distinct validated device configuration was added. Each package is about 8.3 MB and requires user signing. SHA-256: device1 `a5606167fbb5c3e46a53bfa96a7ff52d726b8632c2cdf7da0ce2f02a5562a96e`; device2 `82e11f2de53e01048857a1ccc356079827a7344122960ae1dc5154b6f81de0f5`.
+
+# 2026-09-28: Authorization recovery, atomic quick orders and event synchronization (source only)
+
+- Broker GET 401 performs one coordinated access-token refresh and one read retry. Only a definitive refresh `invalid_grant` clears authorization. Concurrent and delayed-401 tests, disconnect/configure generation tests and refresh-age migration tests pass; brokerage writes are never replayed.
+- Atomic quick orders reuse the existing validation/write functions under the broker and gateway write locks. An actual `ServerBroker -> gateway -> SchwabBroker` loopback fixture verifies four validation GETs plus one POST, compared with eight GETs plus one POST for the ordinary two-stage flow. Freshness is checked again after token renewal and durable marker persistence; a failed unsent-marker cleanup remains blocked as unknown.
+- Account activity uses the shared socket and authenticated `/activity` long polls. Notifications coalesce and trigger REST reconciliation, including trailing events during a read. Completion-aware polling retains error backoff. Two actual client adapters receive events, and disconnecting one does not interrupt the other. Stream rejection/timeout, reconnect, duplicate/unknown messages and desired-symbol delta acknowledgments use fake-socket tests.
+- Observed minute retention uses a separate encrypted vault, bounded symbols/bars/age, periodic flush, and explicit collection symbols. Tests cover restart restore, missing-night additions, REST corrections, partial/provisional data, invalid volume, missing minutes, cross-midnight observations and persistence failure. Retention is not proof that Schwab supplies every overnight minute.
+- Validation: 285 mobile unit tests, 41 server tests and 10 loopback integration tests passed (336 total); mobile and server TypeScript checks, Node syntax checks, `git diff --check` and Expo web export passed. No lint script or linter dependency is configured; no dependency was added.
+- No real order, live account-event permission, physical-phone latency, production deployment or IPA build was tested/performed. Existing installed 0.6.3 remains unchanged. Server deployment must include `/activity` in the HTTPS reverse proxy before using the updated client; optional `collectSymbols` and `diagnostics` are documented in `server/README.md`.
+
 # 2026-09-22: Order submission latency
 
 - Root cause: prepare and submit each perform fresh account, quote, account-hash and order checks. Orders previously waited for every independent read; accepted submissions then waited for a full status/accounts/watchlist/orders refresh before releasing the form. Validation count and submission freshness are intentionally retained.

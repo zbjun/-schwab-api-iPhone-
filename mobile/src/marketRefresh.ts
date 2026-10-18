@@ -55,7 +55,7 @@ export function shareHistory(
   const unchanged =
     candles.length === previous.candles.length &&
     candles.every((c, i) => c === previous.candles[i]);
-  if (unchanged && previous.previousClose === next.previousClose && previous.sourceCoverage === next.sourceCoverage)
+  if (unchanged && previous.previousClose === next.previousClose && previous.sourceCoverage === next.sourceCoverage && previous.retainedCoverage === next.retainedCoverage)
     return previous;
   return { ...next, candles: unchanged ? previous.candles : candles };
 }

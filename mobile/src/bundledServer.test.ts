@@ -57,3 +57,25 @@ test("failed mode persistence retries activation without replacing the stored de
   assert.equal(activated, true);
   assert.equal(f.calls(), 1);
 });
+
+test("explicit recovery restores a missing connection after the one-time import", async () => {
+  const f = fixture();
+  await seedBundledServer(f.broker, f.vault, f.read);
+  f.reset();
+  assert.equal(await seedBundledServer(f.broker, f.vault, f.read), false);
+  assert.equal(await seedBundledServer(f.broker, f.vault, f.read, undefined, { restoreMissing: true }), true);
+  assert.equal((await f.broker.configuration())?.origin, config.origin);
+  assert.equal(f.calls(), 2);
+});
+
+test("explicit recovery preserves an existing identity and can retry a failed restore", async () => {
+  const f = fixture();
+  await seedBundledServer(f.broker, f.vault, f.read);
+  f.manual();
+  assert.equal(await seedBundledServer(f.broker, f.vault, f.read, undefined, { restoreMissing: true }), false);
+  assert.equal((await f.broker.configuration())?.origin, "https://manual.test");
+  f.reset(); f.fail(true);
+  await assert.rejects(seedBundledServer(f.broker, f.vault, f.read, undefined, { restoreMissing: true }));
+  f.fail(false);
+  assert.equal(await seedBundledServer(f.broker, f.vault, f.read, undefined, { restoreMissing: true }), true);
+});

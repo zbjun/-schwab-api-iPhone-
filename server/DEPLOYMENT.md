@@ -1,3 +1,16 @@
+# 2026-09-28 optimization deployment
+
+Release `releases/optimization-20260928` is active. The existing authorized SSH maintenance entry uses port **80** (`http-ssh-mux`); ports 22/2222 close before negotiation from this client. Use the existing verified host key and local SSH identity; no new access credential or persistence was created.
+
+- Deployed the authorization retry fix, atomic quick RPC, shared account activity, incremental subscriptions, maintenance and encrypted minute archive.
+- All 115 server, client integration and broker fixtures passed on the server's Node 24.21.0 before activation. Fixtures use fictional data only.
+- Added exact `/activity` Nginx forwarding; `nginx -t` passed. The existing site remains reachable.
+- A graceful stop/start preserved the encrypted vault and device keys. Both devices report configured/authenticated, reauthorizationRequired=false and unresolvedOperation=false after activation. `/activity` returns the expected authenticated method rejection for a read-only GET probe.
+- Previous release `releases/latency-20260922` and the former Nginx locations file remain under `/opt/ths-gateway/backups/optimization-20260928/` for rollback. No real orders were submitted.
+- Client 0.6.4 (11) device1/device2 packages were built and verified separately; this deployment does not update an installed IPA. Physical-device trading and live account-event entitlement remain unverified.
+
+The records below describe earlier states, superseded by this deployment.
+
 # 2026-09-28 authorization retry fix — source only, deployment blocked
 
 The gateway previously retained its cached authorization URL for up to nine minutes when callback completion failed. The broker consumes pending OAuth state before token exchange, so a subsequent login could reuse an already consumed attempt. The source now evicts the cached URL after expired/declined attempts and exchange failures; an unrelated invalid callback still preserves the active attempt. Thirty server tests pass, including a regression that failed before the fix.

@@ -2,9 +2,19 @@
 
 > Git history was rewritten on 2026-10-18 to remove the server address. Commit IDs in the records below predate the rewrite; server release directories keep those names. Old → new: `405850e` → `15c1607`, `4677ee2` → `9a305c4`, `303757f` → `499f722`, `cc19367` → `00c5c19`, `050067f` → `85559d2`.
 
+# 2026-10-19 overnight intraday deployment
+
+Release `releases/overnight-intraday-20261019` is active (built from commit `e1ce436`, the same 80-file layout as the previous release; tar SHA256 `de36711ff3204818…`). It was activated at 10:24 CST on Monday, which was 22:24 Sunday in New York during the overnight session. Before the switch both devices reported unresolvedOperation=false, `scheduled` held 0 entries, and the gateway had no device or upstream connections; the restart took about one second. SSH access, Nginx, `/etc/ths-gateway/` and the unit file are unchanged.
+
+- Intraday history now requests two days (`day/2/minute/1`) and trims to the 24/5 trading day that opens at 20:00 New York time the evening before, taking the previous close from the last regular-session bar before it. Schwab starts a one-day response at 07:00, so the old intraday chart lacked the overnight session and the 04:00–07:00 premarket for every symbol the archive was not collecting. The archive merge uses the same 20:00 boundary.
+- Only `mobile/src/broker.ts`, `chartData.ts`, `liveHistory.ts`, `server/minuteArchive.ts` and their tests changed for the server, plus the client-only `ServerBroker.ts` guard committed earlier.
+- 356 tests passed on the server's Node 24.21.0 inside the staged release before activation; locally 318 mobile and 51 server tests passed.
+- After the restart both devices report configured/authenticated, reauthorizationRequired=false and unresolvedOperation=false; `scheduled` is still empty. A read-only intraday probe shows full nights from 20:00 the evening before (QQQ 474, NVDA 480, META 394, MSFT 410, SNDK 480 overnight minutes), where META, MSFT and SNDK previously had none. REST quotes did not update during the live overnight session (quote times stayed at Friday 19:59), so the current night appears only once Schwab adds it to history or the archive observes it.
+- Rollback: check `scheduled` for pending entries, then stop the service, `ln -sfn releases/exits-schedule-20261018 /opt/ths-gateway/current`, and start it again.
+
 # 2026-10-18 broker-held exits and timed orders deployment
 
-Release `releases/exits-schedule-20261018` is active (built from commit `405850e`; tar SHA256 `a4f4d339…8eedc65`, kept in `/opt/ths-gateway/backups/`). It was activated at 21:12 CST on Sunday with the market closed. SSH access, Nginx, `/etc/ths-gateway/` and the unit file are unchanged.
+Superseded by the record above; `releases/exits-schedule-20261018` is now the rollback release. It was built from commit `405850e`; tar SHA256 `a4f4d339…8eedc65`, kept in `/opt/ths-gateway/backups/`). It was activated at 21:12 CST on Sunday with the market closed. SSH access, Nginx, `/etc/ths-gateway/` and the unit file are unchanged.
 
 - Adds `server/schedule.mjs` and the `schedule`/`scheduled`/`cancelScheduled` RPCs. Timed orders live in the existing encrypted vault under `ths.gateway.scheduled.v1` and are submitted once through `broker.submitQuick` under the gateway's shared write lock. An entry interrupted mid-submit becomes `unknown` and is never resent. An entry whose time passes while the service is down becomes `missed` and is never caught up. **Before any future restart, check `scheduled` for pending entries.** Also ships the OCO/TRIGGER/TRAILING_STOP exit rules, `freezeDraft` and the new sell-reservation rule in `mobile/src/orderRules.ts`, `broker.ts` and `types.ts`.
 - 127 server, client integration and broker fixtures passed on the server's Node 24.21.0 before activation; locally 50 server and 314 mobile tests passed.

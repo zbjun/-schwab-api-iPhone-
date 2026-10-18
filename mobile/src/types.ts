@@ -169,6 +169,8 @@ export interface Broker {
   ): Promise<Quote[]>;
   history(symbol: string, range: HistoryRange): Promise<History>;
   orders(accountID: string): Promise<Order[]>;
+  /** Orders entered within [from, to]; a window may span at most 60 days. */
+  orderHistory?(accountID: string, from: number, to: number): Promise<Order[]>;
   orderDetail(accountID: string, id: string): Promise<Order>;
   prepare(
     accountID: string,

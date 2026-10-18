@@ -479,6 +479,11 @@ export class DemoBroker implements Broker {
     this.requireAccount(accountID);
     return clone(this.list);
   }
+  async orderHistory(accountID: string, from: number, to: number) {
+    this.requireAccount(accountID);
+    return clone(this.list.filter((o) =>
+      o.enteredAt === undefined || (o.enteredAt >= from && o.enteredAt <= to)));
+  }
   async orderDetail(accountID: string, id: string) {
     this.requireAccount(accountID);
     const order = this.list.find((o) => o.id === id);

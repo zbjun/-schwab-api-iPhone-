@@ -71,6 +71,15 @@ test('RPC requires valid device key, rejects browsers, and never exposes credent
   assert.deepEqual(broker.calls, []);
   assert.deepEqual((await rpc('status')).body.result, { configured: true, authenticated: true, unresolvedOperation: false });
 });
+test('order history is a read that forwards exactly the account and time window', async t => {
+  const broker = brokerFixture();
+  broker.orderHistory = async (...args) => { broker.calls.push(['orderHistory', ...args]); return [{ id: '7' }]; };
+  const { rpc } = await fixture(t, { broker });
+  assert.deepEqual((await rpc('orderHistory', ['acct', 1, 2])).body.result, [{ id: '7' }]);
+  assert.deepEqual(broker.calls, [['orderHistory', 'acct', 1, 2]]);
+  for (const args of [['acct', 1], ['acct', 1, 2, 3]])
+    assert.equal((await rpc('orderHistory', args)).body.error.code, 'invalidRequest');
+});
 test('malformed, oversized and unrecognized RPC input is rejected', async t => {
   const { base, rpc } = await fixture(t);
   const headers = { Authorization: 'Bearer ' + devices[0].token, 'Content-Type': 'application/json' };

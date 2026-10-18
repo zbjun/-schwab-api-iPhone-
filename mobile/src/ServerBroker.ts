@@ -169,6 +169,7 @@ export class ServerBroker implements Broker {
   quotes(symbols: string[], options?: { fundamentals?: boolean }) { return this.rpc<Quote[]>("quotes", options === undefined ? [symbols] : [symbols, options]); }
   history(symbol: string, range: HistoryRange) { return this.rpc<History>("history", [symbol, range]); }
   orders(accountID: string) { return this.rpc<Order[]>("orders", [accountID]); }
+  orderHistory(accountID: string, from: number, to: number) { return this.rpc<Order[]>("orderHistory", [accountID, from, to]); }
   orderDetail(accountID: string, id: string) { return this.rpc<Order>("orderDetail", [accountID, id]); }
   async prepare(accountID: string, draft: Draft, replacementID?: string): Promise<Prepared> {
     // UI expiry is measured on the device clock; the server separately enforces

@@ -108,6 +108,7 @@ export function createGateway({ broker, devices, callbackURL = 'https://127.0.0.
         catch { return history; } // Retention must never hide a successful provider response.
       }
       case 'orders': length(1); return broker.orders(...args);
+      case 'orderHistory': length(3); return broker.orderHistory(...args);
       case 'orderDetail': length(2); return broker.orderDetail(...args);
       case 'authorizationURL': length(0); return beginAuthorization();
       case 'completeAuthorization': length(1); return completeAuthorization(args[0]);

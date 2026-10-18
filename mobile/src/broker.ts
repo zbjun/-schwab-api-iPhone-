@@ -1179,9 +1179,17 @@ export class SchwabBroker implements Broker {
     hash: string,
     expected: number,
   ): Promise<Order[]> {
-    const to = this.now(),
-      from = Math.max(0, to - 30 * DAY);
-    if (!validTime(to)) throw error("invalidDateRange");
+    const to = this.now();
+    return this.ordersBetween(hash, Math.max(0, to - 30 * DAY), to, expected);
+  }
+  private async ordersBetween(
+    hash: string,
+    from: number,
+    to: number,
+    expected: number,
+  ): Promise<Order[]> {
+    if (!validTime(from) || !validTime(to) || from > to || to - from > 60 * DAY)
+      throw error("invalidDateRange");
     return decodeOrders(
       await this.read(
         pathForOrders(hash),
@@ -1199,6 +1207,19 @@ export class SchwabBroker implements Broker {
     const expected = this.generation;
     return this.ordersWithHash(
       await this.hash(accountID, false, expected),
+      expected,
+    );
+  }
+  /** Read-only history for fill export; one window of at most 60 days per call. */
+  async orderHistory(accountID: string, from: number, to: number): Promise<Order[]> {
+    await this.load();
+    const expected = this.generation;
+    if (!validTime(from) || !validTime(to) || from > to || to - from > 60 * DAY)
+      throw error("invalidDateRange");
+    return this.ordersBetween(
+      await this.hash(accountID, false, expected),
+      from,
+      to,
       expected,
     );
   }

@@ -1339,6 +1339,25 @@ test("unsupported asset or a truncated order window cannot enter preparation", a
   assert.equal(f.writes().length, 0);
 });
 
+test("order history reads one bounded window and rejects ranges over 60 days", async () => {
+  const f = fixture();
+  await f.authorize();
+  f.state.orders = [orderDTO({ orderId: "7", status: "FILLED" })];
+  const to = Date.parse("2026-10-18T12:00:00.000Z"),
+    from = to - 45 * 86_400_000;
+  const orders = await f.broker.orderHistory(ACCOUNT, from, to);
+  assert.deepEqual(orders.map((o) => o.id), ["7"]);
+  const query = new URL(f.requests.at(-1)!.url).searchParams;
+  assert.equal(query.get("fromEnteredTime"), new Date(from).toISOString());
+  assert.equal(query.get("toEnteredTime"), new Date(to).toISOString());
+  assert.equal(query.get("maxResults"), "200");
+  const count = f.requests.length;
+  for (const [a, b] of [[to - 61 * 86_400_000, to], [to, from], [Number.NaN, to]])
+    await rejectsCode(f.broker.orderHistory(ACCOUNT, a, b), "invalidDateRange");
+  assert.equal(f.requests.length, count);
+  assert.equal(f.writes().length, 0);
+});
+
 test("operation marker write failure prevents sending and does not echo secure-store errors", async () => {
   const f = fixture();
   await f.authorize();

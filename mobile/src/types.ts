@@ -90,17 +90,29 @@ export interface TradeExecution {
   quantity: number;
 }
 export type OrderKind = "MARKET" | "LIMIT" | "STOP" | "STOP_LIMIT";
+/** "EXIT" protects an existing position with take-profit/stop-loss sells only. */
+export type DraftKind = OrderKind | "EXIT";
 export type Duration = "DAY" | "GOOD_TILL_CANCEL";
 export type OrderSession = "NORMAL" | "AM" | "PM" | "SEAMLESS";
+/** Fixed stop price, or a trailing stop that follows the bid by dollars or percent. */
+export type StopMode = "PRICE" | "TRAIL_VALUE" | "TRAIL_PERCENT";
+/** Broker-held exit legs; with both legs Schwab cancels the other once one fills (OCO). */
+export interface ExitPlan {
+  takeProfit?: string;
+  stopLoss?: { mode: StopMode; value: string };
+  duration: Duration;
+}
 export interface Draft {
   symbol: string;
   side: Side;
-  kind: OrderKind;
+  kind: DraftKind;
   quantity: number;
   limitPrice?: string;
   stopPrice?: string;
   duration: Duration;
   session?: OrderSession;
+  /** BUY: exits start after the entry fills (TRIGGER). EXIT kind: exits only. */
+  exit?: ExitPlan;
 }
 export interface Order {
   id: string;
@@ -123,6 +135,33 @@ export interface Order {
   assetType?: string;
   session?: string;
   cancelUnavailableReason?: string;
+  /** Broker strategy; OCO/TRIGGER orders carry their linked legs in `children`. */
+  strategy?: "SINGLE" | "OCO" | "TRIGGER";
+  children?: Order[];
+  trailing?: { type: "VALUE" | "PERCENT"; offset: number };
+}
+export type ScheduledStatus =
+  | "pending"
+  | "submitting"
+  | "submitted"
+  | "failed"
+  | "cancelled"
+  | "missed"
+  | "unknown"
+  | "skipped";
+/** A server-held order submitted once at `runAt` after a fresh validation. */
+export interface ScheduledOrder {
+  id: string;
+  device: string;
+  accountID: string;
+  draft: Draft;
+  runAt: number;
+  createdAt: number;
+  status: ScheduledStatus;
+  orderID?: string;
+  code?: string;
+  message?: string;
+  finishedAt?: number;
 }
 export interface Prepared {
   id: string;
@@ -180,6 +219,10 @@ export interface Broker {
   submit(prepared: Prepared): Promise<{ orderID?: string }>;
   submitQuick?(accountID: string, draft: Draft): Promise<{ snapshot: Prepared; result: { orderID?: string } }>;
   cancel(accountID: string, orderID: string): Promise<void>;
+  /** Timed orders exist only where something stays online to submit them. */
+  schedule?(accountID: string, draft: Draft, runAt: number, id: string): Promise<ScheduledOrder>;
+  scheduled?(): Promise<ScheduledOrder[]>;
+  cancelScheduled?(id: string): Promise<ScheduledOrder>;
 }
 export interface Palette {
   background: string;

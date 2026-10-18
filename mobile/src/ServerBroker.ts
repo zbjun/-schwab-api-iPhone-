@@ -1,7 +1,7 @@
-import type { Account, Broker, Candle, Draft, History, HistoryRange, Order, Prepared, Quote, SessionStatus, Vault } from "./types.ts";
+import type { Account, Broker, Candle, Draft, History, HistoryRange, Order, Prepared, Quote, ScheduledOrder, SessionStatus, Vault } from "./types.ts";
 import type { MarketStreamCallbacks } from "./marketStream.ts";
 import type { FetchTransport } from "./broker.ts";
-import { TradingError } from "./orderRules.ts";
+import { TradingError, validateDraft } from "./orderRules.ts";
 
 const CONNECTION = "ths.server.connection.v1";
 const OPERATION = "ths.server.operation.v1";
@@ -106,6 +106,17 @@ export class ServerBroker implements Broker {
             operationBusy: "服务器正在处理另一笔交易，请等待结果。",
             insufficientShares: "可卖股数不足，请刷新账户和订单。",
             insufficientFunds: "购买力不足，请刷新账户并调整数量。",
+            takeProfit: "止盈价无效，或没有高于当前价格／买入限价，请调整。",
+            stopLoss: "止损无效，或止损价没有低于当前价格／买入限价（会立即触发），请调整。",
+            exitQuote: "暂时缺少可用的买卖报价，无法核对止盈止损。",
+            exitOrder: "止盈价必须高于止损价。",
+            exitSession: "止盈止损仅支持常规时段。",
+            exitEntry: "仅限价或市价买入可以附带止盈止损。",
+            exitMissing: "请设置止盈价或止损。",
+            scheduleTime: "定时单执行时间须在 5 秒之后、7 天之内。",
+            scheduleLimit: "待执行的定时单已达上限，请先撤销部分定时单。",
+            scheduleMissing: "定时单不存在，请刷新。",
+            scheduleChanged: "定时单已执行或已结束，无法撤销。",
           };
           const code = typeof envelope.error.code === "string" && /^[A-Za-z]{1,64}$/.test(envelope.error.code) ? envelope.error.code : "serverRejected";
           const ErrorType = response.status === 400 && code !== "orderOutcomeUnknown" ? KnownRejection : TradingError;
@@ -172,6 +183,7 @@ export class ServerBroker implements Broker {
   orderHistory(accountID: string, from: number, to: number) { return this.rpc<Order[]>("orderHistory", [accountID, from, to]); }
   orderDetail(accountID: string, id: string) { return this.rpc<Order>("orderDetail", [accountID, id]); }
   async prepare(accountID: string, draft: Draft, replacementID?: string): Promise<Prepared> {
+    validateDraft(draft); // Precise local messages before anything is sent.
     // UI expiry is measured on the device clock; the server separately enforces
     // its own one-use review deadline. Comparing the two wall clocks can reject
     // a freshly prepared quick order before submit is ever called.
@@ -305,7 +317,11 @@ export class ServerBroker implements Broker {
     return this.write("submitQuick", [accountID, submittedDraft, requestID], (value: { snapshot: Prepared; result: { orderID?: string } }) => {
       const snapshot = value?.snapshot, result = value?.result;
       const draftKeys: (keyof Draft)[] = ["symbol", "side", "kind", "quantity", "limitPrice", "stopPrice", "duration", "session"];
-      const matches = snapshot?.draft && draftKeys.every(key => snapshot.draft[key] === submittedDraft[key]);
+      const exit = snapshot?.draft?.exit, sent = submittedDraft.exit;
+      const exitMatches = exit === undefined ? sent === undefined
+        : !!sent && exit.takeProfit === sent.takeProfit && exit.duration === sent.duration &&
+          exit.stopLoss?.mode === sent.stopLoss?.mode && exit.stopLoss?.value === sent.stopLoss?.value;
+      const matches = snapshot?.draft && exitMatches && draftKeys.every(key => snapshot.draft[key] === submittedDraft[key]);
       if (!snapshot || typeof snapshot.id !== "string" || !snapshot.id || snapshot.accountID !== accountID || snapshot.isDemo !== false ||
           !Number.isFinite(snapshot.preparedAt) || typeof snapshot.accountDisplay !== "string" || snapshot.quote?.symbol !== submittedDraft.symbol ||
           !Number.isFinite(snapshot.availableShares) || snapshot.availableShares < 0 || !matches ||
@@ -316,4 +332,11 @@ export class ServerBroker implements Broker {
     });
   }
   cancel(accountID: string, orderID: string) { return this.write<void>("cancel", [accountID, orderID]); }
+  schedule(accountID: string, draft: Draft, runAt: number, id: string) {
+    validateDraft(draft);
+    // The client-chosen ID makes a retried request return the same entry, never a second order.
+    return this.rpc<ScheduledOrder>("schedule", [accountID, { ...draft, session: draft.session ?? "NORMAL" }, runAt, id]);
+  }
+  scheduled() { return this.rpc<ScheduledOrder[]>("scheduled"); }
+  cancelScheduled(id: string) { return this.rpc<ScheduledOrder>("cancelScheduled", [id]); }
 }

@@ -1,5 +1,6 @@
 import React from "react";
 import {
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -9,6 +10,11 @@ import {
   type TextInputProps,
   type ViewStyle,
 } from "react-native";
+import {
+  GlassView,
+  isGlassEffectAPIAvailable,
+  isLiquidGlassAvailable,
+} from "expo-glass-effect";
 import type { Palette } from "./types.ts";
 
 // Up/down keep the established red-up / green-down market colors used by charts.
@@ -38,6 +44,65 @@ export const dark: Palette = {
 };
 /** Compact trading-terminal geometry: cards, controls and pills. */
 export const radius = { card: 10, control: 6, pill: 999 } as const;
+/** Floating tab capsule; scrolling content and pinned bars keep clear of it. */
+export const tabBar = { height: 62, bottom: 6, inset: 14 } as const;
+export const tabClearance = tabBar.height + tabBar.bottom + 10;
+
+// Some iOS 26 betas lack the API and crash; everything else falls back to a tinted surface.
+const nativeGlass = (() => {
+  if (Platform.OS !== "ios") return false;
+  try {
+    return isLiquidGlassAvailable() && isGlassEffectAPIAvailable();
+  } catch {
+    return false;
+  }
+})();
+/** iOS 26 Liquid Glass surface with a translucent capsule fallback elsewhere. */
+export function Glass({
+  palette: p,
+  style,
+  children,
+  interactive = false,
+  tint,
+}: {
+  palette: Palette;
+  style?: StyleProp<ViewStyle>;
+  children?: React.ReactNode;
+  interactive?: boolean;
+  tint?: string;
+}) {
+  const scheme = p.background === light.background ? "light" : "dark";
+  if (nativeGlass)
+    return (
+      <GlassView
+        style={style}
+        glassEffectStyle="regular"
+        colorScheme={scheme}
+        isInteractive={interactive}
+        tintColor={tint}
+      >
+        {children}
+      </GlassView>
+    );
+  return (
+    <View
+      style={[
+        {
+          backgroundColor: scheme === "light" ? "#FDFEFFE8" : "#26282DE8",
+          borderWidth: StyleSheet.hairlineWidth,
+          borderColor: scheme === "light" ? "#FFFFFF" : "#3A3D44",
+          shadowColor: "#000",
+          shadowOpacity: scheme === "light" ? 0.08 : 0.3,
+          shadowRadius: 18,
+          shadowOffset: { width: 0, height: 8 },
+        },
+        style,
+      ]}
+    >
+      {children}
+    </View>
+  );
+}
 export const money = (value?: number, digits = 2) =>
   value === undefined || !Number.isFinite(value)
     ? "—"
@@ -56,7 +121,7 @@ export const compactNumber = (value?: number) =>
         ? `${money(value / 1e4)}万`
         : money(value, 0);
 export const styles = StyleSheet.create({
-  pageContent: { paddingHorizontal: 12, paddingTop: 4, paddingBottom: 24 },
+  pageContent: { paddingHorizontal: 12, paddingTop: 4, paddingBottom: 24 + tabClearance },
   pageHeader: { minHeight: 52, paddingHorizontal: 16, paddingVertical: 6,
     flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
   pageTitle: { fontSize: 22, fontWeight: "700" },

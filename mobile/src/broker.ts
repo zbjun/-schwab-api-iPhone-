@@ -35,6 +35,8 @@ import {
   validOrderID,
   validSymbol,
   validateDraft,
+  validateExitAgainstQuote,
+  freezeDraft,
   validateReplacement,
 } from "./orderRules.ts";
 
@@ -1281,6 +1283,7 @@ export class SchwabBroker implements Broker {
       if (!account) throw error("invalidTradingAccount");
       if (!quote || !isStockAsset(quote.assetMainType))
         throw error("unsupportedAsset");
+      validateExitAgainstQuote(draft, quote);
       if (orders.length >= 200) throw error("ordersTruncated");
       if (replacement !== undefined) validateReplacement(replacement, draft);
       this.assertGeneration(expected);
@@ -1322,16 +1325,7 @@ export class SchwabBroker implements Broker {
     validateDraft(draft);
     if (replacementID !== undefined && !validOrderID(replacementID))
       throw error("invalidOrderIdentifier");
-    const copy: Draft = Object.freeze({
-      symbol: draft.symbol,
-      side: draft.side,
-      kind: draft.kind,
-      quantity: draft.quantity,
-      limitPrice: draft.limitPrice,
-      stopPrice: draft.stopPrice,
-      duration: draft.duration,
-      session: draft.session ?? "NORMAL",
-    });
+    const copy = freezeDraft(draft);
     this.reviews.clear();
     const sequence = ++this.prepareSequence;
     await this.load();
@@ -1398,12 +1392,7 @@ export class SchwabBroker implements Broker {
   }> {
     if (this.writeBusy) throw error("operationBusy");
     validateDraft(draft);
-    const copy: Draft = Object.freeze({
-      symbol: draft.symbol, side: draft.side, kind: draft.kind,
-      quantity: draft.quantity, limitPrice: draft.limitPrice,
-      stopPrice: draft.stopPrice, duration: draft.duration,
-      session: draft.session ?? "NORMAL",
-    });
+    const copy = freezeDraft(draft);
     this.writeBusy = true;
     this.reviews.clear();
     this.prepareSequence++;

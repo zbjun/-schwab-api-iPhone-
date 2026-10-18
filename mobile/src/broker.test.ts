@@ -433,6 +433,42 @@ test("extended sessions encode limits, reject unsupported night and incompatible
     assert.throws(() => validateDraft({ ...draft, session } as Draft), { code: "orderSession" });
 });
 
+test("position exits are checked against the fresh bid and written as one OCO order", async () => {
+  const f = fixture();
+  await f.authorize();
+  const exit: Draft = {
+    symbol: "AAPL", side: "SELL", kind: "EXIT", quantity: 5, duration: "GOOD_TILL_CANCEL",
+    exit: { takeProfit: "110", stopLoss: { mode: "PRICE", value: "95" }, duration: "GOOD_TILL_CANCEL" },
+  };
+  // The fixture bid is 99.98: a stop at or above it would fire at once.
+  await rejectsCode(f.broker.prepare(ACCOUNT, { ...exit, exit: { ...exit.exit!, stopLoss: { mode: "PRICE", value: "99.98" } } }), "stopLoss");
+  await rejectsCode(f.broker.prepare(ACCOUNT, { ...exit, quantity: 21 }), "insufficientShares");
+  assert.equal(f.writes().length, 0);
+  const review = await f.broker.prepare(ACCOUNT, exit);
+  exit.exit!.takeProfit = "1";
+  assert.equal(review.draft.exit?.takeProfit, "110");
+  await f.broker.submit(review);
+  assert.equal(f.writes().length, 1);
+  const body = JSON.parse(String(f.writes()[0].init.body));
+  assert.equal(body.orderStrategyType, "OCO");
+  assert.deepEqual(body.childOrderStrategies.map((leg: { orderType: string }) => leg.orderType), ["LIMIT", "STOP"]);
+});
+
+test("a buy with attached exits is written as a single trigger order", async () => {
+  const f = fixture();
+  await f.authorize();
+  const review = await f.broker.prepare(ACCOUNT, {
+    ...draft, exit: { takeProfit: "120", stopLoss: { mode: "TRAIL_PERCENT", value: "5" }, duration: "DAY" },
+  });
+  await f.broker.submit(review);
+  assert.equal(f.writes().length, 1);
+  const body = JSON.parse(String(f.writes()[0].init.body));
+  assert.equal(body.orderStrategyType, "TRIGGER");
+  assert.equal(body.orderLegCollection[0].instruction, "BUY");
+  assert.equal(body.childOrderStrategies[0].orderStrategyType, "OCO");
+  assert.equal(body.childOrderStrategies[0].childOrderStrategies[1].orderType, "TRAILING_STOP");
+});
+
 test("extended session survives frozen review and exact broker write for both sides", async () => {
   for (const session of ["AM", "PM", "SEAMLESS"] as const) {
     for (const side of ["BUY", "SELL"] as const) {

@@ -10,6 +10,7 @@ import type {
   Position,
   Quote,
   Side,
+  StopMode,
   TradeExecution,
 } from "./types.ts";
 import { historyCoverage } from "./historyCoverage.ts";
@@ -180,6 +181,79 @@ export function isStockHolding(
   );
 }
 
+function openOrder(order: Order): boolean {
+  // An OCO wrapper is only a container: its legs decide whether shares are still committed.
+  if (order.strategy === "OCO" && order.children?.length) return order.children.some(openOrder);
+  return !FINAL_STATUSES.has(order.status) || (order.children ?? []).some(openOrder);
+}
+/**
+ * Shares an open order may still sell, or undefined when that cannot be known.
+ * OCO legs share the same shares, so the group reserves its largest open sell
+ * leg once. A bracket's exits wait for the buy entry and reserve nothing until
+ * it fills; a partially filled entry is ambiguous and blocks sell sizing.
+ */
+function sellReservation(order: Order, symbol: string, quote?: Quote): number | undefined {
+  if (!openOrder(order)) return 0;
+  if (
+    order.symbol !== "" &&
+    order.symbol !== "未知标的" &&
+    !order.symbol.split(" / ").includes(symbol)
+  )
+    return 0;
+  const children = order.children;
+  if (!children?.length) {
+    // Child strategies or different asset units cannot be converted into a stock reservation.
+    if (
+      !(
+        order.isSingleLeg &&
+        isStockHolding(
+          { symbol: order.symbol, assetType: order.assetType ?? "UNKNOWN" },
+          quote,
+        )
+      ) &&
+      !order.isSimpleEquity
+    )
+      return undefined;
+    if (order.side === "BUY") return 0;
+    if (
+      order.side !== "SELL" ||
+      order.remainingQuantity === undefined ||
+      !Number.isFinite(order.remainingQuantity) ||
+      order.remainingQuantity < 0
+    )
+      return undefined;
+    return order.remainingQuantity;
+  }
+  if (order.strategy === "OCO") {
+    let largest = 0;
+    for (const leg of children) {
+      const amount = sellReservation(leg, symbol, quote);
+      if (amount === undefined) return undefined;
+      largest = Math.max(largest, amount);
+    }
+    return largest;
+  }
+  if (order.strategy !== "TRIGGER") return undefined;
+  if (!FINAL_STATUSES.has(order.status)) {
+    // Only single-stock buy-entry brackets are understood; their exits await the entry fill.
+    if (order.side !== "BUY" || (order.filledQuantity ?? 0) > 0) return undefined;
+    return validSymbol(order.symbol) &&
+      isStockHolding({ symbol: order.symbol, assetType: order.assetType ?? "UNKNOWN" }, quote)
+      ? 0
+      : undefined;
+  }
+  if (order.status !== "FILLED")
+    // A cancelled or rejected entry must not leave live exits behind.
+    return children.some(openOrder) ? undefined : 0;
+  let total = 0;
+  for (const child of children) {
+    const amount = sellReservation(child, symbol, quote);
+    if (amount === undefined) return undefined;
+    total += amount;
+  }
+  return total;
+}
+
 export function maximumSell(
   account: Account | undefined,
   symbol: string,
@@ -199,35 +273,10 @@ export function maximumSell(
   }
   const reserved: number[] = [];
   for (const order of orders) {
-    if (order.id === excludingOrderID || FINAL_STATUSES.has(order.status))
-      continue;
-    if (
-      order.symbol !== "" &&
-      order.symbol !== "未知标的" &&
-      !order.symbol.split(" / ").includes(symbol)
-    )
-      continue;
-    // Child strategies or different asset units cannot be converted into a stock reservation.
-    if (
-      !(
-        order.isSingleLeg &&
-        isStockHolding(
-          { symbol: order.symbol, assetType: order.assetType ?? "UNKNOWN" },
-          quote,
-        )
-      ) &&
-      !order.isSimpleEquity
-    )
-      return undefined;
-    if (order.side === "BUY") continue;
-    if (
-      order.side !== "SELL" ||
-      order.remainingQuantity === undefined ||
-      !Number.isFinite(order.remainingQuantity) ||
-      order.remainingQuantity < 0
-    )
-      return undefined;
-    reserved.push(order.remainingQuantity);
+    if (order.id === excludingOrderID) continue;
+    const amount = sellReservation(order, symbol, quote);
+    if (amount === undefined) return undefined;
+    reserved.push(amount);
   }
   const amounts = [...held, ...reserved].map((value) => decimal(value));
   if (amounts.some((value) => !value)) return undefined;
@@ -241,6 +290,92 @@ export function maximumSell(
   }, 0n);
   const wholeShares = (available > 0n ? available : 0n) / 10n ** BigInt(scale);
   return wholeShares <= MAX_INTEGER ? Number(wholeShares) : undefined;
+}
+
+const PERCENT = /^(?:[0-9]{1,2})(?:\.[0-9]{1,2})?$/;
+/** Validates the broker-held exit legs; prices are compared in exact 1/10000 units. */
+function validateExit(draft: Draft): void {
+  const exit = draft.exit;
+  if (exit === undefined) {
+    if (draft.kind === "EXIT")
+      throw new TradingError("exitMissing", "请设置止盈价或止损。");
+    return;
+  }
+  if (!exit || typeof exit !== "object" || Array.isArray(exit))
+    throw new TradingError("exit", "止盈止损参数无效。");
+  if ((draft.session ?? "NORMAL") !== "NORMAL")
+    throw new TradingError("exitSession", "止盈止损仅支持常规时段。");
+  if (!["DAY", "GOOD_TILL_CANCEL"].includes(exit.duration))
+    throw new TradingError("exitDuration", "止盈止损有效期暂不支持。");
+  const take = exit.takeProfit;
+  const stop = exit.stopLoss;
+  if (take === undefined && stop === undefined)
+    throw new TradingError("exitMissing", "请设置止盈价或止损。");
+  const takeUnits = take === undefined ? undefined : priceUnits(take);
+  if (take !== undefined && takeUnits === undefined)
+    throw new TradingError("takeProfit", "止盈价必须大于 0，最多保留 4 位小数。");
+  let stopUnits: bigint | undefined;
+  if (stop !== undefined) {
+    if (!stop || typeof stop !== "object" || typeof stop.value !== "string")
+      throw new TradingError("stopLoss", "止损参数无效。");
+    if (stop.mode === "PRICE" || stop.mode === "TRAIL_VALUE") {
+      const units = priceUnits(stop.value);
+      if (units === undefined)
+        throw new TradingError("stopLoss", stop.mode === "PRICE"
+          ? "止损价必须大于 0，最多保留 4 位小数。"
+          : "移动止损价差必须大于 0，最多保留 4 位小数。");
+      if (stop.mode === "PRICE") stopUnits = units;
+    } else if (stop.mode === "TRAIL_PERCENT") {
+      const percent = Number(stop.value);
+      if (!PERCENT.test(stop.value.trim()) || !(percent > 0) || percent > 50)
+        throw new TradingError("stopLoss", "移动止损比例须大于 0% 且不超过 50%，最多 2 位小数。");
+    } else throw new TradingError("stopLoss", "止损方式暂不支持。");
+  }
+  if (takeUnits !== undefined && stopUnits !== undefined && takeUnits <= stopUnits)
+    throw new TradingError("exitOrder", "止盈价必须高于止损价。");
+  if (draft.kind === "EXIT") {
+    if (draft.side !== "SELL")
+      throw new TradingError("exitSide", "止盈止损单只能卖出已有持仓。");
+    if (draft.duration !== exit.duration)
+      throw new TradingError("exitDuration", "止盈止损有效期不一致，请重新设置。");
+    return;
+  }
+  if (draft.side !== "BUY" || (draft.kind !== "LIMIT" && draft.kind !== "MARKET"))
+    throw new TradingError("exitEntry", "仅限价或市价买入可以附带止盈止损。");
+  const entry = draft.kind === "LIMIT" ? priceUnits(draft.limitPrice) : undefined;
+  if (entry !== undefined && takeUnits !== undefined && takeUnits <= entry)
+    throw new TradingError("takeProfit", "止盈价必须高于买入限价。");
+  if (entry !== undefined && stopUnits !== undefined && stopUnits >= entry)
+    throw new TradingError("stopLoss", "止损价必须低于买入限价。");
+}
+
+/** Rejects exits the current market would trigger immediately. */
+export function validateExitAgainstQuote(draft: Draft, quote: Quote): void {
+  const exit = draft.exit;
+  if (exit === undefined || (draft.kind !== "EXIT" && draft.kind !== "MARKET")) return;
+  const reference = draft.kind === "EXIT" ? quote.bidPrice : quote.askPrice;
+  if (reference === undefined || !Number.isFinite(reference) || reference <= 0)
+    throw new TradingError("exitQuote", "缺少可用的买卖报价，无法核对止盈止损价格。");
+  const label = draft.kind === "EXIT" ? "当前买一价" : "当前卖一价";
+  const take = exit.takeProfit === undefined ? undefined : parsePrice(exit.takeProfit);
+  if (take !== undefined && take <= reference)
+    throw new TradingError("takeProfit", `止盈价必须高于${label} ${reference}。`);
+  const stop = exit.stopLoss?.mode === "PRICE" ? parsePrice(exit.stopLoss.value) : undefined;
+  if (stop !== undefined && stop >= reference)
+    throw new TradingError("stopLoss", `止损价必须低于${label} ${reference}，否则会立即触发。`);
+}
+
+export const stopModeLabels: Record<StopMode, string> = {
+  PRICE: "止损价",
+  TRAIL_VALUE: "移动止损 $",
+  TRAIL_PERCENT: "移动止损 %",
+};
+export function describeStop(stop: { mode: StopMode; value: string }): string {
+  return stop.mode === "PRICE"
+    ? `$${stop.value}`
+    : stop.mode === "TRAIL_VALUE"
+      ? `回撤 $${stop.value} 触发`
+      : `回撤 ${stop.value}% 触发`;
 }
 
 export function validateDraft(draft: Draft): void {
@@ -258,7 +393,7 @@ export function validateDraft(draft: Draft): void {
   if (!Number.isSafeInteger(draft.quantity) || draft.quantity <= 0)
     throw new TradingError("quantity", "股数必须是大于 0 的安全整数。");
   if (
-    !KINDS.includes(draft.kind) ||
+    !(KINDS.includes(draft.kind as OrderKind) || draft.kind === "EXIT") ||
     !["DAY", "GOOD_TILL_CANCEL"].includes(draft.duration)
   ) {
     throw new TradingError("orderKind", "此订单类型或有效期暂不支持。");
@@ -280,15 +415,75 @@ export function validateDraft(draft: Draft): void {
   }
   if (draft.kind === "MARKET" && draft.duration !== "DAY")
     throw new TradingError("marketDuration", "市价单仅支持当日有效。");
+  validateExit(draft);
+}
+
+function exitLegs(draft: Draft): Record<string, unknown> {
+  const exit = draft.exit!;
+  const base = (orderType: string) => ({
+    orderType,
+    session: "NORMAL",
+    duration: exit.duration,
+    orderStrategyType: "SINGLE",
+    orderLegCollection: [
+      {
+        instruction: "SELL",
+        quantity: draft.quantity,
+        instrument: { symbol: draft.symbol, assetType: "EQUITY" },
+      },
+    ],
+  });
+  const legs: Record<string, unknown>[] = [];
+  if (exit.takeProfit !== undefined)
+    legs.push({ ...base("LIMIT"), price: canonicalPrice(exit.takeProfit) });
+  const stop = exit.stopLoss;
+  if (stop?.mode === "PRICE")
+    legs.push({ ...base("STOP"), stopPrice: canonicalPrice(stop.value) });
+  else if (stop)
+    legs.push({
+      ...base("TRAILING_STOP"),
+      stopPriceLinkBasis: "BID",
+      stopPriceLinkType: stop.mode === "TRAIL_VALUE" ? "VALUE" : "PERCENT",
+      stopPriceOffset: Number(stop.mode === "TRAIL_VALUE" ? canonicalPrice(stop.value) : stop.value.trim()),
+    });
+  // Two legs share the same shares: Schwab cancels the other leg once one fills.
+  return legs.length === 1 ? legs[0] : { orderStrategyType: "OCO", childOrderStrategies: legs };
+}
+
+/** Deep-frozen copy so a review cannot change after validation. */
+export function freezeDraft(draft: Draft): Draft {
+  const exit = draft.exit;
+  return Object.freeze({
+    symbol: draft.symbol,
+    side: draft.side,
+    kind: draft.kind,
+    quantity: draft.quantity,
+    limitPrice: draft.limitPrice,
+    stopPrice: draft.stopPrice,
+    duration: draft.duration,
+    session: draft.session ?? "NORMAL",
+    ...(exit
+      ? {
+          exit: Object.freeze({
+            ...(exit.takeProfit !== undefined ? { takeProfit: exit.takeProfit } : {}),
+            ...(exit.stopLoss
+              ? { stopLoss: Object.freeze({ mode: exit.stopLoss.mode, value: exit.stopLoss.value }) }
+              : {}),
+            duration: exit.duration,
+          }),
+        }
+      : {}),
+  });
 }
 
 export function encodeDraft(draft: Draft): string {
   validateDraft(draft);
+  if (draft.kind === "EXIT") return JSON.stringify(exitLegs(draft));
   return JSON.stringify({
     orderType: draft.kind,
     session: draft.session ?? "NORMAL",
     duration: draft.duration,
-    orderStrategyType: "SINGLE",
+    orderStrategyType: draft.exit ? "TRIGGER" : "SINGLE",
     orderLegCollection: [
       {
         instruction: draft.side,
@@ -302,10 +497,14 @@ export function encodeDraft(draft: Draft): string {
     ...(draft.stopPrice !== undefined
       ? { stopPrice: canonicalPrice(draft.stopPrice) }
       : {}),
+    // Schwab submits the exits only after this entry order fills.
+    ...(draft.exit ? { childOrderStrategies: [exitLegs(draft)] } : {}),
   });
 }
 
 export function validateReplacement(order: Order, draft: Draft): void {
+  if (draft.exit !== undefined || draft.kind === "EXIT")
+    throw new TradingError("replacementExit", "改单不支持止盈止损，请撤单后重新下单。");
   if ((draft.session ?? "NORMAL") !== (order.session ?? "NORMAL"))
     throw new TradingError("replacementSession", "改单不能改变原订单的交易时段。");
   if (
@@ -546,9 +745,24 @@ function decodeExecutions(
   );
 }
 
-export function decodeOrder(payload: unknown): Order {
+/** Linked OCO/TRIGGER legs may omit an ID; synthetic IDs are never valid for writes. */
+export function decodeOrder(payload: unknown, fallbackID?: string): Order {
   const o = object(payload),
-    id = orderID(o.orderId);
+    id = o.orderId == null && fallbackID !== undefined ? fallbackID : orderID(o.orderId);
+  const strategy =
+    o.orderStrategyType === "SINGLE" || o.orderStrategyType === "OCO" || o.orderStrategyType === "TRIGGER"
+      ? o.orderStrategyType
+      : undefined;
+  const rawChildren = array(o.childOrderStrategies ?? []);
+  let children: Order[] | undefined;
+  try {
+    children = rawChildren.length
+      ? rawChildren.map((child, index) => decodeOrder(child, id + "-" + (index + 1)))
+      : undefined;
+  } catch {
+    // Unreadable legs keep the group visible but make its share reservation unknown.
+    children = undefined;
+  }
   const quantity = number(o.quantity, true),
     filledQuantity = number(o.filledQuantity, true);
   const remainingQuantity = number(o.remainingQuantity, true),
@@ -582,7 +796,14 @@ export function decodeOrder(payload: unknown): Order {
       }),
     ),
   ];
-  const symbol = symbols.join(" / ") || "未知标的";
+  // An OCO wrapper has no legs of its own; it acts on its children's instrument.
+  const childSymbols = legs.length || !children ? [] : [
+    ...new Set(children.flatMap((c) => c.symbol.split(" / ")).filter(validSymbol)),
+  ];
+  const symbol = symbols.join(" / ") || childSymbols.join(" / ") || "未知标的";
+  const groupSide = !legs.length && children?.length && children.every((c) => c.side === children![0].side)
+    ? children[0].side
+    : undefined;
   const singleLeg =
     !!leg &&
     !!side &&
@@ -643,8 +864,19 @@ export function decodeOrder(payload: unknown): Order {
     preservesInstructions &&
     pricesFit &&
     completeDraft;
+  const group = (strategy === "OCO" || strategy === "TRIGGER") && !!children?.length;
   // Cancellation uses a fresh broker flag and order ID, not a reconstructed draft.
-  const cancelUnavailableReason = !singleLeg
+  const cancelUnavailableReason = !validOrderID(id)
+    ? "此联动子委托没有独立订单号，请撤销整组委托。"
+    : group
+    ? !children!.every(stockOnly)
+      ? "组合中含非股票委托，请到 Schwab 撤销。"
+      : !actionable
+        ? "联动委托已结束或正在处理，请刷新查看状态。"
+        : o.cancelable !== true
+          ? "Schwab 当前未将这组联动委托标记为可撤，请撤销其中的单笔委托或到券商查看。"
+          : undefined
+    : !singleLeg
     ? "组合或联动委托暂需到 Schwab 撤销。"
     : !(isStockAsset(assetType) || assetType === "COLLECTIVE_INVESTMENT")
       ? "此类委托暂不支持在此撤销。"
@@ -653,11 +885,22 @@ export function decodeOrder(payload: unknown): Order {
         : o.cancelable !== true
           ? "Schwab 当前未将此订单标记为可撤，请刷新或到券商查看。"
           : undefined;
+  const trailing =
+    o.orderType === "TRAILING_STOP" &&
+    (o.stopPriceLinkType === "VALUE" || o.stopPriceLinkType === "PERCENT") &&
+    typeof o.stopPriceOffset === "number" && Number.isFinite(o.stopPriceOffset) && o.stopPriceOffset > 0
+      ? { type: o.stopPriceLinkType as "VALUE" | "PERCENT", offset: o.stopPriceOffset }
+      : undefined;
+  const ownExecutions = decodeExecutions(o, id, legs);
+  const executions = children
+    ? [...new Map([...ownExecutions, ...children.flatMap((c) => c.executions ?? [])].map((e) => [e.id, e])).values()]
+        .sort((a, b) => a.time - b.time || a.id.localeCompare(b.id))
+    : ownExecutions;
   return {
     id,
     status,
     symbol,
-    side,
+    side: side ?? groupSide,
     kind,
     quantity,
     filledQuantity,
@@ -666,7 +909,7 @@ export function decodeOrder(payload: unknown): Order {
     stopPrice,
     duration,
     enteredAt: optionalDate(o.enteredTime),
-    executions: decodeExecutions(o, id, legs),
+    executions,
     cancelable: cancelUnavailableReason === undefined,
     cancelUnavailableReason,
     isSingleLeg: singleLeg,
@@ -674,11 +917,27 @@ export function decodeOrder(payload: unknown): Order {
     session,
     editable,
     isSimpleEquity: simple,
+    strategy,
+    ...(children ? { children } : {}),
+    ...(trailing ? { trailing } : {}),
   };
 }
 
+function stockOnly(order: Order): boolean {
+  return order.children?.length
+    ? order.children.every(stockOnly)
+    : order.isSingleLeg === true &&
+        (isStockAsset(order.assetType) || order.assetType === "COLLECTIVE_INVESTMENT");
+}
+function descendantIDs(order: Order): string[] {
+  return (order.children ?? []).flatMap((child) => [child.id, ...descendantIDs(child)]);
+}
+
 export function decodeOrders(payload: unknown): Order[] {
-  const orders = array(payload).map(decodeOrder);
+  const decoded = array(payload).map((entry) => decodeOrder(entry));
+  // A linked leg listed again at top level is already represented inside its group.
+  const nested = new Set(decoded.flatMap(descendantIDs));
+  const orders = decoded.filter((o) => !nested.has(o.id));
   if (new Set(orders.map((o) => o.id)).size !== orders.length)
     throw invalidResponse();
   return orders.sort((a, b) => (b.enteredAt ?? 0) - (a.enteredAt ?? 0));

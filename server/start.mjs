@@ -6,6 +6,7 @@ import { createGateway } from './gateway.mjs';
 import { MarketHub } from './market.ts';
 import { MinuteArchive } from './minuteArchive.ts';
 import { startMaintenance } from './maintenance.mjs';
+import { createScheduler } from './schedule.mjs';
 
 // Config/key are local files, never command-line secrets or mobile bundle inputs.
 const configPath = resolve(process.argv[2] ?? 'server/config.json');
@@ -34,13 +35,23 @@ try {
   hub = new MarketHub(() => broker.marketCredentials(), { archive, collectSymbols: config.collectSymbols ?? [] });
   maintenance = startMaintenance({ broker, archive,
     warn: kind => console.warn(`${kind} maintenance failed; normal reads and subsequent maintenance will retry.`) });
-  server = createGateway({ broker, devices: config.devices, callbackURL: config.callbackURL, marketHub: hub });
-  server.on('close', () => { hub.close(); void maintenance.stop(); });
+  let scheduler = createScheduler({ vault, broker,
+    warn: message => console.warn(message + '; scheduled orders keep running from memory.') });
+  try { await scheduler.load(); }
+  catch {
+    // Never overwrite unreadable timed orders; manual trading remains available.
+    console.warn('Scheduled orders could not be loaded; timed orders are disabled until storage is repaired.');
+    scheduler.stop();
+    scheduler = undefined;
+  }
+  server = createGateway({ broker, devices: config.devices, callbackURL: config.callbackURL, marketHub: hub, scheduler });
+  server.on('close', () => { hub.close(); scheduler?.stop(); void maintenance.stop(); });
   await new Promise((done, reject) => { server.once('error', reject); server.listen(config.port, '127.0.0.1', done); });
   console.log(`Personal trading server listening on 127.0.0.1:${config.port}; HTTPS reverse proxy required.`);
   let stopping = false;
   const stop = () => {
     if (stopping) return; stopping = true;
+    scheduler?.stop();
     hub.close();
     server.close(async () => { await maintenance.stop(); await release(); process.exit(0); });
     // Keep the lock on forced termination; the durable broker operation marker protects uncertain writes.

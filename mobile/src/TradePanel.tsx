@@ -17,6 +17,8 @@ import type {
   Prepared,
   Quote,
   Side,
+  ExitPlan,
+  StopMode,
 } from "./types.ts";
 import type { TradingState } from "./useTrading.ts";
 import {
@@ -28,8 +30,13 @@ import {
   sharesForBudget,
   validSymbol,
   orderSessionLabels,
+  describeStop,
+  freezeDraft,
+  stopModeLabels,
+  validateDraft,
 } from "./orderRules.ts";
-import { Button, Chip, elevated, money, radius, Stepper, styles } from "./ui.tsx";
+import { Button, Chip, elevated, Glass, Input, money, radius, Stepper, styles, tabBar, tabClearance } from "./ui.tsx";
+import { easternClock, easternDate, easternEpoch } from "./easternTime.ts";
 import { submitQuickOrder } from "./quickTrading.ts";
 import { completeQuickOrder, type QuickOrderFeedback } from "./quickOrderFeedback.ts";
 import { executeLocalMarket, quoteMidpoint, type LocalMarketSettings } from "./localMarket.ts";
@@ -41,8 +48,8 @@ const kindLabels: Record<OrderKind, string> = {
   STOP: "止损",
   STOP_LIMIT: "止损限价",
 };
-type TicketKind = OrderKind | "LOCAL_MARKET";
-const ticketLabels = { ...kindLabels, LOCAL_MARKET: "本地市价" };
+type TicketKind = OrderKind | "LOCAL_MARKET" | "EXIT";
+const ticketLabels = { ...kindLabels, LOCAL_MARKET: "本地市价", EXIT: "止盈止损" };
 export function TradePanel({
   state: s,
   symbol,
@@ -75,6 +82,7 @@ export function TradePanel({
   const [side, setSide] = useState<Side | "CANCEL">(initialSide);
   const bodyHeight = useRef(0),
     footerHeight = useRef(0);
+  const [floatingHeight, setFloatingHeight] = useState(62);
   const [kind, setKind] = useState<TicketKind>(replacement?.kind ?? "LIMIT");
   const { boundaryPercent, startSpreadPercent, durationSeconds } = s.localMarketPreferences;
   const localSettingsReady = s.localMarketPreferencesReady;
@@ -101,6 +109,17 @@ export function TradePanel({
   const [byAmount, setByAmount] = useState(false);
   const [gtc, setGTC] = useState(replacement?.duration === "GOOD_TILL_CANCEL");
   const [session, setSession] = useState<OrderSession>("NORMAL");
+  // Broker-held exits: attached to a buy, or alone as an "EXIT" order on a holding.
+  const [exitOn, setExitOn] = useState(false);
+  const [takeProfit, setTakeProfit] = useState("");
+  const [stopMode, setStopMode] = useState<StopMode>("PRICE");
+  const [stopValue, setStopValue] = useState("");
+  const [exitGtc, setExitGtc] = useState(true);
+  // Timed orders are held by the server and submitted once at an Eastern wall-clock time.
+  const [scheduleOn, setScheduleOn] = useState(false);
+  const [runDate, setRunDate] = useState(() => easternDate(Date.now()));
+  const [runTime, setRunTime] = useState("09:30:00");
+  const [scheduleReview, setScheduleReview] = useState<{ draft: Draft; runAt: number; id: string }>();
   const gtcAllowed = kind !== "MARKET" && kind !== "LOCAL_MARKET" && session !== "AM" && session !== "PM";
   const [prepared, setPrepared] = useState<Prepared>();
   const [quickFeedback, setQuickFeedback] = useState<QuickOrderFeedback>();
@@ -108,6 +127,7 @@ export function TradePanel({
   useLayoutEffect(() => {
     setPrepared(undefined);
     setLocalReview(undefined);
+    setScheduleReview(undefined);
     ++context.current;
   }, [
     side,
@@ -120,6 +140,14 @@ export function TradePanel({
     byAmount,
     gtc,
     session,
+    exitOn,
+    takeProfit,
+    stopMode,
+    stopValue,
+    exitGtc,
+    scheduleOn,
+    runDate,
+    runTime,
     symbol,
     s.accountID,
     s.broker,
@@ -138,6 +166,9 @@ export function TradePanel({
   useEffect(() => {
     if (!["LIMIT", "STOP_LIMIT"].includes(kind)) setByAmount(false);
   }, [kind]);
+  useEffect(() => {
+    if (kind === "EXIT" && side !== "SELL") setKind("LIMIT");
+  }, [kind, side]);
   useEffect(() => {
     if (prepared) {
       const timer = setTimeout(
@@ -176,8 +207,20 @@ export function TradePanel({
     Boolean(s.accountID) &&
     !s.status.unresolvedOperation;
   const quickOrder = s.quickMode && !replacement;
+  const entryExitAllowed =
+    side === "BUY" && (kind === "LIMIT" || kind === "MARKET") && session === "NORMAL" && !replacement;
+  const exitActive = kind === "EXIT" || (exitOn && entryExitAllowed);
+  const canSchedule = !!s.broker.schedule && kind !== "LOCAL_MARKET" && !replacement;
+  const scheduling = scheduleOn && canSchedule;
+  const runAt = easternEpoch(runDate, runTime);
+  const exitPlan = (): ExitPlan => ({
+    ...(takeProfit.trim() ? { takeProfit: takeProfit.trim() } : {}),
+    ...(stopValue.trim() ? { stopLoss: { mode: stopMode, value: stopValue.trim() } } : {}),
+    duration: exitGtc ? "GOOD_TILL_CANCEL" : "DAY",
+  });
   const kindOptions = (session === "NORMAL" ? Object.keys(kindLabels) : ["LIMIT"])
     .concat(replacement ? [] : ["LOCAL_MARKET"])
+    .concat(side === "SELL" && session === "NORMAL" && !replacement ? ["EXIT"] : [])
     .map(value => ({ value, label: `${ticketLabels[value as TicketKind]}单` }));
   async function startLocal(settings: LocalMarketSettings) {
     const version = context.current;
@@ -222,16 +265,35 @@ export function TradePanel({
       return;
     }
     const version = context.current;
-    const draft: Draft = {
-      symbol,
-      side: side as Side,
-      kind,
-      quantity: shares ?? 0,
-      duration: gtcAllowed && gtc ? "GOOD_TILL_CANCEL" : "DAY",
-      session,
-      ...(["LIMIT", "STOP_LIMIT"].includes(kind) ? { limitPrice: price } : {}),
-      ...(["STOP", "STOP_LIMIT"].includes(kind) ? { stopPrice: stop } : {}),
-    };
+    const draft: Draft = kind === "EXIT"
+      ? {
+          symbol,
+          side: "SELL",
+          kind: "EXIT",
+          quantity: shares ?? 0,
+          duration: exitGtc ? "GOOD_TILL_CANCEL" : "DAY",
+          session: "NORMAL",
+          exit: exitPlan(),
+        }
+      : {
+          symbol,
+          side: side as Side,
+          kind,
+          quantity: shares ?? 0,
+          duration: gtcAllowed && gtc ? "GOOD_TILL_CANCEL" : "DAY",
+          session,
+          ...(["LIMIT", "STOP_LIMIT"].includes(kind) ? { limitPrice: price } : {}),
+          ...(["STOP", "STOP_LIMIT"].includes(kind) ? { stopPrice: stop } : {}),
+          ...(exitActive ? { exit: exitPlan() } : {}),
+        };
+    if (scheduling) {
+      validateDraft(draft);
+      if (runAt === undefined) throw new Error("请填写有效的美东执行时间，例如 09:30:00。");
+      if (runAt < Date.now() + 5000) throw new Error("执行时间已过，请选择之后的时间。");
+      const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}-${Math.random().toString(36).slice(2, 12)}`;
+      if (context.current === version) setScheduleReview(Object.freeze({ draft: freezeDraft(draft), runAt, id }));
+      return;
+    }
     if (quickOrder) {
       await completeQuickOrder({
         submit: () => submitQuickOrder({
@@ -329,6 +391,20 @@ export function TradePanel({
     if (next === "AM" || next === "PM") setGTC(false);
   };
   const sideLabel = side === "BUY" ? "买入" : "卖出";
+  const actionLabel = kind === "EXIT" ? "止盈止损" : sideLabel + (exitActive ? "+止盈止损" : "");
+  // Trailing offsets step in small increments rather than from the market price.
+  const stepOffset = (direction: 1 | -1) =>
+    // Functional update so rapid taps each build on the previous step.
+    setStopValue((previous) => {
+      if (stopMode === "TRAIL_PERCENT") {
+        const current = Number(previous),
+          base = Number.isFinite(current) && current > 0 ? current : 0;
+        const next = Math.min(50, Math.round((base + direction * 0.5) * 10) / 10);
+        return next > 0 ? String(next) : "";
+      }
+      const next = Math.round(((parsePrice(previous) ?? 0) + direction * 0.05) * 100) / 100;
+      return next > 0 ? next.toFixed(2) : "";
+    });
   const sharesLabel =
     shares !== undefined && Number.isSafeInteger(shares) && shares > 0 ? ` ${shares} 股` : "";
   const note = (text: string, color = p.secondary) => (
@@ -462,19 +538,30 @@ export function TradePanel({
             value: session,
             options: Object.entries(orderSessionLabels).map(([value, label]) => ({ value, label })),
             onChange: chooseSession,
-            disabled: Boolean(replacement),
+            disabled: Boolean(replacement) || kind === "EXIT",
           },
-          {
-            key: "duration",
-            label: gtc && gtcAllowed ? "撤销前有效" : "当日有效",
-            value: gtc ? "GTC" : "DAY",
-            options: [
-              { value: "DAY", label: "当日有效" },
-              { value: "GTC", label: "撤销前有效" },
-            ],
-            onChange: (value) => setGTC(value === "GTC"),
-            disabled: !gtcAllowed,
-          },
+          kind === "EXIT"
+            ? {
+                key: "duration",
+                label: exitGtc ? "撤销前有效" : "当日有效",
+                value: exitGtc ? "GTC" : "DAY",
+                options: [
+                  { value: "DAY", label: "当日有效" },
+                  { value: "GTC", label: "撤销前有效" },
+                ],
+                onChange: (value) => setExitGtc(value === "GTC"),
+              }
+            : {
+                key: "duration",
+                label: gtc && gtcAllowed ? "撤销前有效" : "当日有效",
+                value: gtc ? "GTC" : "DAY",
+                options: [
+                  { value: "DAY", label: "当日有效" },
+                  { value: "GTC", label: "撤销前有效" },
+                ],
+                onChange: (value) => setGTC(value === "GTC"),
+                disabled: !gtcAllowed,
+              },
         ]}
       />
       {session !== "NORMAL" && note("延长时段仅限价单，不含夜盘；实际可交易时段以券商为准。")}
@@ -561,6 +648,141 @@ export function TradePanel({
           />
         )}
       </View>
+      {entryExitAllowed && (
+        <Chip
+          label={exitOn ? "已附带止盈止损（成交后自动挂出）" : "＋ 附带止盈止损"}
+          palette={p}
+          active={exitOn}
+          color={p.accent}
+          disabled={s.busy}
+          onPress={() => setExitOn(!exitOn)}
+        />
+      )}
+      {exitActive && (
+        <View style={{ gap: 8, padding: 10, borderRadius: radius.control, borderWidth: 1, borderColor: p.separator }}>
+          <View style={styles.spread}>
+            <Text style={{ color: p.text, fontSize: 13, fontWeight: "600" }}>止盈止损 · 嘉信托管</Text>
+            {kind !== "EXIT" && (
+              <Chip
+                label={exitGtc ? "撤销前有效" : "当日有效"}
+                accessibilityLabel={`止盈止损有效期：${exitGtc ? "撤销前有效" : "当日有效"}`}
+                palette={p}
+                disabled={s.busy}
+                onPress={() => setExitGtc(!exitGtc)}
+              />
+            )}
+          </View>
+          <Stepper
+            palette={p}
+            label="止盈价"
+            placeholder="不设止盈"
+            keyboardType="decimal-pad"
+            value={takeProfit}
+            onChangeText={setTakeProfit}
+            disabled={s.busy}
+            onStep={(direction) => stepPrice(takeProfit, setTakeProfit, direction)}
+          />
+          <View style={{ flexDirection: "row", gap: 6 }}>
+            {(["PRICE", "TRAIL_VALUE", "TRAIL_PERCENT"] as const).map((mode) => (
+              <Chip
+                key={mode}
+                label={stopModeLabels[mode]}
+                palette={p}
+                active={stopMode === mode}
+                style={{ flex: 1 }}
+                disabled={s.busy}
+                onPress={() => {
+                  if (mode === stopMode) return;
+                  setStopMode(mode);
+                  setStopValue("");
+                }}
+              />
+            ))}
+          </View>
+          <Stepper
+            palette={p}
+            label={stopMode === "PRICE" ? "止损价" : stopMode === "TRAIL_VALUE" ? "回撤 $" : "回撤 %"}
+            placeholder="不设止损"
+            keyboardType="decimal-pad"
+            value={stopValue}
+            onChangeText={setStopValue}
+            disabled={s.busy}
+            onStep={(direction) =>
+              stopMode === "PRICE" ? stepPrice(stopValue, setStopValue, direction) : stepOffset(direction)
+            }
+          />
+          {note(
+            kind === "EXIT"
+              ? "止盈与止损互为 OCO：一个成交，嘉信自动撤销另一个。止损只在常规时段触发，触发后按市价卖出，可能有滑点；移动止损跟随买一价。"
+              : "买入完全成交后，嘉信才挂出止盈止损（互为 OCO）；买单未成交前撤单会一起撤销。止损只在常规时段触发，触发后按市价卖出。",
+          )}
+        </View>
+      )}
+      {canSchedule && (
+        <Chip
+          label={scheduleOn ? "⏱ 定时下单：已开启" : "⏱ 定时下单"}
+          palette={p}
+          active={scheduleOn}
+          color={p.premarket}
+          disabled={s.busy}
+          onPress={() => setScheduleOn(!scheduleOn)}
+        />
+      )}
+      {scheduling && (
+        <View style={{ gap: 8, padding: 10, borderRadius: radius.control, borderWidth: 1, borderColor: p.separator }}>
+          <Text style={{ color: p.text, fontSize: 13, fontWeight: "600" }}>执行时间 · 美东</Text>
+          <View style={{ flexDirection: "row", gap: 6 }}>
+            {[0, 1, 2].map((days) => {
+              const value = easternDate(Date.now(), days);
+              return (
+                <Chip
+                  key={days}
+                  label={`${["今天", "明天", "后天"][days]} ${value.slice(5)}`}
+                  palette={p}
+                  active={runDate === value}
+                  style={{ flex: 1 }}
+                  disabled={s.busy}
+                  onPress={() => setRunDate(value)}
+                />
+              );
+            })}
+          </View>
+          <View style={{ flexDirection: "row", gap: 6 }}>
+            {([["盘前", "04:00:00"], ["开盘", "09:30:00"], ["收盘前", "15:59:00"]] as const).map(([label, value]) => (
+              <Chip
+                key={value}
+                label={`${label} ${value.slice(0, 5)}`}
+                palette={p}
+                active={runTime === value}
+                style={{ flex: 1 }}
+                disabled={s.busy}
+                onPress={() => setRunTime(value)}
+              />
+            ))}
+          </View>
+          <Input
+            palette={p}
+            accessibilityLabel="美东执行时间"
+            placeholder="HH:MM:SS"
+            value={runTime}
+            onChangeText={setRunTime}
+            editable={!s.busy}
+            keyboardType="numbers-and-punctuation"
+            style={{ textAlign: "center", fontSize: 17, fontWeight: "600" }}
+          />
+          {note(
+            runAt === undefined
+              ? "请填写有效时间，例如 09:30:00。"
+              : `本地时间 ${new Date(runAt).toLocaleString("zh-CN", { hour12: false })}${runAt < Date.now() + 5000 ? " · 已过，请选择之后的时间" : ""}`,
+            runAt === undefined || runAt < Date.now() + 5000 ? p.up : p.secondary,
+          )}
+          {note(
+            s.isDemo
+              ? "演示定时单只在 App 打开时执行。"
+              : "由服务器到点提交：先重新核对资金、持仓和报价，通过才发送一次；不通过、服务器离线或延迟超过 60 秒都会放弃，不会补发。",
+          )}
+        </View>
+      )}
       <View style={styles.spread}>
         <Text style={{ color: p.secondary, fontSize: 12, flexShrink: 1 }}>
           {side === "SELL"
@@ -616,7 +838,58 @@ export function TradePanel({
     </View>
   );
   let body: React.ReactNode, actions: React.ReactNode;
-  if (localReview && !quickOrder) {
+  if (scheduleReview) {
+    const d = scheduleReview.draft,
+      clock = easternClock(scheduleReview.runAt);
+    body = (
+      <View style={{ gap: 8 }}>
+        <Text style={{ color: tradeColor, fontSize: 19, fontWeight: "700" }}>
+          定时{d.kind === "EXIT" ? "止盈止损" : d.side === "BUY" ? "买入" : "卖出"} {d.symbol} · {d.quantity} 股
+        </Text>
+        <SummaryRow label="执行时间（美东）" value={`${clock.date} ${clock.time}`} palette={p} />
+        <SummaryRow
+          label="本地时间"
+          value={new Date(scheduleReview.runAt).toLocaleString("zh-CN", { hour12: false })}
+          palette={p}
+        />
+        <SummaryRow label="账户" value={s.account?.displayNumber ?? "—"} palette={p} />
+        <SummaryRow label="类型" value={`${ticketLabels[d.kind]}单`} palette={p} />
+        {d.limitPrice && <SummaryRow label="限价" value={`$${d.limitPrice}`} palette={p} />}
+        {d.stopPrice && <SummaryRow label="触发价" value={`$${d.stopPrice}`} palette={p} />}
+        {d.exit?.takeProfit && <SummaryRow label="止盈（限价卖出）" value={`$${d.exit.takeProfit}`} palette={p} />}
+        {d.exit?.stopLoss && (
+          <SummaryRow label={stopModeLabels[d.exit.stopLoss.mode]} value={describeStop(d.exit.stopLoss)} palette={p} />
+        )}
+        <SummaryRow label="交易时段" value={orderSessionLabels[d.session ?? "NORMAL"]} palette={p} />
+        <SummaryRow label="有效期" value={d.duration === "DAY" ? "当日有效" : "撤销前有效"} palette={p} />
+        {note(
+          s.isDemo
+            ? "演示定时单不会发送到券商，只在 App 打开时执行。"
+            : "到点时服务器按当时的账户、持仓和报价重新核对，通过才提交一次；数量和价格按现在填写的执行，可在订单页撤销待执行的定时单。",
+        )}
+      </View>
+    );
+    actions = confirmRow(
+      () => setScheduleReview(undefined),
+      <Button
+        label={s.busy ? "设置中…" : `确认定时${s.isDemo ? "（模拟）" : ""}`}
+        palette={p}
+        active
+        color={tradeColor}
+        disabled={s.busy || !permitted}
+        onPress={() =>
+          void s.run(async () => {
+            const review = scheduleReview;
+            await s.broker.schedule!(s.accountID, review.draft, review.runAt, review.id);
+            setScheduleReview(undefined);
+            setQuantity("");
+            setBudget("");
+            s.setMessage(`定时单已设置：美东 ${clock.date} ${clock.time} 执行，可在订单页查看或撤销。`);
+          })
+        }
+      />,
+    );
+  } else if (localReview && !quickOrder) {
     body = (
       <View style={{ gap: 8 }}>
         <Text style={{ color: tradeColor, fontSize: 19, fontWeight: "700" }}>
@@ -647,10 +920,10 @@ export function TradePanel({
     body = (
       <View style={{ gap: 8 }}>
         <Text style={{ color: tradeColor, fontSize: 19, fontWeight: "700" }}>
-          {prepared.draft.side === "BUY" ? "买入" : "卖出"} {prepared.draft.symbol} · {prepared.draft.quantity} 股
+          {prepared.draft.kind === "EXIT" ? "止盈止损" : prepared.draft.side === "BUY" ? "买入" : "卖出"} {prepared.draft.symbol} · {prepared.draft.quantity} 股
         </Text>
         <SummaryRow label="账户" value={prepared.accountDisplay} palette={p} />
-        <SummaryRow label="类型" value={`${kindLabels[prepared.draft.kind]}单`} palette={p} />
+        <SummaryRow label="类型" value={`${ticketLabels[prepared.draft.kind]}单`} palette={p} />
         {prepared.draft.limitPrice && (
           <SummaryRow label="限价" value={`$${prepared.draft.limitPrice}`} palette={p} />
         )}
@@ -667,6 +940,23 @@ export function TradePanel({
           value={prepared.draft.duration === "DAY" ? "当日有效" : "撤销前有效"}
           palette={p}
         />
+        {prepared.draft.exit?.takeProfit && (
+          <SummaryRow label="止盈（限价卖出）" value={`$${prepared.draft.exit.takeProfit}`} palette={p} />
+        )}
+        {prepared.draft.exit?.stopLoss && (
+          <SummaryRow
+            label={prepared.draft.exit.stopLoss.mode === "PRICE" ? "止损（触发后市价卖出）" : "移动止损（跟随买一价）"}
+            value={describeStop(prepared.draft.exit.stopLoss)}
+            palette={p}
+          />
+        )}
+        {prepared.draft.exit && (
+          <SummaryRow
+            label="止盈止损有效期"
+            value={prepared.draft.exit.duration === "DAY" ? "当日有效" : "撤销前有效"}
+            palette={p}
+          />
+        )}
         <SummaryRow label="预估金额" value={`$${money(prepared.estimatedValue)}`} palette={p} />
         {note(`${prepared.isDemo ? "模拟订单，不会发送到券商。" : "真实订单，成交金额以券商为准。"}预览 60 秒内有效。`)}
       </View>
@@ -767,9 +1057,11 @@ export function TradePanel({
                     : "正在获取最新账户与报价…"
                   : replacement
                     ? "核对修改"
-                    : quickOrder
-                      ? `${s.isDemo ? "模拟" : ""}${sideLabel}${sharesLabel}`
-                      : `核对${sideLabel}${sharesLabel}`
+                    : scheduling
+                      ? `核对定时${actionLabel}${sharesLabel}`
+                      : quickOrder
+                      ? `${s.isDemo ? "模拟" : ""}${actionLabel}${sharesLabel}`
+                      : `核对${actionLabel}${sharesLabel}`
             }
             active
             color={tradeColor}
@@ -848,7 +1140,7 @@ export function TradePanel({
         showsVerticalScrollIndicator={false}
         alwaysBounceVertical
         refreshControl={refreshControl}
-        contentContainerStyle={{ padding: 12, gap: 10 }}
+        contentContainerStyle={{ padding: 12, gap: 10, paddingBottom: tabClearance + floatingHeight + 16 }}
       >
         {header}
         {s.quickMode && !replacement && (
@@ -865,7 +1157,24 @@ export function TradePanel({
           {body}
         </View>
       </ScrollView>
-      {footer}
+      {/* Floats above the tab capsule so the ticket scrolls beneath the glass. */}
+      <Glass
+        palette={p}
+        style={{
+          position: "absolute",
+          left: tabBar.inset,
+          right: tabBar.inset,
+          bottom: tabClearance,
+          borderRadius: 20,
+        }}
+      >
+        <View
+          onLayout={(event) => setFloatingHeight(Math.ceil(event.nativeEvent.layout.height))}
+          style={{ padding: 8, gap: 6 }}
+        >
+          {actions}
+        </View>
+      </Glass>
     </View>
   );
 }
@@ -1052,6 +1361,8 @@ export function OrderList({
       REJECTED: "已拒绝",
       EXPIRED: "已过期",
       REPLACED: "已修改",
+      AWAITING_PARENT_ORDER: "待买入成交",
+      AWAITING_STOP_CONDITION: "待触发",
     })[status] ?? status;
   const statusColor = (status: string) =>
     status === "FILLED"
@@ -1150,7 +1461,7 @@ export function OrderList({
                         {o.symbol}
                       </Text>
                       <Text style={{ color: p.secondary, fontSize: 12 }}>
-                        {o.kind ? kindLabels[o.kind] : "复杂订单"}
+                        {orderTypeLabel(o)}
                       </Text>
                       <Text style={{ color: p.secondary, fontSize: 11, fontVariant: ["tabular-nums"] }}>
                         {cancelOnly
@@ -1167,9 +1478,11 @@ export function OrderList({
                       </Text>
                     </View>
                     <Text numberOfLines={1} style={{ color: p.text, fontSize: 13, fontVariant: ["tabular-nums"] }}>
-                      {o.limitPrice === undefined ? "市价" : `$${money(o.limitPrice)}`} × {o.quantity ?? "—"}
+                      {o.strategy === "OCO"
+                        ? `${exitSummary(o)} × ${o.quantity ?? o.children?.[0]?.quantity ?? "—"}`
+                        : `${o.limitPrice === undefined ? (o.trailing ? trailingText(o.trailing) : "市价") : `$${money(o.limitPrice)}`} × ${o.quantity ?? "—"}`}
                       <Text style={{ color: p.secondary }}>
-                        {"  "}已成 {o.filledQuantity ?? "—"}
+                        {"  "}已成 {o.filledQuantity ?? (o.children ? Math.max(0, ...legsOf(o).map((leg) => leg.filledQuantity ?? 0)) : "—")}
                         {cancelOnly ? ` · 待成交 ${o.remainingQuantity ?? "—"}` : ""}
                       </Text>
                     </Text>
@@ -1237,6 +1550,30 @@ export function OrderList({
                       剩余 {selected.remainingQuantity ?? "—"} 股 ·{" "}
                       {selected.enteredAt ? new Date(selected.enteredAt).toLocaleString() : "时间未知"}
                     </Text>
+                    {!!selected.children?.length && (
+                      <View style={{ gap: 6 }}>
+                        {legsOf(selected).map((leg) => (
+                          <View key={leg.id} style={styles.spread}>
+                            <Text style={{ color: p.text, fontSize: 12, flex: 1 }}>
+                              {legText(leg)} · {statusLabel(leg.status)}
+                            </Text>
+                            {leg.cancelable && !FINAL_STATUSES.has(leg.status) && (
+                              <Chip
+                                label="撤此腿"
+                                accessibilityLabel={`撤销 #${leg.id}`}
+                                palette={p}
+                                color={p.up}
+                                disabled={s.busy || s.status.unresolvedOperation}
+                                onPress={() => cancelOrder(leg)}
+                              />
+                            )}
+                          </View>
+                        ))}
+                        <Text style={{ color: p.secondary, fontSize: 11 }}>
+                          撤销整组会同时撤掉所有联动腿；只撤一条腿时，请在刷新后确认另一条腿的状态。
+                        </Text>
+                      </View>
+                    )}
                     {confirmCancel && !s.quickMode ? (
                       <>
                         <Text style={{ color: p.text, fontSize: 13 }}>
@@ -1316,4 +1653,30 @@ export function OrderList({
       </Text>
     </View>
   );
+}
+
+function trailingText(trailing: NonNullable<Order["trailing"]>): string {
+  return trailing.type === "PERCENT" ? `移动止损 ${trailing.offset}%` : `移动止损 $${money(trailing.offset)}`;
+}
+/** One linked leg, as a trader reads it: take-profit limit, stop, or trailing stop. */
+function legText(leg: Order): string {
+  if (leg.trailing) return trailingText(leg.trailing);
+  if (leg.kind === "LIMIT" && leg.side === "SELL") return `止盈 $${money(leg.limitPrice)}`;
+  if (leg.kind === "STOP" && leg.side === "SELL") return `止损 $${money(leg.stopPrice)}`;
+  const label = leg.kind ? kindLabels[leg.kind] : "委托";
+  const value = leg.limitPrice ?? leg.stopPrice;
+  return `${leg.side === "BUY" ? "买入" : leg.side === "SELL" ? "卖出" : ""}${label}${value === undefined ? "" : ` $${money(value)}`}`;
+}
+function legsOf(order: Order): Order[] {
+  return (order.children ?? []).flatMap((child) => (child.strategy === "OCO" && child.children?.length ? child.children : [child]));
+}
+function exitSummary(order: Order): string {
+  return legsOf(order).map(legText).join(" · ") || "联动委托";
+}
+function orderTypeLabel(order: Order): string {
+  if (order.strategy === "OCO") return "止盈止损";
+  if (order.strategy === "TRIGGER")
+    return `${order.kind ? kindLabels[order.kind] : "委托"}+${exitSummary(order)}`;
+  if (order.trailing) return "移动止损";
+  return order.kind ? kindLabels[order.kind] : "复杂订单";
 }

@@ -80,6 +80,35 @@ test('order history is a read that forwards exactly the account and time window'
   for (const args of [['acct', 1], ['acct', 1, 2, 3]])
     assert.equal((await rpc('orderHistory', args)).body.error.code, 'invalidRequest');
 });
+test('timed orders are forwarded to the scheduler, which shares the device write lock', async t => {
+  let lock;
+  const seen = [];
+  const scheduler = {
+    useLock: value => { lock = value; },
+    add: async (...args) => { seen.push(['add', ...args]); return { id: args[4], status: 'pending' }; },
+    list: () => [{ id: 'x', status: 'pending' }],
+    cancel: async id => { seen.push(['cancel', id]); return { id, status: 'cancelled' }; },
+  };
+  const { rpc, broker } = await fixture(t, { scheduler });
+  const runAt = Date.now() + 60_000;
+  assert.equal((await rpc('schedule', ['acct', draft, runAt, 'scheduled-order-0001'])).body.result.status, 'pending');
+  assert.deepEqual(seen[0], ['add', 'phone-a', 'acct', draft, runAt, 'scheduled-order-0001']);
+  assert.equal((await rpc('schedule', ['acct', 'not-a-draft', runAt, 'x'])).body.error.code, 'invalidRequest');
+  assert.deepEqual((await rpc('scheduled', [], 1)).body.result, [{ id: 'x', status: 'pending' }]);
+  assert.equal((await rpc('cancelScheduled', ['scheduled-order-0001'], 1)).body.result.status, 'cancelled');
+  // While a timed order holds the lock, device writes wait their turn.
+  assert.equal(lock.tryAcquire(), true);
+  assert.equal(lock.tryAcquire(), false);
+  assert.equal((await rpc('cancel', ['acct', '1'])).body.error.code, 'operationBusy');
+  lock.release();
+  await rpc('cancel', ['acct', '1']);
+  assert.deepEqual(broker.calls.at(-1), ['cancel', 'acct', '1']);
+});
+test('a gateway without a scheduler reports timed orders as unsupported', async t => {
+  const { rpc } = await fixture(t);
+  for (const [method, args] of [['scheduled', []], ['cancelScheduled', ['x']], ['schedule', ['a', draft, 1, 'x']]])
+    assert.equal((await rpc(method, args)).body.error.code, 'methodNotAllowed');
+});
 test('malformed, oversized and unrecognized RPC input is rejected', async t => {
   const { base, rpc } = await fixture(t);
   const headers = { Authorization: 'Bearer ' + devices[0].token, 'Content-Type': 'application/json' };

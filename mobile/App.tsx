@@ -26,8 +26,11 @@ import {
   radius,
   signed,
   styles,
+  Glass,
+  tabBar,
 } from "./src/ui.tsx";
 import { FillExportPanel } from "./src/FillExportPanel.tsx";
+import { ScheduledOrders } from "./src/ScheduledOrders.tsx";
 import { OrderList, TradePanel } from "./src/TradePanel.tsx";
 import Settings from "./src/Settings.tsx";
 import StockDetail from "./src/StockDetail.tsx";
@@ -155,7 +158,7 @@ function TradingApp() {
       >
         {stock ? (
           <View style={[styles.pageHeader, { minHeight: 52 }]}>
-            <RoundButton label="返回" icon="back" palette={p} bare disabled={s.busy}
+            <RoundButton label="返回" icon="back" palette={p} disabled={s.busy}
               onPress={() => setStock(undefined)} />
             <View style={{ flex: 1, alignItems: "center", minWidth: 0 }}>
               <Text numberOfLines={1} style={{ color: p.text, fontSize: 16, fontWeight: "700" }}>
@@ -163,7 +166,7 @@ function TradingApp() {
               </Text>
               <Text style={{ color: p.secondary, fontSize: 11, marginTop: 2 }}>{stock} · USD</Text>
             </View>
-            <View style={[styles.row, { gap: 0 }]}>
+            <Glass palette={p} interactive style={[styles.row, { gap: 0, borderRadius: 22 }]}>
               <RoundButton label={s.watchlist.includes(stock) ? "移除自选" : "添加自选"}
                 icon={s.watchlist.includes(stock) ? "star" : "star-outline"}
                 color={s.watchlist.includes(stock) ? "#F5B400" : undefined}
@@ -174,7 +177,7 @@ function TradingApp() {
                 }} />
               <RoundButton label="刷新" icon="refresh" palette={p} bare disabled={s.busy}
                 onPress={() => void s.run(s.refresh)} />
-            </View>
+            </Glass>
           </View>
         ) : (
           <View testID="page.header" style={styles.pageHeader}>
@@ -190,21 +193,23 @@ function TradingApp() {
               )}
               {s.busy && <ActivityIndicator color={p.accent} size="small" />}
             </View>
-            {tab === "watchlist" && <View style={[styles.row, { gap: 0 }]}>
+            {tab === "watchlist" && <Glass palette={p} interactive style={[styles.row, { gap: 0, borderRadius: 22, paddingLeft: 4 }]}>
               <Pressable accessibilityRole="button" accessibilityLabel={editing ? "完成" : "编辑"}
                 disabled={s.busy} onPress={() => setEditing(!editing)}
-                style={{ paddingHorizontal: 12, minHeight: 40, justifyContent: "center" }}>
+                style={{ paddingHorizontal: 10, minHeight: 40, justifyContent: "center" }}>
                 <Text style={{ color: p.accent, fontSize: 15, fontWeight: "600" }}>{editing ? "完成" : "编辑"}</Text>
               </Pressable>
               <RoundButton label="添加自选" icon="plus" palette={p} bare disabled={s.busy}
                 onPress={() => setAdding(true)} />
-            </View>}
+            </Glass>}
             {tab === "orders" && (
-              <Pressable accessibilityRole="button" accessibilityLabel="导出成交记录"
-                disabled={s.busy} onPress={() => setExporting(!exporting)}
-                style={{ paddingHorizontal: 12, minHeight: 40, justifyContent: "center" }}>
-                <Text style={{ color: p.accent, fontSize: 15, fontWeight: "600" }}>{exporting ? "收起" : "导出 CSV"}</Text>
-              </Pressable>
+              <Glass palette={p} interactive style={{ borderRadius: 22 }}>
+                <Pressable accessibilityRole="button" accessibilityLabel="导出成交记录"
+                  disabled={s.busy} onPress={() => setExporting(!exporting)}
+                  style={{ paddingHorizontal: 14, minHeight: 40, justifyContent: "center" }}>
+                  <Text style={{ color: p.accent, fontSize: 15, fontWeight: "600" }}>{exporting ? "收起" : "导出 CSV"}</Text>
+                </Pressable>
+              </Glass>
             )}
           </View>
         )}
@@ -349,6 +354,7 @@ function TradingApp() {
                   {exporting && (
                     <FillExportPanel state={s} palette={p} onClose={() => setExporting(false)} />
                   )}
+                  <ScheduledOrders state={s} palette={p} />
                   <OrderList
                     state={s}
                     palette={p}
@@ -363,13 +369,18 @@ function TradingApp() {
               )}
               {tab === "settings" && <Settings state={s} palette={p} />}
             </View>
-            <View
+            <Glass
+              palette={p}
+              interactive
               style={{
+                position: "absolute",
+                left: tabBar.inset,
+                right: tabBar.inset,
+                bottom: tabBar.bottom,
+                height: tabBar.height,
+                padding: 4,
+                borderRadius: tabBar.height / 2,
                 flexDirection: "row",
-                height: 54,
-                backgroundColor: p.surface,
-                borderTopWidth: StyleSheet.hairlineWidth,
-                borderColor: p.separator,
               }}
             >
               {tabs.map(([id, label, icon]) => (
@@ -385,16 +396,18 @@ function TradingApp() {
                     alignItems: "center",
                     justifyContent: "center",
                     gap: 2,
+                    borderRadius: (tabBar.height - 8) / 2,
+                    backgroundColor: tab === id ? p.accent + (p === light ? "1A" : "26") : "transparent",
                   }}
                 >
                   <Icon
                     name={icon}
-                    color={tab === id ? p.accent : p.secondary}
-                    size={23}
+                    color={tab === id ? p.accent : p.text}
+                    size={24}
                   />
                   <Text
                     style={{
-                      color: tab === id ? p.accent : p.secondary,
+                      color: tab === id ? p.accent : p.text,
                       fontSize: 10,
                       fontWeight: tab === id ? "700" : "500",
                     }}
@@ -403,7 +416,7 @@ function TradingApp() {
                   </Text>
                 </Pressable>
               ))}
-            </View>
+            </Glass>
           </>
         )}
       </View>
@@ -427,24 +440,26 @@ function RoundButton({
   disabled?: boolean;
   onPress: () => void;
 }) {
-  return (
+  const button = (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
       disabled={disabled}
       onPress={onPress}
-      style={[
-        bare ? {} : { backgroundColor: p.surface, borderRadius: radius.control + 2 },
-        {
-          width: 40,
-          height: 40,
-          alignItems: "center",
-          justifyContent: "center",
-          opacity: disabled ? 0.4 : 1,
-        },
-      ]}
+      style={{
+        width: 44,
+        height: 44,
+        alignItems: "center",
+        justifyContent: "center",
+        opacity: disabled ? 0.4 : 1,
+      }}
     >
       <Icon name={icon} color={color ?? p.text} size={22} />
     </Pressable>
+  );
+  return bare ? button : (
+    <Glass palette={p} interactive style={{ borderRadius: 22 }}>
+      {button}
+    </Glass>
   );
 }

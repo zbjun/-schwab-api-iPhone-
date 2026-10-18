@@ -52,7 +52,7 @@ async function readBody(request) {
 }
 
 /** One server, one shared Broker. Never mount two gateway processes on the same vault. */
-export function createGateway({ broker, devices, callbackURL = 'https://127.0.0.1', now = Date.now, marketHandler, marketHub }) {
+export function createGateway({ broker, devices, callbackURL = 'https://127.0.0.1', now = Date.now, marketHandler, marketHub, scheduler }) {
   const authenticate = createDeviceAuthenticator(devices);
   const callback = new URL(callbackURL);
   if (callback.protocol !== 'https:' || callback.username || callback.password || callback.search || callback.hash || /[\\\s]/u.test(callbackURL))
@@ -61,6 +61,17 @@ export function createGateway({ broker, devices, callbackURL = 'https://127.0.0.
   const reviews = new Map();
   const quickReceipts = new Map();
   let prepareBusy = false, writeBusy = false;
+  // Timed orders take the same lock as device writes, so the two never overlap.
+  scheduler?.useLock({
+    tryAcquire: () => {
+      if (writeBusy || prepareBusy) return false;
+      writeBusy = true;
+      reviews.clear();
+      return true;
+    },
+    release: () => { writeBusy = false; },
+  });
+  const needScheduler = () => { if (!scheduler) fail('methodNotAllowed', '服务器尚不支持定时单，请更新服务器。'); };
   let authPending, authInitiating, authCompleting;
   const prune = () => {
     for (const [id, review] of reviews) if (review.expires <= now()) reviews.delete(id);
@@ -109,6 +120,15 @@ export function createGateway({ broker, devices, callbackURL = 'https://127.0.0.
       }
       case 'orders': length(1); return broker.orders(...args);
       case 'orderHistory': length(3); return broker.orderHistory(...args);
+      case 'schedule':
+        length(4); needScheduler();
+        if (!object(args[1])) fail('invalidRequest', '委托参数无效。');
+        return scheduler.add(device, ...args);
+      case 'scheduled': length(0); needScheduler(); return scheduler.list();
+      case 'cancelScheduled':
+        length(1); needScheduler();
+        if (typeof args[0] !== 'string') fail('invalidRequest', '定时单编号无效。');
+        return scheduler.cancel(args[0]);
       case 'orderDetail': length(2); return broker.orderDetail(...args);
       case 'authorizationURL': length(0); return beginAuthorization();
       case 'completeAuthorization': length(1); return completeAuthorization(args[0]);

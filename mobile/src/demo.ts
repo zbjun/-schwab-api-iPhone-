@@ -8,6 +8,7 @@ import type {
   Order,
   Prepared,
   Quote,
+  ScheduledOrder,
 } from "./types.ts";
 import {
   maximumBuy,
@@ -15,6 +16,8 @@ import {
   referencePrice,
   validateDraft,
   validateReplacement,
+  FINAL_STATUSES,
+  validateExitAgainstQuote,
 } from "./orderRules.ts";
 import {
   aggregateMinutes,
@@ -305,6 +308,7 @@ class DemoMarketData {
 
 export class DemoBroker implements Broker {
   private sequence = 1000;
+  private timedOrders: ScheduledOrder[] = [];
   private prepared = new Map<string, Prepared>();
   private market = new Map<string, DemoMarketData>();
   private list: Order[] = [
@@ -499,6 +503,7 @@ export class DemoBroker implements Broker {
         draft,
       );
     const quote = (await this.quotes([draft.symbol]))[0];
+    validateExitAgainstQuote(draft, quote);
     const price = referencePrice(draft, quote)!;
     const account = this.availableAccount(replacementID);
     const available =
@@ -551,11 +556,21 @@ export class DemoBroker implements Broker {
       old.cancelable = false;
       old.editable = false;
     }
-    const draft = prepared.draft,
-      id = String(++this.sequence);
+    const draft = prepared.draft;
+    if (draft.kind === "EXIT") {
+      const group = this.exitOrders(draft, "WORKING");
+      this.list.unshift(group);
+      return { orderID: group.id };
+    }
+    const id = String(++this.sequence);
     this.list.unshift({
       id,
-      ...draft,
+      symbol: draft.symbol,
+      side: draft.side,
+      kind: draft.kind,
+      quantity: draft.quantity,
+      duration: draft.duration,
+      session: draft.session,
       limitPrice:
         draft.limitPrice === undefined ? undefined : Number(draft.limitPrice),
       stopPrice:
@@ -565,19 +580,120 @@ export class DemoBroker implements Broker {
       filledQuantity: 0,
       remainingQuantity: draft.quantity,
       cancelable: true,
-      editable: (draft.session ?? "NORMAL") === "NORMAL",
-      isSimpleEquity: true,
+      editable: !draft.exit && (draft.session ?? "NORMAL") === "NORMAL",
+      isSimpleEquity: !draft.exit,
+      ...(draft.exit
+        ? {
+            strategy: "TRIGGER" as const,
+            isSingleLeg: true,
+            assetType: "EQUITY",
+            children: [this.exitOrders(draft, "AWAITING_PARENT_ORDER")],
+          }
+        : {}),
     });
     return { orderID: id };
   }
+  /** Mirrors the broker-held exit legs: one leg alone, or both linked as OCO. */
+  private exitOrders(draft: Draft, status: string): Order {
+    const exit = draft.exit!;
+    const working = status === "WORKING";
+    const leg = (fields: Partial<Order>): Order => ({
+      id: String(++this.sequence),
+      status,
+      symbol: draft.symbol,
+      side: "SELL",
+      quantity: draft.quantity,
+      filledQuantity: 0,
+      remainingQuantity: draft.quantity,
+      duration: exit.duration,
+      session: "NORMAL",
+      enteredAt: Date.now(),
+      cancelable: working,
+      editable: false,
+      isSimpleEquity: false,
+      isSingleLeg: true,
+      assetType: "EQUITY",
+      strategy: "SINGLE",
+      ...fields,
+    });
+    const legs: Order[] = [];
+    if (exit.takeProfit !== undefined)
+      legs.push(leg({ kind: "LIMIT", limitPrice: Number(exit.takeProfit) }));
+    if (exit.stopLoss?.mode === "PRICE")
+      legs.push(leg({ kind: "STOP", stopPrice: Number(exit.stopLoss.value) }));
+    else if (exit.stopLoss)
+      legs.push(leg({
+        trailing: {
+          type: exit.stopLoss.mode === "TRAIL_VALUE" ? "VALUE" : "PERCENT",
+          offset: Number(exit.stopLoss.value),
+        },
+      }));
+    if (legs.length === 1) return legs[0];
+    return {
+      id: String(++this.sequence),
+      status,
+      symbol: draft.symbol,
+      side: "SELL",
+      quantity: draft.quantity,
+      enteredAt: Date.now(),
+      cancelable: working,
+      editable: false,
+      isSimpleEquity: false,
+      isSingleLeg: false,
+      strategy: "OCO",
+      children: legs,
+    };
+  }
   async cancel(accountID: string, id: string) {
     this.requireAccount(accountID);
-    const order = this.list.find((o) => o.id === id);
+    const all = (orders: Order[]): Order[] => orders.flatMap((o) => [o, ...all(o.children ?? [])]);
+    const order = all(this.list).find((o) => o.id === id);
     if (!order?.cancelable) throw new Error("此订单目前不可撤销。");
-    order.status = "CANCELED";
-    order.cancelable = false;
-    order.editable = false;
+    // Cancelling a group or bracket also cancels every linked leg.
+    for (const value of all([order])) {
+      if (FINAL_STATUSES.has(value.status)) continue;
+      value.status = "CANCELED";
+      value.cancelable = false;
+      value.editable = false;
+    }
     this.prepared.clear();
+  }
+  /** Local stand-in for the server scheduler; runs only while the demo app is open. */
+  async schedule(accountID: string, draft: Draft, runAt: number, id: string) {
+    this.requireAccount(accountID);
+    validateDraft(draft);
+    const existing = this.timedOrders.find((entry) => entry.id === id);
+    if (existing) return clone(existing);
+    if (!Number.isSafeInteger(runAt) || runAt < Date.now() + 5000 || runAt > Date.now() + 7 * 86_400_000)
+      throw new Error("执行时间须在 5 秒之后、7 天之内。");
+    const entry: ScheduledOrder = {
+      id, device: "demo", accountID, draft: clone(draft), runAt, createdAt: Date.now(), status: "pending",
+    };
+    this.timedOrders.unshift(entry);
+    setTimeout(() => void this.runTimed(entry), Math.max(0, runAt - Date.now()));
+    return clone(entry);
+  }
+  private async runTimed(entry: ScheduledOrder) {
+    if (entry.status !== "pending") return;
+    entry.status = "submitting";
+    try {
+      const review = await this.prepare(entry.accountID, entry.draft);
+      const result = await this.submit(review);
+      Object.assign(entry, { status: "submitted", orderID: result.orderID });
+    } catch (error) {
+      Object.assign(entry, { status: "failed", message: error instanceof Error ? error.message : "演示定时单未能提交。" });
+    }
+    entry.finishedAt = Date.now();
+  }
+  async scheduled() {
+    return clone(this.timedOrders);
+  }
+  async cancelScheduled(id: string) {
+    const entry = this.timedOrders.find((value) => value.id === id);
+    if (!entry) throw new Error("定时单不存在，请刷新。");
+    if (entry.status !== "pending") throw new Error("定时单已执行或已结束，无法撤销。");
+    Object.assign(entry, { status: "cancelled", finishedAt: Date.now(), message: "已手动撤销，未提交订单。" });
+    return clone(entry);
   }
   private requireAccount(id: string) {
     if (id !== this.account.id) throw new Error("请选择有效账户。");

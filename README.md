@@ -1,4 +1,4 @@
-# THS · 个人 iPhone 交易客户端
+# THS · 基于schwab api的个人 iPhone 交易客户端
 
 基于 **Expo / React Native** 的个人 Schwab 股票／ETF 客户端，包含行情图表、账户持仓、买卖撤单和双设备共享授权。支持跟随系统明暗主题，提供浏览器演示、Expo Go 调试及独立 iPhone IPA。
 

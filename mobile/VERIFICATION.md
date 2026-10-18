@@ -1,5 +1,7 @@
 # 2026-10-06: Missing device connection recovery (source only)
 
+> Commit IDs in these notes predate the 2026-10-18 history rewrite; see the old → new list at the top of `server/DEPLOYMENT.md`.
+
 - Live shared-server status checks succeed for both device keys: configured/authenticated=true, reauthorizationRequired=false and unresolvedOperation=false. The phone screenshot has blank local connection fields; its local loss cause is unverified.
 - Added explicit recovery from the personalized IPA resource even after the one-time import flag. Startup still respects an explicit disconnect. Recovery preserves an existing device identity; storage errors propagate and failed restores can retry.
 - Connection UI distinguishes absent configuration from unreadable storage, offers recovery when a valid bundled configuration exists, and shows OAuth actions only after a local connection is configured.

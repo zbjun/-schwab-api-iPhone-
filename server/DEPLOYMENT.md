@@ -1,5 +1,7 @@
 > Server address placeholders: `<gateway-origin>` (HTTPS domain), `<gateway-host>` (server address) and `<existing-site>.conf` (existing Nginx vhost). The real values are kept only in the git-ignored `.secrets/deploy-target.md` on the maintenance computer; never commit them.
 
+> Git history was rewritten on 2026-10-18 to remove the server address. Commit IDs in the records below predate the rewrite; server release directories keep those names. Old → new: `405850e` → `15c1607`, `4677ee2` → `9a305c4`, `303757f` → `499f722`, `cc19367` → `00c5c19`, `050067f` → `85559d2`.
+
 # 2026-10-18 broker-held exits and timed orders deployment
 
 Release `releases/exits-schedule-20261018` is active (built from commit `405850e`; tar SHA256 `a4f4d339…8eedc65`, kept in `/opt/ths-gateway/backups/`). It was activated at 21:12 CST on Sunday with the market closed. SSH access, Nginx, `/etc/ths-gateway/` and the unit file are unchanged.

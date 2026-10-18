@@ -1,6 +1,15 @@
+# 2026-10-18 broker-held exits and timed orders deployment
+
+Release `releases/exits-schedule-20261018` is active (built from commit `405850e`; tar SHA256 `a4f4d339…8eedc65`, kept in `/opt/ths-gateway/backups/`). It was activated at 21:12 CST on Sunday with the market closed. SSH access, Nginx, `/etc/ths-gateway/` and the unit file are unchanged.
+
+- Adds `server/schedule.mjs` and the `schedule`/`scheduled`/`cancelScheduled` RPCs. Timed orders live in the existing encrypted vault under `ths.gateway.scheduled.v1` and are submitted once through `broker.submitQuick` under the gateway's shared write lock. An entry interrupted mid-submit becomes `unknown` and is never resent. An entry whose time passes while the service is down becomes `missed` and is never caught up. **Before any future restart, check `scheduled` for pending entries.** Also ships the OCO/TRIGGER/TRAILING_STOP exit rules, `freezeDraft` and the new sell-reservation rule in `mobile/src/orderRules.ts`, `broker.ts` and `types.ts`.
+- 127 server, client integration and broker fixtures passed on the server's Node 24.21.0 before activation; locally 50 server and 314 mobile tests passed.
+- Before restarting, both devices reported unresolvedOperation=false, the gateway had no open upstream connections, and `scheduled` returned `methodNotAllowed`. After a graceful stop/start, the scheduler loaded without warnings. Both devices report configured/authenticated, reauthorizationRequired=false and unresolvedOperation=false. `scheduled` now returns an empty list (0 entries). No timed orders were created, and no orders were placed, modified or cancelled.
+- Rollback: `/opt/ths-gateway/backups/exits-schedule-20261018/previous-release.txt` records `releases/orderhistory-20261018`, which remains in place. Check `scheduled` first: timed orders stay in the vault but are not executed by the older code. Then stop the service, `ln -sfn releases/orderhistory-20261018 /opt/ths-gateway/current`, and start it again.
+
 # 2026-10-18 order history deployment
 
-Release `releases/orderhistory-20261018` is active (built from commit `4677ee2`; tar SHA256 `7b0b6007…ab4e9`, kept in `/opt/ths-gateway/backups/`). SSH access is unchanged: port 80 with the existing host key.
+Superseded by the record above; `releases/orderhistory-20261018` is now the rollback release. It was built from commit `4677ee2` (tar SHA256 `7b0b6007…ab4e9`, kept in `/opt/ths-gateway/backups/`). SSH access is unchanged: port 80 with the existing host key.
 
 - Adds the read-only `orderHistory` RPC (one window of at most 60 days per call) for the phones' CSV fill export. Compared with the previous release, the only runtime changes are `server/gateway.mjs`, `mobile/src/broker.ts` and the type-only `mobile/src/types.ts`. Write paths, Nginx, config and the vault are unchanged.
 - 117 server, client integration and broker fixtures passed on the server's Node 24.21.0 before activation; locally 42 server and 297 mobile tests passed.

@@ -79,3 +79,17 @@ test("cross-midnight observations supplement intraday without discarding the suc
   assert.equal(merged.candles[0].retained, undefined);
   assert.equal(merged.candles[1].retained, true);
 });
+
+test("intraday includes observations from the previous evening's overnight session", async () => {
+  const friday = Date.parse("2026-10-16T12:00:00Z"); // Fri 08:00 New York
+  const archive = new MinuteArchive(storage(), { now: () => friday });
+  await archive.load();
+  const candle = (iso: string, close: number) => ({ time: Date.parse(iso), open: close, high: close, low: close, close, volume: 1 });
+  const evening = candle("2026-10-16T01:00:00Z", 1); // Thu 21:00, opens Friday's day
+  const earlier = candle("2026-10-15T23:00:00Z", 2); // Thu 19:00, Thursday's postmarket
+  archive.observe("QQQ", evening);
+  archive.observe("QQQ", earlier);
+  const rest = candle("2026-10-16T11:00:00Z", 3); // Fri 07:00
+  const merged = archive.merge({ symbol: "QQQ", candles: [rest] }, "intraday");
+  assert.deepEqual(merged.candles.map((c) => c.time), [evening.time, rest.time]);
+});

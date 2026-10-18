@@ -480,3 +480,22 @@ test("completed observed minutes resist stale forming snapshots and duplicate vo
   assert.equal(corrected.length, 1);
   assert.equal(corrected[0].volume, 130);
 });
+
+test("intraday moves to the next trading day once its overnight session has data", () => {
+  const bar = (iso: string, close: number): Candle => ({ time: Date.parse(iso), open: close, high: close, low: close, close, volume: 1 });
+  const base: History = {
+    symbol: "QQQ",
+    previousClose: 700,
+    candles: [
+      bar("2026-10-16T00:00:00Z", 705), // Thu 20:00 overnight opens Friday's day
+      bar("2026-10-16T19:59:00Z", 710), // Fri 15:59 regular close
+      bar("2026-10-16T23:59:00Z", 711), // Fri 19:59 postmarket
+    ],
+  };
+  // Sunday 20:31: the night that opens Monday's day has its first minute.
+  const live = overlayLiveHistory(base, "intraday", [bar("2026-10-19T00:30:00Z", 712)], undefined, Date.parse("2026-10-19T00:31:00Z"))!;
+  assert.deepEqual(live.candles.map((c) => c.close), [712]);
+  assert.equal(live.previousClose, 710);
+  // Until then the whole day stays, as the same object.
+  assert.equal(overlayLiveHistory(base, "intraday", [], undefined, Date.parse("2026-10-17T12:00:00Z")), base);
+});

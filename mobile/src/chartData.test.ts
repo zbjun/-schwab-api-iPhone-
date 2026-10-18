@@ -4,6 +4,8 @@ import {
   candlePriceDomain,
   chartSessionWindow,
   hasMissingOvernightData,
+  intradayStart,
+  trimToIntradaySession,
   aggregateMinutes,
   createViewport,
   isLineRange,
@@ -486,7 +488,7 @@ test("moving averages need complete windows and use full history before visible 
     );
 });
 
-test("estimated VWAP weights typical prices and resets by New York date rather than UTC", () => {
+test("estimated VWAP weights typical prices and resets when the 20:00 New York trading day opens", () => {
   const values = sessionAverage([
     { time: regular, open: 10, high: 14, low: 8, close: 11, volume: 100 },
     {
@@ -509,7 +511,8 @@ test("estimated VWAP weights typical prices and resets by New York date rather t
     source.map((bar) => newYorkDateKey(bar.time)),
     ["2026-09-01", "2026-09-01", "2026-09-02"],
   );
-  assert.deepEqual(sessionAverage(source), [10, 15, 30]);
+  // 20:01 opens the next trading day (overnight first), which then runs into 09:30.
+  assert.deepEqual(sessionAverage(source), [10, 20, 25]);
 });
 
 test("missing volume suppresses subsequent VWAP estimates until the next New York date", () => {
@@ -590,4 +593,41 @@ test("appended candles follow only a viewport already at the latest; resize need
     first: 879,
     end: 1_000,
   });
+});
+
+test("the intraday trading day opens with the previous evening's overnight session", () => {
+  const at = (iso: string) => Date.parse(iso);
+  // Friday 15:00 EDT belongs to the day that opened Thursday 20:00.
+  assert.equal(intradayStart(at("2026-10-16T19:00:00Z")), at("2026-10-16T00:00:00Z"));
+  // Monday 03:00 and Sunday 21:00 both belong to the day opened Sunday 20:00.
+  assert.equal(intradayStart(at("2026-10-19T07:00:00Z")), at("2026-10-19T00:00:00Z"));
+  assert.equal(intradayStart(at("2026-10-19T01:00:00Z")), at("2026-10-19T00:00:00Z"));
+  // Month boundary, winter time, and the Monday after clocks fall back.
+  assert.equal(intradayStart(at("2026-10-01T13:00:00Z")), at("2026-10-01T00:00:00Z"));
+  assert.equal(intradayStart(at("2026-12-01T15:00:00Z")), at("2026-12-01T01:00:00Z"));
+  assert.equal(intradayStart(at("2026-11-02T14:00:00Z")), at("2026-11-02T01:00:00Z"));
+});
+
+test("trimming keeps one trading day and measures change from the prior regular close", () => {
+  const bar = (iso: string, close: number) => ({ time: Date.parse(iso), open: close, high: close, low: close, close });
+  const history = {
+    symbol: "QQQ",
+    previousClose: 1,
+    candles: [
+      bar("2026-10-15T15:00:00Z", 700), // Thu 11:00 regular
+      bar("2026-10-15T19:59:00Z", 710), // Thu 15:59 regular close
+      bar("2026-10-15T23:30:00Z", 711), // Thu 19:30 postmarket
+      bar("2026-10-16T00:00:00Z", 712), // Thu 20:00 overnight, first bar of Friday's day
+      bar("2026-10-16T13:30:00Z", 715), // Fri 09:30 regular
+      bar("2026-10-16T23:59:00Z", 716), // Fri 19:59 postmarket
+    ],
+  };
+  const trimmed = trimToIntradaySession(history);
+  assert.deepEqual(trimmed.candles.map((c) => c.close), [712, 715, 716]);
+  assert.equal(trimmed.previousClose, 710);
+  assert.equal(trimToIntradaySession(trimmed), trimmed);
+  // Without a regular bar before the day, the provider's previous close is kept.
+  const sunday = trimToIntradaySession({ ...history, candles: [bar("2026-10-16T23:00:00Z", 2), bar("2026-10-19T00:30:00Z", 3)] });
+  assert.deepEqual(sunday.candles.map((c) => c.close), [3]);
+  assert.equal(sunday.previousClose, 1);
 });

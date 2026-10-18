@@ -1,4 +1,4 @@
-import type { Candle, HistoryRange } from "./types.ts";
+import type { Candle, History, HistoryRange } from "./types.ts";
 
 /** Scale only visible candles; overlays must not flatten the price action. */
 export function candlePriceDomain(candles: Candle[], first: number, end: number) {
@@ -208,6 +208,38 @@ export function chartSessionWindow(timestamp: number): SessionWindow | undefined
   return window ? { ...window } : undefined;
 }
 
+/**
+ * Start of the 24/5 trading day containing `time`: it opens with the overnight
+ * session at 20:00 New York time on the previous evening, so a bar from 20:00
+ * onward already belongs to the next day.
+ */
+export function intradayStart(time: number): number {
+  const parts = newYorkParts(time);
+  return parts.hour >= 20
+    ? newYorkWallTime(parts, 20)
+    : newYorkWallTime({ ...parts, day: parts.day - 1 }, 20);
+}
+
+/**
+ * Keeps the latest trading day — overnight, premarket, regular, postmarket —
+ * and measures change from the last regular-session close before it. Returns
+ * the same object when nothing is outside the day.
+ */
+export function trimToIntradaySession(history: History): History {
+  const latest = history.candles.at(-1)?.time;
+  if (latest === undefined || !validTime(latest)) return history;
+  const start = intradayStart(latest);
+  const first = history.candles.findIndex((candle) => candle.time >= start);
+  if (first <= 0) return history;
+  let previousClose = history.previousClose;
+  for (let index = first - 1; index >= 0; index--)
+    if (sessionAt(history.candles[index].time) === "regular") {
+      previousClose = history.candles[index].close;
+      break;
+    }
+  return { ...history, candles: history.candles.slice(first), previousClose };
+}
+
 export function hasMissingOvernightData(candles: readonly Candle[], now: number): boolean {
   const window = chartSessionWindow(now);
   if (window?.session !== "overnight") return false;
@@ -325,12 +357,13 @@ export function movingAverage(
 
 /** Minute-bar typical-price VWAP estimate, reset by NY date; unknown volume poisons that date. */
 export function sessionAverage(candles: Candle[]): (number | undefined)[] {
-  let day: string | undefined;
+  // Accumulates per trading day, which opens with the overnight session at 20:00.
+  let day: number | undefined;
   let volume = 0;
   let average: number | undefined;
   let incomplete = false;
   return candles.map((candle) => {
-    const nextDay = newYorkDateKey(candle.time);
+    const nextDay = validTime(candle.time) ? intradayStart(candle.time) : undefined;
     if (nextDay === undefined) {
       incomplete = true;
       return undefined;

@@ -582,7 +582,8 @@ function MarketChart({
       if (
         last &&
         last.session === session &&
-        last.day === day &&
+        // One overnight session spans midnight; keep it as a single segment.
+        (last.day === day || session === "overnight") &&
         last.end === index
       )
         last.end = index + 1;

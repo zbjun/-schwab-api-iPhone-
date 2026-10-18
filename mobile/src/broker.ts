@@ -10,7 +10,7 @@ import type {
   SessionStatus,
   Vault,
 } from "./types.ts";
-import { aggregateMinutes } from "./chartData.ts";
+import { aggregateMinutes, trimToIntradaySession } from "./chartData.ts";
 import {
   openMarketStream,
   type MarketStreamCallbacks,
@@ -252,7 +252,7 @@ export function historyQuery(
     HistoryRange,
     [string, string | undefined, string, string]
   > = {
-    intraday: ["day", "1", "minute", "1"],
+    intraday: ["day", "2", "minute", "1"],
     fiveDay: ["day", "5", "minute", "5"],
     daily: ["year", "1", "daily", "1"],
     weekly: ["year", "2", "weekly", "1"],
@@ -324,7 +324,7 @@ function validHistoryQuery(query: URLSearchParams): boolean {
       Number(q.endDate) - Number(q.startDate) === 30 * DAY
     );
   return [
-    "day/1/minute/1",
+    "day/2/minute/1",
     "day/5/minute/5",
     "day/10/minute/1",
     "day/10/minute/5",
@@ -1168,6 +1168,9 @@ export class SchwabBroker implements Broker {
       normalized,
       { receivedAt: this.now(), range },
     );
+    // Schwab starts a day-period response at 07:00 New York time, so one day
+    // would omit the overnight session that opens the trading day.
+    if (range === "intraday") return trimToIntradaySession(history);
     if (range === "minute60" || range === "minute120")
       history.candles = aggregateMinutes(
         history.candles,

@@ -795,6 +795,31 @@ test("optional bad metadata cannot erase quotes, malformed OHLC cannot become hi
   assert.throws(() => decodeHistory({ symbol: "MSFT", candles: [] }, "AAPL"));
 });
 
+test("intraday history asks for two days and keeps the trading day from the prior evening", async () => {
+  const f = fixture();
+  await f.authorize();
+  const bars: [string, number][] = [
+    ["2026-10-15T19:59:00Z", 710], // Thu 15:59 regular close
+    ["2026-10-16T00:01:00Z", 712], // Thu 20:01 overnight
+    ["2026-10-16T07:00:00Z", 713], // Fri 03:00 overnight
+    ["2026-10-16T19:59:00Z", 716], // Fri 15:59 regular
+  ];
+  let query: URLSearchParams | undefined;
+  f.state.onRequest = async (url) => {
+    if (!url.includes("/marketdata/v1/pricehistory")) return undefined;
+    query = new URL(url).searchParams;
+    return response(url, {
+      symbol: "AAPL",
+      previousClose: 1,
+      candles: bars.map(([iso, close]) => ({ datetime: Date.parse(iso), open: close, high: close, low: close, close, volume: 5 })),
+    });
+  };
+  const history = await f.broker.history("AAPL", "intraday");
+  assert.equal(query?.get("period"), "2");
+  assert.deepEqual(history.candles.map((c) => c.close), [712, 713, 716]);
+  assert.equal(history.previousClose, 710);
+});
+
 test("all history ranges allow exactly their intended extended-hours requests", () => {
   const ranges: HistoryRange[] = [
     "intraday",

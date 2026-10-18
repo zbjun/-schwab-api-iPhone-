@@ -4,7 +4,7 @@ import MarketChart from "./MarketChart.tsx";
 import { validCandle } from "./chartData.ts";
 import { historyCoverage } from "./historyCoverage.ts";
 import { dark, light } from "./ui.tsx";
-import type { History } from "./types.ts";
+import type { History, HistoryRange } from "./types.ts";
 
 // Local development only. Files contain market history, never account data or credentials.
 // Missing snapshots fail visibly; do not fall back to generated candles.
@@ -13,12 +13,15 @@ export default function HistorySnapshotPreview() {
   const [history, setHistory] = useState<History>();
   const [error, setError] = useState("");
   const { height } = useWindowDimensions();
-  const p = new URLSearchParams(window.location.search).get("appearance") === "light" ? light : dark;
+  const query = new URLSearchParams(window.location.search);
+  const p = query.get("appearance") === "light" ? light : dark;
+  // ?range=intraday|fiveDay previews the line charts from `<symbol>.<range>.json`.
+  const range = (query.get("range") ?? "minute1") as HistoryRange;
   useEffect(() => {
     const controller = new AbortController();
     setHistory(undefined);
     setError("");
-    void fetch(`/market-preview/${symbol.toLowerCase()}.json`, { signal: controller.signal, cache: "no-store" })
+    void fetch(`/market-preview/${symbol.toLowerCase()}${range === "minute1" ? "" : "." + range}.json`, { signal: controller.signal, cache: "no-store" })
       .then(async response => {
         if (!response.ok) throw new Error("本地行情快照未准备好");
         const payload = await response.json();
@@ -47,7 +50,7 @@ export default function HistorySnapshotPreview() {
         <Text style={{ color: p.secondary }}>正在读取本地快照…</Text> : <>
           <Text style={{ color: p.secondary }}>{coverage?.first} 至 {coverage?.last} 美东{"\n"}
             共 {coverage?.total} 根一分钟K线，其中夜盘 {nights} 根。点下方“夜盘”定位。</Text>
-          <MarketChart key={symbol} history={history} range="minute1" palette={p}
+          <MarketChart key={symbol} history={history} range={range} palette={p}
             height={Math.max(240, Math.min(450, height - 310))} />
         </>}
       <Text style={{ color: p.secondary }}>使用 App 同一个图表组件。无夜盘数据时会明确提示，不能用模拟K线补齐。</Text>

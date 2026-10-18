@@ -1,4 +1,4 @@
-import { chartSessionWindow, minuteInterval, newYorkDateKey, validCandle } from "../mobile/src/chartData.ts";
+import { chartSessionWindow, intradayStart, minuteInterval, validCandle } from "../mobile/src/chartData.ts";
 import { historyCoverage } from "../mobile/src/historyCoverage.ts";
 import type { Candle, History, HistoryRange, Vault } from "../mobile/src/types.ts";
 
@@ -85,7 +85,9 @@ export class MinuteArchive {
       .map(value => value.candle).sort((a, b) => a.time - b.time);
     if (range === "intraday") {
       const latest = Math.max(history.candles.at(-1)?.time ?? 0, minutes.at(-1)?.time ?? 0);
-      minutes = minutes.filter(candle => newYorkDateKey(candle.time) === newYorkDateKey(latest));
+      // The trading day opens with the overnight session at 20:00 the evening before.
+      const start = intradayStart(latest);
+      minutes = minutes.filter(candle => candle.time >= start);
     }
     if (!minutes.length) return history;
     const grouped = new Map<number, Candle[]>();

@@ -4,6 +4,7 @@ import {
   newYorkDateKey,
   sessionAt,
   sessionWindows,
+  trimToIntradaySession,
   validCandle,
 } from "./chartData.ts";
 import type { Candle, History, HistoryRange, Quote } from "./types.ts";
@@ -234,7 +235,9 @@ export function overlayLiveHistory(
         false,
       );
   }
-  return changed
+  const result = changed
     ? { ...base, candles: bars.sort((a, b) => a.time - b.time) }
     : base;
+  // Once the next overnight session has data, the chart moves to that trading day.
+  return range === "intraday" ? trimToIntradaySession(result) : result;
 }

@@ -16,7 +16,7 @@ import type { Candle, HistoryRange, Palette, Side } from "./types.ts";
 import type { TradingState } from "./useTrading.ts";
 import MarketChart from "./MarketChart.tsx";
 import { primaryRanges, minuteRanges, rangeTitle, hasMissingOvernightData } from "./chartData.ts";
-import { compactNumber, money, signed } from "./ui.tsx";
+import { compactNumber, elevated, money, signed } from "./ui.tsx";
 import { selectedActivity, selectedChangePercent, selectedReferencePrice } from "./marketStatistics.ts";
 import { positionAverageCost } from "./tradeMarkers.ts";
 import { useLiveMarket } from "./useLiveMarket.ts";
@@ -470,7 +470,7 @@ export default function StockDetail({
                   top: 4,
                   right: 8,
                   width: 244,
-                  borderRadius: 28,
+                  borderRadius: 10,
                   backgroundColor: p.surface,
                   paddingVertical: 12,
                   zIndex: 10,
@@ -550,18 +550,12 @@ export default function StockDetail({
         )}
       </ScrollView>
       {compact ? (
-        <ScrollView
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
+        <View
           style={{
             flex: 1,
             backgroundColor: p.surface,
             borderTopWidth: 1,
             borderColor: p.separator,
-          }}
-          onContentSizeChange={(_, contentHeight) => {
-            // Reserve the ticket's actual height; longer forms remain scrollable.
-            setTradePanelHeight(Math.max(160, Math.min(382, Math.ceil(contentHeight) + 1)));
           }}
         >
           <TradePanel
@@ -573,8 +567,12 @@ export default function StockDetail({
             initialSide={panel}
             inline
             onClose={closePanel}
+            onMeasure={(contentHeight) => {
+              // Reserve the ticket's actual height; longer forms scroll above pinned actions.
+              setTradePanelHeight(Math.max(160, Math.min(400, Math.ceil(contentHeight) + 1)));
+            }}
           />
-        </ScrollView>
+        </View>
       ) : (
         <View
           style={{
@@ -602,28 +600,28 @@ export default function StockDetail({
                 setPanel(value);
               }}
               style={{
-                flex: 1,
-                height: 46,
+                flex: value === "CANCEL" ? 0.7 : 1,
+                height: 44,
                 alignItems: "center",
                 justifyContent: "center",
-                borderRadius: 9,
+                borderRadius: 8,
                 opacity: s.busy ? 0.45 : 1,
                 backgroundColor:
                   value === "BUY"
                     ? p.up
                     : value === "SELL"
-                      ? "#368fb9"
-                      : p.background,
+                      ? p.down
+                      : elevated(p),
               }}
             >
               <Text
                 style={{
-                  fontSize: 19,
-                  fontWeight: "600",
+                  fontSize: 16,
+                  fontWeight: "700",
                   color: value === "CANCEL" ? p.text : "#fff",
                 }}
               >
-                {value === "BUY" ? "买" : value === "SELL" ? "卖" : "撤"}
+                {value === "BUY" ? "买入" : value === "SELL" ? "卖出" : "撤单"}
               </Text>
             </Pressable>
           ))}

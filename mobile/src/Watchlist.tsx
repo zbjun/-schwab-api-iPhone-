@@ -4,6 +4,7 @@ import {
   PanResponder,
   Pressable,
   ScrollView,
+  StyleSheet,
   Text,
   View,
 } from "react-native";
@@ -132,12 +133,12 @@ export default function Watchlist({
               onPress={lookup}
             />
           </View>
-          <View style={[styles.spread, { paddingTop: 16, paddingBottom: 12 }]}>
+          <View style={[styles.spread, { paddingTop: 10, paddingBottom: 8 }]}>
             <View style={[styles.row, { gap: 8 }]}>
-              <Text style={{ color: p.text, fontSize: 17, fontWeight: "600" }}>
+              <Text style={{ color: p.text, fontSize: 15, fontWeight: "700" }}>
                 自选股
               </Text>
-              <Text style={{ color: p.secondary, fontSize: 16 }}>
+              <Text style={{ color: p.secondary, fontSize: 14 }}>
                 {s.watchlist.length}
               </Text>
             </View>
@@ -190,13 +191,13 @@ export default function Watchlist({
             <Icon name="info" color={p.secondary} size={13} />
           </Pressable>
         </View>
-        <View style={{ backgroundColor: p.surface, borderRadius: 26, paddingHorizontal: 16 }}>
+        <View style={{ backgroundColor: p.surface, borderRadius: 10, paddingHorizontal: 12 }}>
           <View
             style={{
               flexDirection: "row",
-              height: 51,
+              height: 34,
               alignItems: "center",
-              borderBottomWidth: 1,
+              borderBottomWidth: StyleSheet.hairlineWidth,
               borderColor: p.separator,
             }}
           >
@@ -282,7 +283,7 @@ export default function Watchlist({
         onRequestClose={() => setShowLegend(false)}
       >
         <View style={{ flex: 1, justifyContent: "center", padding: 24, backgroundColor: "#0008" }}>
-          <View style={{ backgroundColor: p.surface, padding: 20, borderRadius: 18, gap: 14 }}>
+          <View style={{ backgroundColor: p.surface, padding: 18, borderRadius: 10, gap: 14 }}>
             <Text style={{ color: p.text, fontSize: 18, fontWeight: "600" }}>自选标记</Text>
             <Text style={{ color: p.accent, fontSize: 14, lineHeight: 21 }}>
               蓝色名称和代码：当前所选账户持有该股票或 ETF。涨跌报价仍按涨跌颜色显示。
@@ -317,8 +318,8 @@ export default function Watchlist({
           <View
             style={{
               backgroundColor: p.surface,
-              borderRadius: 28,
-              padding: 22,
+              borderRadius: 10,
+              padding: 18,
               gap: 20,
             }}
           >
@@ -400,9 +401,9 @@ function WatchRow({
       style={{
         flexDirection: "row",
         alignItems: "center",
-        borderBottomWidth: 1,
+        borderBottomWidth: StyleSheet.hairlineWidth,
         borderColor: p.separator,
-        minHeight: 65,
+        minHeight: 54,
       }}
     >
       {editing && (
@@ -525,7 +526,7 @@ function WatchRow({
                     width: width as `${number}%`,
                     textAlign: "right",
                     color,
-                    fontSize: 17,
+                    fontSize: 16,
                     fontWeight: "600",
                   },
                 ]}

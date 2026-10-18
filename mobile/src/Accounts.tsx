@@ -1,8 +1,8 @@
 import React, { useState } from "react";
-import { Modal, Pressable, ScrollView, Text, View } from "react-native";
+import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import type { Palette } from "./types.ts";
 import type { TradingState } from "./useTrading.ts";
-import { Button, Icon, money, signed, styles } from "./ui.tsx";
+import { Button, Icon, money, radius, signed, styles } from "./ui.tsx";
 import { DemoNotice } from "./DemoNotice.tsx";
 import { PageRefreshControl } from "./PageRefreshControl.tsx";
 
@@ -21,11 +21,11 @@ export function AccountSelector({
         accessibilityLabel="选择账户"
         disabled={s.busy || s.accounts.length < 2}
         onPress={() => setOpen(true)}
-        style={[styles.spread, { minHeight: 44 }]}
+        style={[styles.spread, { minHeight: 42 }]}
       >
-        <Text style={{ color: p.text, fontSize: 16 }}>账户</Text>
+        <Text style={{ color: p.text, fontSize: 14, fontWeight: "600" }}>账户</Text>
         <View style={styles.row}>
-          <Text style={{ color: p.secondary, fontSize: 16 }}>
+          <Text style={{ color: p.secondary, fontSize: 14 }}>
             {s.account?.displayNumber ?? "尚未连接"}
           </Text>
           {s.accounts.length > 1 && (
@@ -50,8 +50,8 @@ export function AccountSelector({
           <View
             style={{
               backgroundColor: p.surface,
-              borderRadius: 26,
-              padding: 20,
+              borderRadius: radius.card,
+              padding: 16,
               gap: 12,
             }}
           >
@@ -89,77 +89,57 @@ export default function Accounts({
   onTrade: () => void;
 }) {
   const account = s.account;
+  const dayValues = account?.positions
+    .map((position) => position.dayProfitLoss)
+    .filter((value): value is number => value !== undefined && Number.isFinite(value));
+  const dayTotal = dayValues?.length ? dayValues.reduce((a, b) => a + b, 0) : undefined;
+  const tint = (value?: number) =>
+    value === undefined || value === 0 ? p.text : value > 0 ? p.up : p.down;
+  const caption = { color: p.secondary, fontSize: 11 } as const;
   return (
     <ScrollView
       showsVerticalScrollIndicator={false}
       alwaysBounceVertical
       refreshControl={<PageRefreshControl state={s} palette={p} />}
-      contentContainerStyle={styles.pageContent}
+      contentContainerStyle={[styles.pageContent, { gap: 10 }]}
     >
-      {s.isDemo && <View style={{ marginBottom: 12 }}><DemoNotice palette={p} card /></View>}
-      <View
-        style={{
-          backgroundColor: p.surface,
-          borderRadius: 26,
-          paddingHorizontal: 16,
-          paddingBottom: 20,
-        }}
-      >
+      {s.isDemo && <DemoNotice palette={p} card />}
+      <View style={{ backgroundColor: p.surface, borderRadius: radius.card, paddingHorizontal: 12, paddingBottom: 12 }}>
         <AccountSelector state={s} palette={p} />
-        <View
-          style={{ height: 1, backgroundColor: p.separator, marginBottom: 24 }}
-        />
+        <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: p.separator, marginBottom: 12 }} />
         <View style={styles.spread}>
-          <Text style={{ color: p.secondary, fontSize: 14 }}>账户净值</Text>
-          <Text style={{ color: p.secondary, fontSize: 12, fontWeight: "600" }}>
-            USD
+          <Text style={caption}>
+            账户净值 · USD ·{" "}
+            {s.isDemo ? "演示账户" : account?.accountType === "CASH" ? "现金账户" : "保证金账户"}
           </Text>
+          <Pressable accessibilityRole="button" accessibilityLabel="股票 / ETF 交易" onPress={onTrade}
+            style={[styles.row, { gap: 4, minHeight: 28 }]}>
+            <Icon name="trade" size={15} color={p.accent} />
+            <Text style={{ color: p.accent, fontSize: 13, fontWeight: "600" }}>交易</Text>
+          </Pressable>
         </View>
         <Text
           numberOfLines={1}
           adjustsFontSizeToFit
-          style={[
-            styles.number,
-            {
-              color: p.text,
-              fontSize: 35,
-              fontWeight: "600",
-              marginTop: 20,
-              marginBottom: 20,
-            },
-          ]}
+          style={[styles.number, { color: p.text, fontSize: 30, fontWeight: "700", marginTop: 2, marginBottom: 12 }]}
         >
           ${money(account?.liquidationValue)}
         </Text>
         <View style={styles.row}>
-          {[
-            ["现金余额", account?.cashBalance],
-            ["购买力", account?.buyingPower],
-          ].map(([label, value]) => (
-            <View key={String(label)} style={{ flex: 1, gap: 5 }}>
-              <Text style={{ color: p.secondary, fontSize: 12 }}>{label}</Text>
-              <Text style={[styles.number, { color: p.text, fontSize: 17 }]}>
-                ${money(value as number | undefined)}
+          {([
+            ["现金余额", account?.cashBalance, p.text],
+            ["购买力", account?.buyingPower, p.text],
+            ["当日盈亏", dayTotal, tint(dayTotal)],
+          ] as const).map(([label, value, color], i) => (
+            <View key={label} style={{ flex: 1, gap: 3, alignItems: i === 2 ? "flex-end" : "flex-start" }}>
+              <Text style={caption}>{label}</Text>
+              <Text numberOfLines={1} adjustsFontSizeToFit style={[styles.number, { color, fontSize: 15 }]}>
+                {i === 2 ? signed(value) : `$${money(value)}`}
               </Text>
             </View>
           ))}
         </View>
-        <View style={[styles.spread, { marginTop: 18 }]}>
-          <View style={[styles.row, { gap: 15 }]}>
-            <Icon name="bank" size={18} color={p.secondary} />
-            <Text style={{ color: p.secondary, fontSize: 12 }}>
-              {s.isDemo
-                ? "演示账户"
-                : account?.accountType === "CASH"
-                  ? "现金账户"
-                  : "保证金账户"}
-            </Text>
-          </View>
-          <Text style={{ color: p.secondary, fontSize: 12 }}>
-            {account?.positions.length ?? 0} 项持仓
-          </Text>
-        </View>
-        <Text style={{ color: p.secondary, fontSize: 11, marginTop: 12 }}>
+        <Text style={[caption, { marginTop: 10 }]}>
           {s.accountRefreshError
             ? `${s.accountRefreshError} 正在自动重试，显示上次数据。`
             : s.accountsUpdatedAt
@@ -167,114 +147,56 @@ export default function Accounts({
               : "下拉刷新账户"}
         </Text>
       </View>
-      <View
-        style={[
-          styles.spread,
-          { paddingHorizontal: 16, marginTop: 24, marginBottom: 10 },
-        ]}
-      >
-        <Text style={{ color: p.secondary, fontSize: 16, fontWeight: "600" }}>
-          持仓
-        </Text>
-        <Text style={{ color: p.secondary, fontSize: 16, fontWeight: "600" }}>
-          市值 / 当日盈亏
-        </Text>
-      </View>
-      <View
-        style={{
-          backgroundColor: p.surface,
-          borderRadius: 26,
-          paddingHorizontal: 16,
-        }}
-      >
-        {account?.positions.map((position, i) => (
-          <Pressable
-            key={`${position.symbol}-${i}`}
-            accessibilityRole="button"
-            accessibilityLabel={`持仓 ${position.symbol}`}
-            disabled={s.busy}
-            onPress={() => onStock(position.symbol)}
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              paddingVertical: 22,
-              gap: 10,
-              borderBottomWidth: i === account.positions.length - 1 ? 0 : 1,
-              borderColor: p.separator,
-            }}
-          >
-            <View style={{ flex: 1, gap: 5 }}>
-              <Text style={{ color: p.text, fontSize: 17, fontWeight: "600" }}>
-                {position.symbol}
-              </Text>
-              <Text style={{ color: p.secondary, fontSize: 12 }}>
-                {money(position.quantity, 0)} 股 · 成本 $
-                {money(position.averagePrice)}
-              </Text>
-              <Text
-                numberOfLines={1}
-                style={{ color: p.secondary, fontSize: 12 }}
-              >
-                {position.description}
-              </Text>
-            </View>
-            <View style={{ alignItems: "flex-end", gap: 6 }}>
-              <Text style={[styles.number, { color: p.text, fontSize: 16 }]}>
-                ${money(position.marketValue)}
-              </Text>
-              <Text
-                style={{
-                  color: (position.dayProfitLoss ?? 0) >= 0 ? p.up : p.down,
-                  fontSize: 15,
-                }}
-              >
-                {position.dayProfitLoss === undefined
-                  ? "—"
-                  : `${position.dayProfitLoss > 0 ? "+" : ""}$${money(position.dayProfitLoss)}`}
-              </Text>
-              <Text
-                style={{
-                  color:
-                    (s.quotes[position.symbol]?.netPercentChange ?? 0) >= 0
-                      ? p.up
-                      : p.down,
-                  fontSize: 12,
-                }}
-              >
-                {signed(s.quotes[position.symbol]?.netPercentChange, "%")}
-              </Text>
-            </View>
-            <Icon name="chevron" size={16} color={p.separator} />
-          </Pressable>
-        ))}
+      <View style={{ backgroundColor: p.surface, borderRadius: radius.card, paddingHorizontal: 12 }}>
+        <View style={[styles.row, { minHeight: 34, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: p.separator }]}>
+          <Text style={[caption, { flex: 1.25 }]}>持仓 {account?.positions.length ?? 0}</Text>
+          <Text style={[caption, { flex: 1, textAlign: "right" }]}>数量 / 成本</Text>
+          <Text style={[caption, { flex: 1.2, textAlign: "right" }]}>市值 / 当日盈亏</Text>
+        </View>
+        {account?.positions.map((position, i) => {
+          const change = s.quotes[position.symbol]?.netPercentChange;
+          return (
+            <Pressable
+              key={`${position.symbol}-${i}`}
+              accessibilityRole="button"
+              accessibilityLabel={`持仓 ${position.symbol}`}
+              disabled={s.busy}
+              onPress={() => onStock(position.symbol)}
+              style={({ pressed }) => [styles.row, {
+                paddingVertical: 10,
+                borderTopWidth: i ? StyleSheet.hairlineWidth : 0,
+                borderColor: p.separator,
+                opacity: pressed ? 0.6 : 1,
+              }]}
+            >
+              <View style={{ flex: 1.25, gap: 2, minWidth: 0 }}>
+                <Text style={{ color: p.text, fontSize: 15, fontWeight: "700" }}>{position.symbol}</Text>
+                <Text numberOfLines={1} style={caption}>{position.description}</Text>
+              </View>
+              <View style={{ flex: 1, gap: 2, alignItems: "flex-end" }}>
+                <Text style={[styles.number, { color: p.text, fontSize: 14, fontWeight: "500" }]}>
+                  {money(position.quantity, 0)}
+                </Text>
+                <Text style={[caption, { fontVariant: ["tabular-nums"] }]}>{money(position.averagePrice)}</Text>
+              </View>
+              <View style={{ flex: 1.2, gap: 2, alignItems: "flex-end" }}>
+                <Text style={[styles.number, { color: p.text, fontSize: 14 }]}>
+                  ${money(position.marketValue)}
+                </Text>
+                <Text numberOfLines={1} style={{ color: tint(position.dayProfitLoss), fontSize: 12, fontVariant: ["tabular-nums"] }}>
+                  {signed(position.dayProfitLoss)}
+                  <Text style={{ color: tint(change) }}>  {signed(change, "%")}</Text>
+                </Text>
+              </View>
+            </Pressable>
+          );
+        })}
         {!account?.positions.length && (
-          <Text
-            style={{
-              color: p.secondary,
-              paddingVertical: 28,
-              textAlign: "center",
-            }}
-          >
+          <Text style={{ color: p.secondary, paddingVertical: 24, textAlign: "center" }}>
             暂无持仓
           </Text>
         )}
       </View>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="股票 / ETF 交易"
-        onPress={onTrade}
-        style={{
-          backgroundColor: p.surface,
-          borderRadius: 24,
-          padding: 18,
-          marginTop: 24,
-          flexDirection: "row",
-          gap: 16,
-        }}
-      >
-        <Icon name="trade" color={p.accent} />
-        <Text style={{ color: p.accent, fontSize: 16 }}>股票 / ETF 交易</Text>
-      </Pressable>
     </ScrollView>
   );
 }

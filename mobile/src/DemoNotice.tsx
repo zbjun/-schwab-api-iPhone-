@@ -14,15 +14,15 @@ export function DemoNotice({
       style={{
         flexDirection: "row",
         alignItems: "center",
-        gap: 18,
-        paddingVertical: card ? 16 : 12,
-        paddingHorizontal: card ? 20 : 4,
+        gap: 10,
+        paddingVertical: card ? 10 : 8,
+        paddingHorizontal: card ? 12 : 4,
         backgroundColor: card ? p.surface : "transparent",
-        borderRadius: 28,
+        borderRadius: 10,
       }}
     >
-      <Icon name="sparkles" size={20} color="#FF8A16" />
-      <Text style={{ color: "#FF8A16", fontSize: 13, fontWeight: "600" }}>
+      <Icon name="sparkles" size={16} color="#FF8A16" />
+      <Text style={{ color: "#FF8A16", fontSize: 12, fontWeight: "600" }}>
         演示模式 · 所有交易均为模拟
       </Text>
     </View>

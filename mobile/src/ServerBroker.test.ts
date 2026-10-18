@@ -321,3 +321,33 @@ test("auth failure messages are local and explain callback expiration without le
     return true;
   });
 });
+
+test("exit orders are refused before any write when the gateway predates them", async () => {
+  const methods: string[] = [];
+  const f = await fixture(async (_url, init) => {
+    const { method } = JSON.parse(String(init?.body));
+    methods.push(method);
+    if (method === "scheduled") return response({ error: { code: "methodNotAllowed", message: "x" } }, 400);
+    // An old gateway prepares a copy without the exit legs.
+    return response({ id: "review", preparedAt: Date.now(), draft: { symbol: "AAPL" } });
+  });
+  const draft = {
+    symbol: "AAPL", side: "BUY" as const, kind: "LIMIT" as const, quantity: 1, limitPrice: "100", duration: "DAY" as const,
+    exit: { takeProfit: "110", duration: "DAY" as const },
+  };
+  const unsupported = (error: { code?: string }) => error.code === "exitUnsupported";
+  await assert.rejects(f.broker.submitQuick("acct", draft), unsupported);
+  await assert.rejects(f.broker.prepare("acct", draft), unsupported);
+  assert.deepEqual(methods, ["scheduled", "scheduled"]);
+  assert.equal(f.data.size, 1, "no pending-write marker was ever stored");
+  // A gateway that answers but still drops the legs is caught at review, before submit.
+  methods.length = 0;
+  const g = await fixture(async (_url, init) => {
+    const { method } = JSON.parse(String(init?.body));
+    methods.push(method);
+    if (method === "scheduled") return response([]);
+    return response({ id: "review", preparedAt: Date.now(), draft: { symbol: "AAPL" } });
+  });
+  await assert.rejects(g.broker.prepare("acct", draft), unsupported);
+  assert.deepEqual(methods, ["scheduled", "prepare"]);
+});

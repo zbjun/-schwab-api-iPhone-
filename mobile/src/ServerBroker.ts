@@ -182,8 +182,24 @@ export class ServerBroker implements Broker {
   orders(accountID: string) { return this.rpc<Order[]>("orders", [accountID]); }
   orderHistory(accountID: string, from: number, to: number) { return this.rpc<Order[]>("orderHistory", [accountID, from, to]); }
   orderDetail(accountID: string, id: string) { return this.rpc<Order>("orderDetail", [accountID, id]); }
+  /**
+   * A gateway without exit support would drop the take-profit/stop-loss legs and
+   * place a plain order. Timed orders shipped together with exits, so a gateway
+   * that answers `scheduled` understands them; ask before anything is written.
+   */
+  private async requireExitSupport(draft: Draft): Promise<void> {
+    if (draft.exit === undefined && draft.kind !== "EXIT") return;
+    try {
+      await this.rpc<unknown>("scheduled");
+    } catch (error) {
+      if (error instanceof TradingError && error.code === "methodNotAllowed")
+        throw failure("exitUnsupported", "服务器尚未更新，暂不能下止盈止损单；本次未提交订单。");
+      throw error;
+    }
+  }
   async prepare(accountID: string, draft: Draft, replacementID?: string): Promise<Prepared> {
     validateDraft(draft); // Precise local messages before anything is sent.
+    await this.requireExitSupport(draft);
     // UI expiry is measured on the device clock; the server separately enforces
     // its own one-use review deadline. Comparing the two wall clocks can reject
     // a freshly prepared quick order before submit is ever called.
@@ -191,6 +207,9 @@ export class ServerBroker implements Broker {
     const prepared = await this.rpc<Prepared>("prepare", replacementID === undefined ? [accountID, draft] : [accountID, draft, replacementID]);
     if (!prepared || !Number.isFinite(prepared.preparedAt) || typeof prepared.id !== "string" || !prepared.id)
       throw failure("serverUnavailable", "服务器返回的订单核对信息无效，本次未提交订单。");
+    // A review that lost the exit legs must never be confirmed as a plain order.
+    if (draft.exit !== undefined && !prepared.draft?.exit)
+      throw failure("exitUnsupported", "服务器核对结果缺少止盈止损，本次未提交订单，请先更新服务器。");
     return { ...prepared, preparedAt: startedAt };
   }
   subscribeMarket(symbol: string, callbacks: MarketStreamCallbacks): () => void {
@@ -308,7 +327,8 @@ export class ServerBroker implements Broker {
     } finally { this.writing = false; }
   }
   submit(prepared: Prepared) { return this.write<{ orderID?: string }>("submit", [{ id: prepared.id }]); }
-  submitQuick(accountID: string, draft: Draft): Promise<{ snapshot: Prepared; result: { orderID?: string } }> {
+  async submitQuick(accountID: string, draft: Draft): Promise<{ snapshot: Prepared; result: { orderID?: string } }> {
+    await this.requireExitSupport(draft);
     const startedAt = Date.now();
     // Correlation/replay identifier, not an authentication credential. Device
     // authentication remains the independent vault-backed bearer key.

@@ -1,6 +1,15 @@
+# 2026-10-18 order history deployment
+
+Release `releases/orderhistory-20261018` is active (built from commit `4677ee2`; tar SHA256 `7b0b6007…ab4e9`, kept in `/opt/ths-gateway/backups/`). SSH access is unchanged: port 80 with the existing host key.
+
+- Adds the read-only `orderHistory` RPC (one window of at most 60 days per call) for the phones' CSV fill export. Compared with the previous release, the only runtime changes are `server/gateway.mjs`, `mobile/src/broker.ts` and the type-only `mobile/src/types.ts`. Write paths, Nginx, config and the vault are unchanged.
+- 117 server, client integration and broker fixtures passed on the server's Node 24.21.0 before activation; locally 42 server and 297 mobile tests passed.
+- Before restarting, both devices reported unresolvedOperation=false and the gateway had no open upstream connections; the restart was on Sunday with the market closed. After a graceful stop/start, both devices report configured/authenticated, reauthorizationRequired=false and unresolvedOperation=false. A zero-argument `orderHistory` probe returns `invalidRequest` (it returned `methodNotAllowed` before), confirming the route without any Schwab call. No orders were placed, modified or cancelled; no real order-history read was performed.
+- Rollback: `/opt/ths-gateway/backups/orderhistory-20261018/previous-release.txt` records `releases/optimization-20260928`, which remains in place. Stop the service, `ln -sfn releases/optimization-20260928 /opt/ths-gateway/current`, then start it again.
+
 # 2026-09-28 optimization deployment
 
-Release `releases/optimization-20260928` is active. The existing authorized SSH maintenance entry uses port **80** (`http-ssh-mux`); ports 22/2222 close before negotiation from this client. Use the existing verified host key and local SSH identity; no new access credential or persistence was created.
+Superseded by the 2026-10-18 record above; `releases/optimization-20260928` is now the rollback release. The existing authorized SSH maintenance entry uses port **80** (`http-ssh-mux`); ports 22/2222 close before negotiation from this client. Use the existing verified host key and local SSH identity; no new access credential or persistence was created.
 
 - Deployed the authorization retry fix, atomic quick RPC, shared account activity, incremental subscriptions, maintenance and encrypted minute archive.
 - All 115 server, client integration and broker fixtures passed on the server's Node 24.21.0 before activation. Fixtures use fictional data only.

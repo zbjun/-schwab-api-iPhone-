@@ -1,3 +1,5 @@
+> Server address placeholders: `<gateway-origin>` (HTTPS domain), `<gateway-host>` (server address) and `<existing-site>.conf` (existing Nginx vhost). The real values are kept only in the git-ignored `.secrets/deploy-target.md` on the maintenance computer; never commit them.
+
 # 2026-10-18 broker-held exits and timed orders deployment
 
 Release `releases/exits-schedule-20261018` is active (built from commit `405850e`; tar SHA256 `a4f4d339…8eedc65`, kept in `/opt/ths-gateway/backups/`). It was activated at 21:12 CST on Sunday with the market closed. SSH access, Nginx, `/etc/ths-gateway/` and the unit file are unchanged.
@@ -41,7 +43,7 @@ Current release symlink selects `releases/latency-20260922`. This isolated updat
 
 # Shared server deployment · 2026-09-10
 
-The gateway is running at **<gateway-origin>**, using the existing domain and certificate. The existing website still serves `/`; exact `/rpc`, `/market` and `/oauth/callback` locations proxy to the new service. Phone clients use the origin only, without a path.
+The gateway is running at the existing HTTPS domain **`<gateway-origin>`**, using its existing certificate. The existing website still serves `/`; exact `/rpc`, `/market` and `/oauth/callback` locations proxy to the new service. Phone clients use the origin only, without a path.
 
 ## Installed layout
 
@@ -72,7 +74,7 @@ Node was fetched from the [official distribution](https://nodejs.org/dist/v24.21
 
 ## Remaining activation steps
 
-The fresh server has the existing Client ID/Secret and is configured for **<gateway-origin>/oauth/callback**. At deployment verification it has **no Schwab account authorization**. The browser-control connection was unavailable, so the existing developer app's registered callback has not been changed or verified by this deployment.
+The fresh server has the existing Client ID/Secret and is configured for **`<gateway-origin>/oauth/callback`**. At deployment verification it has **no Schwab account authorization**. The browser-control connection was unavailable, so the existing developer app's registered callback has not been changed or verified by this deployment.
 
 1. Add the exact hosted callback in the existing Schwab developer app. Do not create another API app or change its credentials. The old loopback callback can remain registered for compatibility.
 2. Use an updated App/Expo Go source build with Settings -> Schwab connection -> Server shared. The installed older IPA does not receive these source changes automatically.

@@ -35,6 +35,10 @@ export class ServerBroker implements Broker {
     this.transport = options.fetch ?? ((url, init) => fetch(url, init));
     this.timeout = options.timeoutMilliseconds ?? 30_000;
   }
+  /** Whether this device still holds a write it could not confirm. */
+  protected async hasUnconfirmedWrite(): Promise<boolean> { return !!await this.vault.get(OPERATION); }
+  /** Controlled text for another venue on the same gateway; it replaces the Schwab wording. */
+  protected messages(): Record<string, string> { return {}; }
   private async config(): Promise<Configuration | null> {
     const stored = await this.vault.get(CONNECTION);
     if (!stored) return null;
@@ -62,7 +66,7 @@ export class ServerBroker implements Broker {
     } finally { this.configuring = false; }
   }
   async configure(): Promise<void> { throw failure("serverManaged", "Schwab 应用配置由服务器管理，无需在手机填写。"); }
-  private async rpc<T>(method: string, args: unknown[] = [], request?: { path: string; body?: unknown; signal?: AbortSignal; method?: "POST" | "DELETE"; timeout?: number }): Promise<T> {
+  protected async rpc<T>(method: string, args: unknown[] = [], request?: { path: string; body?: unknown; signal?: AbortSignal; method?: "POST" | "DELETE"; timeout?: number }): Promise<T> {
     const generation = this.generation;
     const config = await this.config();
     if (!config) throw failure("serverConfiguration", "请先保存服务器地址和本机设备密钥。");
@@ -88,7 +92,7 @@ export class ServerBroker implements Broker {
         if (new TextEncoder().encode(body).length > MAX_BODY) throw new Error();
         if (generation !== this.generation) throw failure("sessionChanged", "设备连接已变化，请重新操作。");
         if (response.status === 401 || response.status === 403)
-          throw new KnownRejection("serverDeviceUnauthorized", "设备访问密钥已失效或无权限，请检查服务器中的设备配置；无需重新登录 Schwab。");
+          throw new KnownRejection("serverDeviceUnauthorized", this.messages().serverDeviceUnauthorized ?? "设备访问密钥已失效或无权限，请检查服务器中的设备配置；无需重新登录 Schwab。");
         const envelope = JSON.parse(body);
         if (envelope?.error) {
           // Only expose local, known messages; gateway text may contain upstream secrets.
@@ -117,6 +121,7 @@ export class ServerBroker implements Broker {
             scheduleLimit: "待执行的定时单已达上限，请先撤销部分定时单。",
             scheduleMissing: "定时单不存在，请刷新。",
             scheduleChanged: "定时单已执行或已结束，无法撤销。",
+            ...this.messages(),
           };
           const code = typeof envelope.error.code === "string" && /^[A-Za-z]{1,64}$/.test(envelope.error.code) ? envelope.error.code : "serverRejected";
           const ErrorType = response.status === 400 && code !== "orderOutcomeUnknown" ? KnownRejection : TradingError;
@@ -130,11 +135,11 @@ export class ServerBroker implements Broker {
         controller.signal.addEventListener("abort", rejectAbort, { once: true });
         if (controller.signal.aborted) rejectAbort();
       }), work(), new Promise<T>((_, reject) => {
-        timer = setTimeout(() => { controller.abort(); reject(failure("serverUnavailable", "服务器连接超时，请检查网络；无需重新授权 Schwab。")); }, request?.timeout ?? this.timeout);
+        timer = setTimeout(() => { controller.abort(); reject(failure("serverUnavailable", this.messages().serverTimeout ?? "服务器连接超时，请检查网络；无需重新授权 Schwab。")); }, request?.timeout ?? this.timeout);
       })]);
     } catch (error) {
       if (error instanceof TradingError) throw error;
-      throw failure("serverUnavailable", "无法连接服务器或响应无效，请检查网络和服务器；无需重新授权 Schwab。");
+      throw failure("serverUnavailable", this.messages().serverUnavailable ?? "无法连接服务器或响应无效，请检查网络和服务器；无需重新授权 Schwab。");
     } finally {
       if (timer) clearTimeout(timer);
       if (rejectAbort) controller.signal.removeEventListener("abort", rejectAbort);
@@ -309,7 +314,7 @@ export class ServerBroker implements Broker {
     this.stopActivity = stop;
     return stop;
   }
-  private async write<T>(method: string, args: unknown[], validate?: (result: T) => T): Promise<T> {
+  protected async write<T>(method: string, args: unknown[], validate?: (result: T) => T): Promise<T> {
     if (this.writing || this.configuring) throw failure("operationBusy", "设备配置或交易请求正在处理中。");
     this.writing = true;
     try {

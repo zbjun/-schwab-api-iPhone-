@@ -41,6 +41,9 @@ import { PageRefreshControl } from "./src/PageRefreshControl.tsx";
 import { validSymbol } from "./src/orderRules.ts";
 import FormingCandlePreview from "./src/FormingCandlePreview.tsx";
 import HistorySnapshotPreview from "./src/HistorySnapshotPreview.tsx";
+import MexcApp from "./src/mexc/MexcApp.tsx";
+import { readVenue, writeVenue } from "./src/mexc/venue.ts";
+import type { Venue } from "./src/mexc/mexcView.ts";
 
 type Tab = "accounts" | "watchlist" | "trade" | "orders" | "settings";
 const tabs: [Tab, string, string][] = [
@@ -51,6 +54,13 @@ const tabs: [Tab, string, string][] = [
   ["settings", "设置", "settings"],
 ];
 export default function App() {
+  // undefined while the saved choice is read; Schwab stays the default if nothing is saved.
+  const [venue, setVenue] = useState<Venue>();
+  useEffect(() => { void readVenue().then(setVenue); }, []);
+  const chooseVenue = (value: Venue) => { setVenue(value); void writeVenue(value); };
+  if (__DEV__ && Platform.OS === "web" &&
+    new URLSearchParams(window.location.search).get("preview") === "mexc")
+    return <SafeAreaProvider><MexcApp /></SafeAreaProvider>;
   if (__DEV__ && Platform.OS === "web" &&
     new URLSearchParams(window.location.search).get("preview") === "history")
     return <SafeAreaProvider><HistorySnapshotPreview /></SafeAreaProvider>;
@@ -64,13 +74,14 @@ export default function App() {
         <FormingCandlePreview />
       </SafeAreaProvider>
     );
+  if (!venue) return <SafeAreaProvider><View style={{ flex: 1 }} /></SafeAreaProvider>;
   return (
     <SafeAreaProvider>
-      <TradingApp />
+      {venue === "mexc" ? <MexcApp onExit={() => chooseVenue("schwab")} /> : <TradingApp onMexc={() => chooseVenue("mexc")} />}
     </SafeAreaProvider>
   );
 }
-function TradingApp() {
+function TradingApp({ onMexc }: { onMexc: () => void }) {
   const s = useTrading(),
     systemScheme = useColorScheme();
   // Web-only development previews can compare both native appearances without changing the phone setting.
@@ -367,7 +378,7 @@ function TradingApp() {
                   />
                 </ScrollView>
               )}
-              {tab === "settings" && <Settings state={s} palette={p} />}
+              {tab === "settings" && <Settings state={s} palette={p} onMexc={onMexc} />}
             </View>
             <Glass
               palette={p}

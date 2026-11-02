@@ -1,0 +1,89 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, writeFile, readFile, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
+import { EncryptedVault, acquireProcessLock } from './vault.mjs';
+
+// Nothing here reaches MEXC: the only paths exercised stop before any network request.
+const execute = promisify(execFile);
+const script = name => fileURLToPath(new URL(`./${name}`, import.meta.url));
+const markerKey = 'ths.mexc.operation.v1';
+const limits = { maxLeverage: 5, maxOrderNotional: 1000, marketProtection: 0.01 };
+async function workspace(t) {
+  const directory = await mkdtemp(join(tmpdir(), 'ths-mexc-scripts-test-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const key = randomBytes(32), data = join(directory, 'data'), config = join(directory, 'mexc.config.json');
+  await writeFile(join(directory, 'vault.key'), key);
+  await writeFile(config, JSON.stringify({ dataDirectory: './data', encryptionKeyFile: './vault.key', apiKey: 'fictional', apiSecret: 'fictional', limits }));
+  return { directory, key, data, config };
+}
+
+test('recovery refuses bad arguments and leaves the lock alone', async t => {
+  const { key, data, config } = await workspace(t);
+  await new EncryptedVault(data, key).set(markerKey, JSON.stringify({ pending: true, version: 1, createdAt: 1 }));
+  await assert.rejects(execute(process.execPath, [script('mexcReconcile.mjs')]));
+  await assert.rejects(execute(process.execPath, [script('mexcReconcile.mjs'), config, '--confirmed-at-broker']));
+  await assert.rejects(execute(process.execPath, [script('mexcReconcile.mjs'), config, '--confirmed-at-exchange', 'extra']));
+  assert.notEqual(await new EncryptedVault(data, key).get(markerKey), null);
+});
+
+test('recovery refuses to run beside a live gateway', async t => {
+  const { key, data, config } = await workspace(t);
+  await new EncryptedVault(data, key).set(markerKey, JSON.stringify({ pending: true, version: 1, createdAt: 1 }));
+  const release = await acquireProcessLock(data);
+  try {
+    await assert.rejects(execute(process.execPath, [script('mexcReconcile.mjs'), config, '--confirmed-at-exchange']));
+    await assert.rejects(execute(process.execPath, [script('mexcReconcile.mjs'), config]));
+  } finally { await release(); }
+  assert.notEqual(await new EncryptedVault(data, key).get(markerKey), null);
+});
+
+test('recovery only clears with the explicit flag and prints no credentials', async t => {
+  const { key, data, config } = await workspace(t);
+  const clean = await execute(process.execPath, [script('mexcReconcile.mjs'), config]);
+  assert.match(clean.stdout, /Nothing is locked/);
+  await new EncryptedVault(data, key).set(markerKey, JSON.stringify({ pending: true, version: 1, createdAt: 1 }));
+  const cleared = await execute(process.execPath, [script('mexcReconcile.mjs'), config, '--confirmed-at-exchange']);
+  assert.match(cleared.stdout, /No MEXC request was made/);
+  assert.doesNotMatch(cleared.stdout + cleared.stderr, /fictional/);
+  assert.equal(await new EncryptedVault(data, key).get(markerKey), null);
+});
+
+test('a marker that names no order is reported as a failed lookup without any request', async t => {
+  const { key, data, config } = await workspace(t);
+  await new EncryptedVault(data, key).set(markerKey, JSON.stringify({ pending: true, version: 1, createdAt: 1 }));
+  const result = await execute(process.execPath, [script('mexcReconcile.mjs'), config]);
+  assert.match(result.stdout, /lookup failed/);
+  assert.notEqual(await new EncryptedVault(data, key).get(markerKey), null);
+});
+
+test('init creates private files, unique device tokens and never overwrites', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ths-mexc-init-test-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await execute(process.execPath, [script('mexcInit.mjs'), directory]);
+  const first = await readFile(join(directory, 'mexc.config.json'), 'utf8');
+  const config = JSON.parse(first);
+  assert.equal(config.apiKey, 'REPLACE_ON_SERVER');
+  assert.equal(config.limits.maxLeverage, 5);
+  assert.equal(new Set(config.devices.map(device => device.token)).size, config.devices.length);
+  assert.ok(config.devices.every(device => /^[A-Za-z0-9_-]{43}$/.test(device.token)));
+  assert.equal((await stat(join(directory, 'mexc-vault.key'))).size, 32);
+  await assert.rejects(execute(process.execPath, [script('mexcInit.mjs'), directory]));
+  assert.equal(await readFile(join(directory, 'mexc.config.json'), 'utf8'), first);
+});
+
+test('the gateway will not start with the placeholder key', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ths-mexc-start-test-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await execute(process.execPath, [script('mexcInit.mjs'), directory]);
+  await assert.rejects(execute(process.execPath, [script('mexcStart.mjs'), join(directory, 'mexc.config.json')]), error => {
+    assert.match(error.stderr, /did not start/);
+    assert.doesNotMatch(error.stdout + error.stderr, /REPLACE_ON_SERVER/);
+    return true;
+  });
+});

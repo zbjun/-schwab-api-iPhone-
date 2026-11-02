@@ -1,0 +1,35 @@
+[Unit]
+Description=Personal MEXC futures gateway
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=ths-mexc
+Group=ths-mexc
+WorkingDirectory=/opt/ths-mexc/current
+ExecStart=/opt/ths-mexc/node/bin/node server/mexcStart.mjs /etc/ths-mexc/mexc.config.json
+Environment=NODE_ENV=production
+UMask=0077
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=75
+StateDirectory=ths-mexc
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ths-mexc
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=true
+LockPersonality=true
+TasksMax=64
+MemoryMax=256M
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

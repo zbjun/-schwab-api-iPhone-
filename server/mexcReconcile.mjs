@@ -1,0 +1,42 @@
+import { readFile } from 'node:fs/promises';
+import { resolve, dirname } from 'node:path';
+import { MexcBroker } from './mexcBroker.ts';
+import { EncryptedVault, acquireProcessLock } from './vault.mjs';
+
+// Offline recovery with the gateway stopped. It only reads from MEXC: it never submits,
+// retries or cancels an order. Clearing the lock takes a separate, explicit flag.
+const [, , file, flag] = process.argv;
+if (process.argv.length < 3 || process.argv.length > 4 || (flag !== undefined && flag !== '--confirmed-at-exchange')) {
+  console.error('Usage: node server/mexcReconcile.mjs <config-file> [--confirmed-at-exchange]\nWithout the flag this shows the locked operation. Stop the gateway first.');
+  process.exitCode = 1;
+} else {
+  let release;
+  try {
+    const configPath = resolve(file);
+    const config = JSON.parse(await readFile(configPath, 'utf8'));
+    const base = dirname(configPath), directory = resolve(base, config.dataDirectory);
+    const key = await readFile(resolve(base, config.encryptionKeyFile));
+    release = await acquireProcessLock(directory);
+    const broker = new MexcBroker(new EncryptedVault(directory, key), { apiKey: config.apiKey, apiSecret: config.apiSecret, limits: config.limits });
+    if (flag) {
+      await broker.acknowledgeReconciliation();
+      console.log('Cleared the unresolved-operation marker. Restart the gateway; acknowledge on affected devices. No MEXC request was made.');
+    } else {
+      const pending = await broker.pendingOperation();
+      if (!pending) console.log('Nothing is locked.');
+      else {
+        const { marker, order, lookup } = pending;
+        console.log(`Locked ${marker.operation} on ${marker.symbol ?? 'unknown contract'} at ${new Date(marker.createdAt).toISOString()}, id ${marker.externalOid ?? marker.orderID}.`);
+        if (lookup === 'found') console.log(`MEXC reports order ${order.id}: state ${order.state} (1 pending, 2 unfilled, 3 filled, 4 canceled, 5 invalid), filled ${order.dealVol} of ${order.vol}.`);
+        // Not finding it does not prove it never landed: an order can appear after the lookup.
+        else if (lookup === 'notFound') console.log('MEXC says this order does not exist. That does not prove it was never placed; wait and check the MEXC order history before clearing.');
+        else console.log('The lookup failed, so this tells you nothing about the order. Check the MEXC order history directly.');
+      }
+    }
+  } catch {
+    console.error('Reconciliation was not completed. Check the stopped gateway, config, key and lock locally.');
+    process.exitCode = 1;
+  } finally {
+    if (release) await release().catch(() => { process.exitCode = 1; });
+  }
+}

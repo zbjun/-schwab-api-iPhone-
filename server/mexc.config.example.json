@@ -1,0 +1,16 @@
+{
+  "port": 8789,
+  "dataDirectory": "./mexc-data",
+  "encryptionKeyFile": "./mexc-vault.key",
+  "apiKey": "REPLACE_ON_SERVER",
+  "apiSecret": "REPLACE_ON_SERVER",
+  "limits": {
+    "maxLeverage": 5,
+    "maxOrderNotional": 1000,
+    "marketProtection": 0.01
+  },
+  "devices": [
+    { "id": "iphone", "token": "GENERATE_A_RANDOM_32_BYTE_BASE64URL_TOKEN" },
+    { "id": "second-device", "token": "GENERATE_A_DIFFERENT_RANDOM_32_BYTE_BASE64URL_TOKEN" }
+  ]
+}

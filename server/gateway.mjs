@@ -52,7 +52,7 @@ async function readBody(request) {
 }
 
 /** One server, one shared Broker. Never mount two gateway processes on the same vault. */
-export function createGateway({ broker, devices, callbackURL = 'https://127.0.0.1', now = Date.now, marketHandler, marketHub, scheduler }) {
+export function createGateway({ broker, devices, callbackURL = 'https://127.0.0.1', now = Date.now, marketHandler, marketHub, scheduler, extraReads = {} }) {
   const authenticate = createDeviceAuthenticator(devices);
   const callback = new URL(callbackURL);
   if (callback.protocol !== 'https:' || callback.username || callback.password || callback.search || callback.hash || /[\\\s]/u.test(callbackURL))
@@ -191,7 +191,10 @@ export function createGateway({ broker, devices, callbackURL = 'https://127.0.0.
         try { return await broker.cancel(...args); }
         finally { writeBusy = false; }
       }
-      default: fail('methodNotAllowed', '此操作不允许通过设备调用。');
+      default:
+        // Venue-specific reads only; every write stays on the locked cases above.
+        if (Object.hasOwn(extraReads, method)) return extraReads[method](...args);
+        fail('methodNotAllowed', '此操作不允许通过设备调用。');
     }
   };
   const server = createServer(async (request, response) => {

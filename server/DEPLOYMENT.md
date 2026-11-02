@@ -2,6 +2,21 @@
 
 > Git history was rewritten on 2026-10-18 to remove the server address. Commit IDs in the records below predate the rewrite; server release directories keep those names. Old → new: `405850e` → `15c1607`, `4677ee2` → `9a305c4`, `303757f` → `499f722`, `cc19367` → `00c5c19`, `050067f` → `85559d2`.
 
+> MEXC gateway placeholders: `<mexc-origin>` (HTTPS domain) and `<mexc-host>` (server address). The real values are kept only in the git-ignored `.secrets/mexc-target.md`; never commit them.
+
+# MEXC futures gateway (not deployed yet)
+
+A gateway for MEXC USDT perpetuals on its own host. It holds no Schwab credentials and shares nothing with the Schwab gateway: its own process, vault, device keys and unknown-outcome marker, so neither can lock the other.
+
+- **Layout:** releases in `/opt/ths-mexc/releases/<name>` with a `current` symlink, Node in `/opt/ths-mexc/node`, vault and process lock in `/var/lib/ths-mexc/` (0700), config and encryption key in `/etc/ths-mexc/` (directory 0700, files 0600, owned by the `ths-mexc` service user).
+- **Setup:** `node server/mexcInit.mjs /etc/ths-mexc` creates `mexc.config.json` and `mexc-vault.key` with fresh device tokens and never overwrites existing files. Set `dataDirectory` to `/var/lib/ths-mexc`. Install `server/deploy/ths-mexc-gateway.service`, and include `server/deploy/ths-mexc-locations.conf` inside the HTTPS server block of the site at `<mexc-origin>`. `/rpc` is the only route.
+- **API key:** the account owner creates it and writes `apiKey` and `apiSecret` into the config on the server themselves; it never passes through chat, the repository or the phone. Bind it to `<mexc-host>`. Grant contract account read, contract order read, order placing, and spot account read (used only to read the key's own settings through `apiKeyInfo`). Never grant transfer or withdrawal. Order placing requires KYC on the account.
+- **Fails closed:** if the key has no IP binding, can move money, lacks a permission or cannot be checked, reads keep working, new orders are refused, and `status` reports why in `tradingBlocked`. Cancelling is not blocked.
+- **Limits:** `limits.maxLeverage`, `limits.maxOrderNotional` (USDT per opening order) and `limits.marketProtection` live in the server config and the app cannot change them. Changing them takes a restart.
+- **First activation:** run all tests on the server's Node in the staged release, confirm the host can reach MEXC, and confirm read-only that `status` is authenticated with no `tradingBlocked` and the account reads correctly. Nothing here places an order. The first real order is placed by the owner in the app.
+- **Before any restart:** both devices must report `unresolvedOperation=false`. Keep the previous release for rollback and add a record here using only placeholders.
+- **Unknown outcome:** stop the gateway, then run `node server/mexcReconcile.mjs /etc/ths-mexc/mexc.config.json`. It shows the locked operation and what MEXC reports for it, and only reads. Not finding an order does not prove it was never placed, so verify in the MEXC order history. Only then add `--confirmed-at-exchange` to clear the lock, start the gateway, and acknowledge on the affected devices.
+
 # 2026-10-19 overnight intraday deployment
 
 Release `releases/overnight-intraday-20261019` is active (built from commit `e1ce436`, the same 80-file layout as the previous release; tar SHA256 `de36711ff3204818…`). It was activated at 10:24 CST on Monday, which was 22:24 Sunday in New York during the overnight session. Before the switch both devices reported unresolvedOperation=false, `scheduled` held 0 entries, and the gateway had no device or upstream connections; the restart took about one second. SSH access, Nginx, `/etc/ths-gateway/` and the unit file are unchanged.

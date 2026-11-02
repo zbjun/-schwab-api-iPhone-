@@ -7,6 +7,7 @@ import { fetch as nativeFetch } from "expo/fetch";
 import type { Vault } from "./types.ts";
 import { SchwabBroker } from "./broker.ts";
 import { ServerBroker } from "./ServerBroker.ts";
+import { MexcClient } from "./MexcClient.ts";
 import { PERSONAL_CONFIG_RESOURCE, parsePersonalConfiguration, seedPersonalConfiguration } from "./personalConfiguration.ts";
 import { parseBundledServer, seedBundledServer } from "./bundledServer.ts";
 
@@ -44,6 +45,10 @@ export function createRealBroker() {
 export function createServerBroker() {
   nativeOnly();
   return new ServerBroker(vault, { fetch: nativeFetch });
+}
+export function createMexcClient() {
+  nativeOnly();
+  return new MexcClient(vault, { fetch: nativeFetch });
 }
 export async function restoreBundledConfiguration(broker: SchwabBroker) {
   if (Platform.OS !== "ios") return false;

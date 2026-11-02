@@ -8,6 +8,7 @@
 | --- | --- |
 | `mobile/` | 当前主线：Expo SDK 57 / React Native 0.86 / React 19.2 / TypeScript 6。改 Expo 代码前先读 `mobile/AGENTS.md` 指向的 v57 文档 |
 | `server/` | Node 24 共享网关（无依赖），直接 import `mobile/src` 里的 `broker.ts`、`orderRules.ts`、`chartData.ts` 等；部署在阿里云，见 `server/DEPLOYMENT.md` |
+| `server/mexc*`、`mobile/src/mexc*`、`mobile/src/MexcClient.ts`、`mobile/src/mexc/` | MEXC 永续合约：独立网关、独立主机、独立保险库，复用 `gateway.mjs` 的认证、核对和写锁 |
 | `ios/`、根目录 `app.json`/`eas.json` | 旧 SwiftUI 版，不再开发 |
 | `tools/` | IPA 注入与校验、行情诊断、测速脚本 |
 | `artifacts/`、`.secrets/`、`.env` | 被 Git 忽略的私密产物与凭据，见下方规则 |
@@ -25,9 +26,9 @@ npm --prefix server test
 
 ## 硬性规则
 
-1. **不碰真实交易**：不下单、不改单、不撤单，不建真实定时单。验证用演示账户和测试夹具。真实账户只能做只读行情查询，并且要先经用户同意。
-2. **交易安全模型不能削弱**：60 秒一次性核对、写请求绝不重试、结果未知时写入持久标记并锁住写操作、两台设备共用写锁、可卖股数预留（OCO 只占用一次）、旧网关不下止盈止损单。改这些代码必须补测试。
-3. **机密**：`.env`、`.secrets/`、`artifacts/server-device-configs/` 永远不打印、不提交、不发给外部服务。服务器域名、IP 和 Nginx 站点名只能写成 `<gateway-origin>`、`<gateway-host>`、`<existing-site>.conf`，真实值只在 `.secrets/deploy-target.md`。
+1. **不碰真实交易**：不下单、不改单、不撤单，不建真实定时单，Schwab 和 MEXC 都一样。验证用演示账户和测试夹具。真实账户只能做只读行情查询，并且要先经用户同意。第一笔真实 MEXC 单由用户自己在 app 里下。
+2. **交易安全模型不能削弱**：60 秒一次性核对、写请求绝不重试、结果未知时写入持久标记并锁住写操作、两台设备共用写锁、可卖股数预留（OCO 只占用一次）、旧网关不下止盈止损单。MEXC 另有：只有文档明确的拒绝码才解锁（`DEFINITE_REJECTIONS` 只能加能证明未成交的码）、杠杆和单笔金额上限由服务器校验、市价单发成带保护价的 IOC、key 未绑 IP 或能转账就关闭下单。改这些代码必须补测试。
+3. **机密**：`.env`、`.secrets/`、`artifacts/server-device-configs/` 永远不打印、不提交、不发给外部服务。服务器域名、IP 和 Nginx 站点名只能写成 `<gateway-origin>`、`<gateway-host>`、`<existing-site>.conf`，真实值只在 `.secrets/deploy-target.md`；MEXC 网关写成 `<mexc-origin>`、`<mexc-host>`，真实值只在 `.secrets/mexc-target.md`。MEXC key 只放在 MEXC 网关的服务器配置里，由用户自己写入，不进聊天、不进仓库、不进手机。
 4. **Git**：只在用户要求时提交或推送。推送前逐一比对上述机密值和服务器地址，只报告"有/无匹配"。2026-10-18 改写过历史，不要从那之前的克隆推送。
 5. **部署服务器**：必须由用户在当前会话里亲口同意。按 `server/DEPLOYMENT.md` 新建 release 目录，先在服务器的 Node 上跑全部测试；重启前确认两台设备 `unresolvedOperation=false`、`scheduled` 里没有待执行项；保留上一个 release 用于回滚，并更新部署记录（只用占位符）。本机时钟可能不准，判断美股时段要以服务器或外部标准时间为准。
 6. **出 IPA**：在 `mobile/` 里同步修改版本号和 build 号，涉及 `app.json`（`version`、`buildNumber`）、`package.json`、`package-lock.json` 开头两处本项目版本号、`.eas/build/unsigned-ios.yml`、`scripts/build-unsigned-ios.sh`、`scripts/verify-ipa.py`。EAS 云端构建前要确认用户确实要出包。设备包用 `mobile/scripts/personalize-ipa.py` 在本机注入配置，再用 `mobile/scripts/verify-ipa.py --allow-personal-config` 校验。
@@ -43,7 +44,7 @@ npm --prefix server test
 | Sonnet 5.5（中等） | 在给定边界内自己补全细节 | `builder`：大部分功能实现，比如新组件或页面、多文件改动、图表与导出等数据处理、服务器只读接口、能复现的 bug<br>`reviewer`：一般改动的代码审查 |
 | Opus 5.5（最高） | 拆需求、做取舍、守安全 | 主会话：需求澄清、方案与架构取舍、难以复现的问题、高风险代码、最终验收、和用户沟通<br>`safety-reviewer`：高风险改动的只读审查 |
 
-**高风险代码**由主会话（Opus）亲自写，并且必须经过 `safety-reviewer` 审查，不交给 Haiku 或 Sonnet 写。范围包括：`orderRules.ts` 与 `broker.ts` 的下单路径、可卖股数预留、`gateway.mjs` 写锁、`server/schedule.mjs`、`vault.mjs`、`ServerBroker.ts` 的写请求与回执、OAuth、部署脚本、改写 Git 历史。
+**高风险代码**由主会话（Opus）亲自写，并且必须经过 `safety-reviewer` 审查，不交给 Haiku 或 Sonnet 写。范围包括：`orderRules.ts` 与 `broker.ts` 的下单路径、可卖股数预留、`gateway.mjs` 写锁、`server/schedule.mjs`、`vault.mjs`、`ServerBroker.ts` 的写请求与回执、`mexcRules.ts`、`server/mexcBroker.ts`、`MexcClient.ts`、OAuth、部署脚本、改写 Git 历史。
 
 ### 省钱规则
 

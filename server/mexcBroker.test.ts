@@ -1,0 +1,552 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
+import { MexcBroker } from "./mexcBroker.ts";
+import type { MexcDraft, MexcPrepared } from "../mobile/src/mexcRules.ts";
+import type { Vault } from "../mobile/src/types.ts";
+
+// Fictional credentials and data only. This suite never reaches a network.
+const API_KEY = "fictional-access-key", SECRET = "fictional-secret";
+const NOW = 1_800_000_000_000;
+const MARKER = "ths.mexc.operation.v1";
+const SYMBOL = "QQQSTOCK_USDT";
+const ORDER_ID = "739113577038255616";
+const KEY_CHECK_EXPIRED = 10 * 60_000 + 1;
+const openDraft: MexcDraft = { symbol: SYMBOL, action: "OPEN_LONG", kind: "LIMIT", vol: "10", price: "700", leverage: 5 };
+const closeDraft: MexcDraft = { symbol: SYMBOL, action: "CLOSE_LONG", kind: "MARKET", vol: "4" };
+const ok = (data: unknown) => JSON.stringify({ success: true, code: 0, data });
+
+class MemoryVault implements Vault {
+  values = new Map<string, string>();
+  events: string[];
+  failSet = false; failRemove = false; failGet = false;
+  constructor(events: string[]) { this.events = events; }
+  async get(key: string) { if (this.failGet) throw new Error("vault"); return this.values.get(key) ?? null; }
+  async set(key: string, value: string) { if (this.failSet) throw new Error("vault"); this.events.push("marker:set"); this.values.set(key, value); }
+  async remove(key: string) { if (this.failRemove) throw new Error("vault"); this.events.push("marker:remove"); this.values.delete(key); }
+}
+interface Call { url: string; init: RequestInit }
+function fixture(overrides: { keyInfo?: unknown; positions?: unknown[]; positionMode?: number; create?: () => Promise<Response> | Response; cancel?: () => Promise<Response> | Response; detail?: unknown; state?: number } = {}) {
+  const events: string[] = [], calls: Call[] = [];
+  const vault = new MemoryVault(events);
+  let now = NOW;
+  const keyInfo = overrides.keyInfo ?? { status: "VALID", ipWhiteList: "<gateway-host>", permissions: "SPOT_ACCOUNT_READ,CONTRACT_ACCOUNT_READ,CONTRACT_DEAL_READ,CONTRACT_DEAL_WRITE", remainingValidity: -999 };
+  const routes: [RegExp, () => Response | Promise<Response>][] = [
+    [/\/api\/v3\/apiKeyInfo/, () => new Response(JSON.stringify(keyInfo))],
+    [/\/api\/v1\/contract\/detail\?symbol=/, () => new Response(ok(overrides.detail ?? { symbol: SYMBOL, displayNameEn: "QQQ_USDT PERPETUAL", baseCoin: "QQQSTOCK", settleCoin: "USDT", futureType: 1, state: 0, apiAllowed: true, contractSize: 0.01, priceUnit: 0.01, volUnit: 1, minVol: 1, maxVol: 28000, minLeverage: 1, maxLeverage: 100, positionOpenType: 3, takerFeeRate: 0.0002, makerFeeRate: 0 }))],
+    [/\/api\/v1\/contract\/ticker\?symbol=/, () => new Response(ok({ symbol: SYMBOL, lastPrice: 700, bid1: 699.9, ask1: 700.1, fairPrice: 700, maxBidPrice: 840, minAskPrice: 560, fundingRate: 0.0005, timestamp: now }))],
+    [/position_mode/, () => new Response(ok(overrides.positionMode ?? 1))],
+    [/open_positions/, () => new Response(ok(overrides.positions ?? [{ positionId: 1109973831, symbol: SYMBOL, positionType: 1, openType: 1, holdVol: 10, frozenVol: 0, holdAvgPrice: 690, leverage: 5 }]))],
+    [/account\/asset\/USDT/, () => new Response(ok({ currency: "USDT", equity: 1000, availableBalance: 900, availableOpen: 900, positionMargin: 100, frozenBalance: 0, unrealized: 0 }))],
+    [/open_orders/, () => new Response(ok({ resultList: [] }))],
+    [/order\/create/, overrides.create ?? (() => new Response(ok({ orderId: ORDER_ID, ts: NOW })))],
+    [/order\/cancel/, overrides.cancel ?? (() => new Response(`{"success":true,"code":0,"data":[{"orderId":${ORDER_ID},"errorCode":0,"errorMsg":"success"}]}`))],
+    [/order\/get\//, () => new Response(`{"success":true,"code":0,"data":{"orderId":${ORDER_ID},"symbol":"${SYMBOL}","side":1,"price":700,"vol":10,"state":${overrides.state ?? 2}}}`)],
+    [/order\/external\//, () => new Response(`{"success":true,"code":0,"data":{"orderId":${ORDER_ID},"symbol":"${SYMBOL}","side":1,"price":700,"vol":10,"state":2}}`)],
+  ];
+  const transport = async (url: string, init: RequestInit) => {
+    calls.push({ url, init });
+    if (/order\/(create|cancel)/.test(url)) events.push("send:" + (url.includes("create") ? "create" : "cancel"));
+    const route = routes.find(([pattern]) => pattern.test(url));
+    if (!route) throw new Error("Unexpected request " + url);
+    return route[1]();
+  };
+  const broker = new MexcBroker(vault, { apiKey: API_KEY, apiSecret: SECRET, limits: { maxLeverage: 5, maxOrderNotional: 1000, marketProtection: 0.01 }, fetch: transport, now: () => now });
+  const writes = () => calls.filter(call => call.init.method === "POST");
+  return { broker, vault, calls, events, writes, advance: (ms: number) => { now += ms; } };
+}
+const code = async (work: Promise<unknown>, expected: string) => assert.rejects(work, (error: { code?: string }) => error.code === expected);
+const prepared = (context: ReturnType<typeof fixture>, draft = openDraft) => context.broker.prepare("USDT", draft) as Promise<MexcPrepared>;
+
+test("refuses to start without a real key or with bad limits", () => {
+  const vault = new MemoryVault([]);
+  const limits = { maxLeverage: 5, maxOrderNotional: 1000, marketProtection: 0.01 };
+  assert.throws(() => new MexcBroker(vault, { apiKey: "REPLACE_ON_SERVER", apiSecret: "x", limits }));
+  assert.throws(() => new MexcBroker(vault, { apiKey: "x", apiSecret: "", limits }));
+  assert.throws(() => new MexcBroker(vault, { apiKey: "x", apiSecret: "y", limits: { ...limits, maxLeverage: 0 } }));
+});
+
+test("signs private requests the documented way", async () => {
+  const context = fixture();
+  await context.broker.orders("USDT");
+  const call = context.calls.find(item => item.url.includes("open_orders"))!, headers = call.init.headers as Record<string, string>;
+  const query = "page_num=1&page_size=100";
+  assert.equal(new URL(call.url).search, "?" + query);
+  assert.equal(headers.ApiKey, API_KEY);
+  assert.equal(headers["Request-Time"], String(NOW));
+  assert.equal(headers.Signature, createHmac("sha256", SECRET).update(API_KEY + NOW + query).digest("hex"));
+  assert.equal(call.init.redirect, "error");
+});
+
+test("a successful order writes the marker first, sends once and clears it", async () => {
+  const context = fixture({ positions: [] });
+  const review = await prepared(context);
+  assert.equal(review.orderPrice, "700");
+  assert.equal(review.leverage, 5);
+  assert.deepEqual(await context.broker.submit(review), { orderID: ORDER_ID });
+  assert.deepEqual(context.events, ["marker:set", "send:create", "marker:remove"]);
+  assert.equal(context.writes().length, 1);
+  const call = context.writes()[0], body = call.init.body as string, headers = call.init.headers as Record<string, string>;
+  assert.equal(headers.Signature, createHmac("sha256", SECRET).update(API_KEY + NOW + body).digest("hex"));
+  assert.deepEqual(JSON.parse(body), { symbol: SYMBOL, price: 700, vol: 10, side: 1, sideType: "buy", type: 1, openType: 1, positionType: "long", positionMode: 1, externalOid: review.externalOid, leverage: 5 });
+  assert.equal(context.vault.values.has(MARKER), false);
+  assert.equal((await context.broker.status()).unresolvedOperation, false);
+});
+
+test("a review works once, only as the original object, and only for 60 seconds", async () => {
+  const context = fixture({ positions: [] });
+  const review = await prepared(context);
+  await code(context.broker.submit({ ...review }), "reviewExpired");
+  assert.equal(context.writes().length, 0);
+  const second = await prepared(context);
+  await context.broker.submit(second);
+  await code(context.broker.submit(second), "reviewExpired");
+  assert.equal(context.writes().length, 1);
+  const late = await prepared(context);
+  context.advance(60_001);
+  await code(context.broker.submit(late), "reviewExpired");
+  assert.equal(context.writes().length, 1);
+  const replaced = await prepared(context);
+  await prepared(context);
+  await code(context.broker.submit(replaced), "reviewExpired");
+  assert.equal(context.writes().length, 1);
+});
+
+for (const [name, create] of [
+  ["a lost connection", () => Promise.reject(new Error("socket hang up"))],
+  ["an HTTP 502", () => new Response("bad gateway", { status: 502 })],
+  ["an internal error code", () => new Response(JSON.stringify({ success: false, code: 500, message: "internal" }))],
+  ["a repeated request code", () => new Response(JSON.stringify({ success: false, code: 603 }))],
+  ["an unknown code", () => new Response(JSON.stringify({ success: false, code: 77777 }))],
+  ["an unreadable body", () => new Response("<html>")],
+  ["a success without an id", () => new Response(ok({ ts: NOW }))],
+  ["an HTTP 400 whose body says the order exists", () => new Response(ok({ orderId: ORDER_ID, ts: NOW }), { status: 400 })],
+  ["an HTTP 400 naming an internal error", () => new Response(JSON.stringify({ code: 500, msg: "x" }), { status: 400 })],
+  ["a proxy's HTTP 499", () => new Response("", { status: 499 })],
+  ["an HTTP 404", () => new Response("<html>", { status: 404 })],
+  ["an HTTP 409", () => new Response("", { status: 409 })],
+] as [string, () => Promise<Response> | Response][]) {
+  test(`${name} leaves the outcome unknown, never retries, and locks every write`, async () => {
+    const context = fixture({ positions: [], create });
+    const review = await prepared(context);
+    await code(context.broker.submit(review), "orderOutcomeUnknown");
+    assert.equal(context.writes().length, 1);
+    assert.deepEqual(context.events, ["marker:set", "send:create"]);
+    const stored = JSON.parse(context.vault.values.get(MARKER)!);
+    assert.equal(stored.operation, "create");
+    assert.equal(stored.externalOid, review.externalOid);
+    assert.equal(stored.symbol, SYMBOL);
+    assert.equal((await context.broker.status()).unresolvedOperation, true);
+    await code(context.broker.prepare("USDT", openDraft), "orderOutcomeUnknown");
+    await code(context.broker.cancel("USDT", ORDER_ID), "orderOutcomeUnknown");
+    assert.equal(context.writes().length, 1);
+  });
+}
+
+test("the lock survives a restart and only the offline acknowledgement clears it", async () => {
+  const context = fixture({ positions: [], create: () => Promise.reject(new Error("timeout")) });
+  await code(context.broker.submit(await prepared(context)), "orderOutcomeUnknown");
+  const restarted = new MexcBroker(context.vault, { apiKey: API_KEY, apiSecret: SECRET, limits: context.broker.limits, now: () => NOW,
+    fetch: async () => { throw new Error("A locked broker must not reach the network"); } });
+  await code(restarted.prepare("USDT", openDraft), "orderOutcomeUnknown");
+  await restarted.acknowledgeReconciliation();
+  assert.equal(context.vault.values.has(MARKER), false);
+});
+
+test("the recovery lookup finds the locked order by its own id", async () => {
+  const context = fixture({ positions: [], create: () => Promise.reject(new Error("timeout")) });
+  const review = await prepared(context);
+  await code(context.broker.submit(review), "orderOutcomeUnknown");
+  const pending = await context.broker.pendingOperation();
+  assert.equal(pending?.lookup, "found");
+  assert.equal(pending?.order?.id, ORDER_ID);
+  assert.ok(context.calls.some(call => call.url.endsWith(`/order/external/${SYMBOL}/${review.externalOid}`)));
+  assert.equal(context.vault.values.has(MARKER), true, "looking up must not unlock");
+  assert.equal(await fixture().broker.pendingOperation(), null);
+});
+
+test("the recovery lookup separates a missing order from a failed lookup", async () => {
+  const lookup = async (answer: () => Response | Promise<Response>) => {
+    const events: string[] = [], vault = new MemoryVault(events);
+    await vault.set(MARKER, JSON.stringify({ version: 1, pending: true, createdAt: NOW, operation: "create", symbol: SYMBOL, externalOid: "ths0123456789abcdef" }));
+    const broker = new MexcBroker(vault, { apiKey: API_KEY, apiSecret: SECRET, limits: { maxLeverage: 5, maxOrderNotional: 1000, marketProtection: 0.01 }, fetch: async () => answer(), now: () => NOW });
+    const result = await broker.pendingOperation();
+    assert.equal(vault.values.has(MARKER), true, "looking up must not unlock");
+    return result?.lookup;
+  };
+  assert.equal(await lookup(() => new Response(JSON.stringify({ success: false, code: 2040 }))), "notFound");
+  assert.equal(await lookup(() => new Response(ok(null))), "notFound");
+  assert.equal(await lookup(() => new Response(JSON.stringify({ success: false, code: 602 }))), "failed");
+  assert.equal(await lookup(() => new Response("bad gateway", { status: 502 })), "failed");
+  assert.equal(await lookup(() => Promise.reject(new Error("offline"))), "failed");
+  assert.equal(await lookup(() => new Response(ok({ orderId: "abc" }))), "failed");
+});
+
+test("a proven refusal unlocks and reports only controlled text", async () => {
+  const context = fixture({ positions: [], create: () => new Response(JSON.stringify({ success: false, code: 2005, message: "upstream secret text" })) });
+  await assert.rejects(context.broker.submit(await prepared(context)), (error: Error & { code?: string }) => {
+    assert.equal(error.code, "insufficientFunds");
+    assert.doesNotMatch(error.message, /upstream/);
+    return true;
+  });
+  assert.deepEqual(context.events, ["marker:set", "send:create", "marker:remove"]);
+  assert.equal((await context.broker.status()).unresolvedOperation, false);
+});
+
+test("no request leaves when the marker cannot be stored", async () => {
+  const context = fixture({ positions: [] });
+  const review = await prepared(context);
+  context.vault.failSet = true;
+  await code(context.broker.submit(review), "secureStorage");
+  assert.equal(context.writes().length, 0);
+  context.vault.failSet = false;
+  await code(context.broker.prepare("USDT", openDraft), "orderOutcomeUnknown");
+});
+
+test("an order that cannot clear its marker stays locked", async () => {
+  const context = fixture({ positions: [] });
+  const review = await prepared(context);
+  context.vault.failRemove = true;
+  await code(context.broker.submit(review), "orderOutcomeUnknown");
+  assert.equal(context.writes().length, 1);
+  assert.equal(context.vault.values.has(MARKER), true);
+});
+
+test("an unreadable marker fails closed", async () => {
+  const context = fixture({ positions: [] });
+  context.vault.failGet = true;
+  await code(context.broker.prepare("USDT", openDraft), "orderOutcomeUnknown");
+});
+
+test("expiring while the marker is stored sends nothing and unlocks", async () => {
+  const context = fixture({ positions: [] });
+  const review = await prepared(context);
+  context.advance(59_000);
+  const set = context.vault.set.bind(context.vault);
+  context.vault.set = async (key, value) => { context.advance(2_000); await set(key, value); };
+  await code(context.broker.submit(review), "reviewExpired");
+  assert.equal(context.writes().length, 0);
+  assert.equal(context.vault.values.has(MARKER), false);
+});
+
+test("submit re-checks fresh state instead of trusting the review", async () => {
+  const positions: unknown[] = [];
+  const context = fixture({ positions });
+  const review = await prepared(context);
+  positions.push({ positionId: 1, symbol: SYMBOL, positionType: 1, openType: 2, holdVol: 1, frozenVol: 0, holdAvgPrice: 1, leverage: 5 });
+  await code(context.broker.submit(review), "positionCross");
+  assert.equal(context.writes().length, 0);
+  assert.equal(context.vault.values.has(MARKER), false);
+});
+
+test("a close never lands on a position the user did not review", async () => {
+  const positions = [{ positionId: 1109973831, symbol: SYMBOL, positionType: 1, openType: 1, holdVol: 10, frozenVol: 0, holdAvgPrice: 690, leverage: 5 }];
+  const context = fixture({ positions });
+  const review = await prepared(context, closeDraft);
+  positions[0] = { ...positions[0], positionId: 1109973999 };
+  await code(context.broker.submit(review), "reviewExpired");
+  assert.equal(context.writes().length, 0);
+  assert.equal(context.vault.values.has(MARKER), false);
+});
+
+test("a submit running out of time stops before sending", async () => {
+  const context = fixture({ positions: [] });
+  const review = await prepared(context);
+  const set = context.vault.set.bind(context.vault);
+  context.vault.set = async (key, value) => { context.advance(12_001); await set(key, value); };
+  await code(context.broker.submit(review), "reviewExpired");
+  assert.equal(context.writes().length, 0);
+  assert.equal(context.vault.values.has(MARKER), false);
+});
+
+test("hanging reads during a submit end without sending anything", async () => {
+  const vault = new MemoryVault([]);
+  let hang = false, writes = 0;
+  const broker = new MexcBroker(vault, {
+    apiKey: API_KEY, apiSecret: SECRET, limits: { maxLeverage: 5, maxOrderNotional: 1000, marketProtection: 0.01 }, timeoutMilliseconds: 20, now: () => NOW,
+    fetch: async (url, init) => {
+      if (init.method === "POST") writes++;
+      if (hang) return new Promise((_, reject) => { init.signal?.addEventListener("abort", () => reject(new Error("aborted"))); });
+      if (url.includes("apiKeyInfo")) return new Response(JSON.stringify({ status: "VALID", ipWhiteList: "<gateway-host>", permissions: "SPOT_ACCOUNT_READ,CONTRACT_ACCOUNT_READ,CONTRACT_DEAL_READ,CONTRACT_DEAL_WRITE" }));
+      if (url.includes("/contract/detail")) return new Response(ok({ symbol: SYMBOL, baseCoin: "QQQSTOCK", settleCoin: "USDT", futureType: 1, state: 0, apiAllowed: true, contractSize: 0.01, priceUnit: 0.01, volUnit: 1, minVol: 1, maxVol: 28000, minLeverage: 1, maxLeverage: 100, positionOpenType: 3, takerFeeRate: 0.0002, makerFeeRate: 0 }));
+      if (url.includes("/contract/ticker")) return new Response(ok({ symbol: SYMBOL, lastPrice: 700, bid1: 699.9, ask1: 700.1, fairPrice: 700, timestamp: NOW }));
+      if (url.includes("position_mode")) return new Response(ok(1));
+      if (url.includes("open_positions")) return new Response(ok([]));
+      return new Response(ok({ currency: "USDT", equity: 1000, availableBalance: 900, availableOpen: 900, positionMargin: 0, frozenBalance: 0, unrealized: 0 }));
+    },
+  });
+  const review = await broker.prepare("USDT", openDraft);
+  hang = true;
+  await code(broker.submit(review), "exchangeUnavailable");
+  assert.equal(writes, 0);
+  assert.equal(vault.values.has(MARKER), false);
+});
+
+test("the market protected price approved in the review is what gets sent", async () => {
+  const context = fixture();
+  const review = await prepared(context, closeDraft);
+  assert.equal(review.orderPrice, "692.91");
+  await context.broker.submit(review);
+  const body = JSON.parse(context.writes()[0].init.body as string);
+  assert.equal(body.type, 3);
+  assert.equal(body.price, 692.91);
+  assert.equal(body.side, 4);
+  assert.equal(body.positionId, 1109973831);
+  assert.equal(body.leverage, undefined);
+});
+
+for (const [problem, keyInfo] of [
+  ["keyNotBound", { status: "VALID", ipWhiteList: "", permissions: "CONTRACT_ACCOUNT_READ,CONTRACT_DEAL_READ,CONTRACT_DEAL_WRITE" }],
+  ["keyMovesMoney", { status: "VALID", ipWhiteList: "x", permissions: "CONTRACT_ACCOUNT_READ,CONTRACT_DEAL_READ,CONTRACT_DEAL_WRITE,SPOT_TRANSFER_WRITE" }],
+  ["keyPermissions", { status: "VALID", ipWhiteList: "x", permissions: "CONTRACT_DEAL_READ" }],
+  ["keyInvalid", { status: "FROZEN", ipWhiteList: "x", permissions: "" }],
+] as [string, unknown][]) {
+  test(`a key with ${problem} cannot reach the order path but can still read`, async () => {
+    const context = fixture({ keyInfo });
+    await code(context.broker.prepare("USDT", openDraft), problem);
+    const status = await context.broker.status();
+    assert.equal(status.authenticated, false);
+    assert.equal(status.tradingBlocked, problem);
+    assert.equal((await context.broker.accounts()).length, 1);
+    assert.equal(context.writes().length, 0);
+  });
+}
+
+test("a failed key lookup closes trading and is asked again", async () => {
+  let attempts = 0;
+  const vault = new MemoryVault([]);
+  const broker = new MexcBroker(vault, {
+    apiKey: API_KEY, apiSecret: SECRET, limits: { maxLeverage: 5, maxOrderNotional: 1000, marketProtection: 0.01 }, now: () => NOW,
+    fetch: async url => { if (url.includes("apiKeyInfo")) attempts++; throw new Error("offline"); },
+  });
+  await code(broker.prepare("USDT", openDraft), "keyCheckFailed");
+  await code(broker.prepare("USDT", openDraft), "keyCheckFailed");
+  assert.equal(attempts, 2);
+});
+
+test("key lookups are cached and refreshed after ten minutes", async () => {
+  const context = fixture({ positions: [] });
+  const lookups = () => context.calls.filter(call => call.url.includes("apiKeyInfo")).length;
+  await context.broker.status();
+  await context.broker.status();
+  assert.equal(lookups(), 1);
+  context.advance(10 * 60_000);
+  await context.broker.status();
+  assert.equal(lookups(), 2);
+  const key = context.calls.find(call => call.url.includes("apiKeyInfo"))!;
+  const url = new URL(key.url), signature = url.searchParams.get("signature")!;
+  url.searchParams.delete("signature");
+  assert.equal(signature, createHmac("sha256", SECRET).update(url.search.slice(1)).digest("hex"));
+  assert.equal((key.init.headers as Record<string, string>)["X-MEXC-APIKEY"], API_KEY);
+});
+
+test("one-way mode and server limits stop the order before anything is written", async () => {
+  await code(fixture({ positionMode: 2 }).broker.prepare("USDT", openDraft), "positionMode");
+  const context = fixture({ positions: [] });
+  await code(context.broker.prepare("USDT", { ...openDraft, leverage: 6 }), "leverageLimit");
+  await code(context.broker.prepare("USDT", { ...openDraft, vol: "200" }), "notionalLimit");
+  await code(context.broker.prepare("OTHER", openDraft), "invalidAccount");
+  await code(context.broker.prepare("USDT", openDraft, "replace-me"), "invalidDraft");
+  assert.equal(context.writes().length, 0);
+});
+
+test("only one write runs at a time", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(done => { release = done; });
+  const context = fixture({ positions: [], create: async () => { await gate; return new Response(ok({ orderId: ORDER_ID })); } });
+  const review = await prepared(context);
+  const first = context.broker.submit(review);
+  await new Promise(done => setTimeout(done, 10));
+  await code(context.broker.prepare("USDT", openDraft), "operationBusy");
+  await code(context.broker.cancel("USDT", ORDER_ID), "operationBusy");
+  release();
+  await first;
+  assert.equal(context.writes().length, 1);
+});
+
+test("closing still works when only the key lookup failed, but opening does not", async () => {
+  const vault = new MemoryVault([]);
+  let writes = 0;
+  const broker = new MexcBroker(vault, {
+    apiKey: API_KEY, apiSecret: SECRET, limits: { maxLeverage: 5, maxOrderNotional: 1000, marketProtection: 0.01 }, now: () => NOW,
+    fetch: async (url, init) => {
+      if (url.includes("apiKeyInfo")) throw new Error("spot API is down");
+      if (init.method === "POST") { writes++; return new Response(ok({ orderId: ORDER_ID })); }
+      if (url.includes("/contract/detail")) return new Response(ok({ symbol: SYMBOL, baseCoin: "QQQSTOCK", settleCoin: "USDT", futureType: 1, state: 0, apiAllowed: true, contractSize: 0.01, priceUnit: 0.01, volUnit: 1, minVol: 1, maxVol: 28000, minLeverage: 1, maxLeverage: 100, positionOpenType: 3, takerFeeRate: 0.0002, makerFeeRate: 0 }));
+      if (url.includes("/contract/ticker")) return new Response(ok({ symbol: SYMBOL, lastPrice: 700, bid1: 699.9, ask1: 700.1, fairPrice: 700, timestamp: NOW }));
+      if (url.includes("position_mode")) return new Response(ok(1));
+      if (url.includes("open_positions")) return new Response(ok([{ positionId: 1109973831, symbol: SYMBOL, positionType: 1, openType: 1, holdVol: 10, frozenVol: 0, holdAvgPrice: 690, leverage: 5 }]));
+      return new Response(ok({ currency: "USDT", equity: 1000, availableBalance: 900, availableOpen: 900, positionMargin: 0, frozenBalance: 0, unrealized: 0 }));
+    },
+  });
+  await code(broker.prepare("USDT", openDraft), "keyCheckFailed");
+  assert.deepEqual(await broker.submit(await broker.prepare("USDT", closeDraft)), { orderID: ORDER_ID });
+  assert.equal(writes, 1);
+});
+
+test("a key that can move money cannot close either", async () => {
+  await code(fixture({ keyInfo: { status: "VALID", ipWhiteList: "x", permissions: "CONTRACT_ACCOUNT_READ,CONTRACT_DEAL_READ,CONTRACT_DEAL_WRITE,SPOT_TRANSFER_WRITE" } }).broker.prepare("USDT", closeDraft), "keyMovesMoney");
+});
+
+test("refusals of reads and cancels never claim that an order did not fill", async () => {
+  const blocked = fixture({ cancel: () => new Response("waf", { status: 403 }) });
+  await assert.rejects(blocked.broker.cancel("USDT", ORDER_ID), (error: Error & { code?: string }) => {
+    assert.equal(error.code, "cancelRejected");
+    assert.doesNotMatch(error.message, /未成交/);
+    return true;
+  });
+  assert.equal(blocked.vault.values.has(MARKER), false);
+  const refused = fixture({ cancel: () => new Response(JSON.stringify({ success: false, code: 600 })) });
+  await code(refused.broker.cancel("USDT", ORDER_ID), "cancelRejected");
+  const denied = fixture({ cancel: () => new Response(JSON.stringify({ success: false, code: 406 })) });
+  await code(denied.broker.cancel("USDT", ORDER_ID), "ipRejected");
+  const gone = fixture({ cancel: () => new Response(JSON.stringify({ success: false, code: 2040 })) });
+  await code(gone.broker.cancel("USDT", ORDER_ID), "orderChanged");
+  const reader = new MexcBroker(new MemoryVault([]), { apiKey: API_KEY, apiSecret: SECRET, limits: { maxLeverage: 5, maxOrderNotional: 1000, marketProtection: 0.01 }, now: () => NOW, fetch: async () => new Response("waf", { status: 403 }) });
+  await assert.rejects(reader.orderDetail("USDT", ORDER_ID), (error: Error & { code?: string }) => {
+    assert.equal(error.code, "exchangeUnavailable");
+    assert.doesNotMatch(error.message, /未成交/);
+    return true;
+  });
+});
+
+test("one contract with no price does not hide the other quotes", async () => {
+  const broker = new MexcBroker(new MemoryVault([]), { apiKey: API_KEY, apiSecret: SECRET, limits: { maxLeverage: 5, maxOrderNotional: 1000, marketProtection: 0.01 }, now: () => NOW,
+    fetch: async () => new Response(ok([{ symbol: SYMBOL, lastPrice: 700, timestamp: NOW }, { symbol: "NEW_USDT", lastPrice: 0, timestamp: NOW }])) });
+  assert.deepEqual((await broker.quotes([SYMBOL, "NEW_USDT"])).map(ticker => ticker.symbol), [SYMBOL]);
+});
+
+test("while a submit is checking, status stays locked even before the marker exists", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(done => { release = done; });
+  const context = fixture({ positions: [] });
+  const review = await prepared(context);
+  const get = context.vault.get.bind(context.vault);
+  context.vault.get = async key => { await gate; return get(key); };
+  const running = context.broker.submit(review);
+  context.vault.get = get;
+  const during = await context.broker.status();
+  assert.equal(during.unresolvedOperation, true);
+  assert.equal(during.writeInProgress, true);
+  assert.equal(context.vault.values.has(MARKER), false);
+  release();
+  await running;
+  const after = await context.broker.status();
+  assert.equal(after.unresolvedOperation, false);
+  assert.equal(after.writeInProgress, undefined);
+});
+
+test("status reports the lock as it is when it answers, even after a slow key lookup", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(done => { release = done; });
+  let holdLookup = false;
+  const vault = new MemoryVault([]);
+  const keyInfo = JSON.stringify({ status: "VALID", ipWhiteList: "<gateway-host>", permissions: "SPOT_ACCOUNT_READ,CONTRACT_ACCOUNT_READ,CONTRACT_DEAL_READ,CONTRACT_DEAL_WRITE" });
+  let now = NOW;
+  const broker = new MexcBroker(vault, { apiKey: API_KEY, apiSecret: SECRET, limits: { maxLeverage: 5, maxOrderNotional: 1000, marketProtection: 0.01 }, now: () => now,
+    fetch: async url => {
+      if (url.includes("apiKeyInfo")) {
+        if (holdLookup) { holdLookup = false; await gate; }
+        return new Response(keyInfo);
+      }
+      if (url.includes("/contract/detail")) return new Response(ok({ symbol: SYMBOL, baseCoin: "QQQSTOCK", settleCoin: "USDT", futureType: 1, state: 0, apiAllowed: true, contractSize: 0.01, priceUnit: 0.01, volUnit: 1, minVol: 1, maxVol: 28000, minLeverage: 1, maxLeverage: 100, positionOpenType: 3, takerFeeRate: 0.0002, makerFeeRate: 0 }));
+      if (url.includes("/contract/ticker")) return new Response(ok({ symbol: SYMBOL, lastPrice: 700, bid1: 699.9, ask1: 700.1, fairPrice: 700, timestamp: now }));
+      if (url.includes("position_mode")) return new Response(ok(1));
+      if (url.includes("open_positions")) return new Response(ok([]));
+      if (url.includes("account/asset")) return new Response(ok({ currency: "USDT", equity: 1000, availableBalance: 900, availableOpen: 900, positionMargin: 0, frozenBalance: 0, unrealized: 0 }));
+      throw new Error("timeout"); // The send: its outcome stays unknown.
+    } });
+  const review = await broker.prepare("USDT", openDraft);
+  // Past the key cache, so this status has to look the key up, and that lookup hangs.
+  now += KEY_CHECK_EXPIRED;
+  holdLookup = true;
+  const slowStatus = broker.status();
+  await new Promise(done => setTimeout(done, 5));
+  now -= KEY_CHECK_EXPIRED; // Back inside the cache and the review window, so the submit proceeds and sends.
+  const submit = broker.submit(review).catch((error: { code?: string }) => error.code);
+  await new Promise(done => setTimeout(done, 5));
+  release();
+  const answer = await slowStatus;
+  assert.equal(answer.unresolvedOperation, true);
+  assert.equal(await submit, "orderOutcomeUnknown");
+});
+
+test("a key known to move money stays blocked when a later lookup fails", async () => {
+  const events: string[] = [], calls: string[] = [];
+  let now = NOW, lookupFails = false;
+  const broker = new MexcBroker(new MemoryVault(events), { apiKey: API_KEY, apiSecret: SECRET, limits: { maxLeverage: 5, maxOrderNotional: 1000, marketProtection: 0.01 }, now: () => now,
+    fetch: async (url, init) => {
+      if (init.method === "POST") { calls.push(url); return new Response(ok({ orderId: ORDER_ID })); }
+      if (url.includes("apiKeyInfo")) {
+        if (lookupFails) throw new Error("spot API is down");
+        return new Response(JSON.stringify({ status: "VALID", ipWhiteList: "x", permissions: "CONTRACT_ACCOUNT_READ,CONTRACT_DEAL_READ,CONTRACT_DEAL_WRITE,SPOT_TRANSFER_WRITE" }));
+      }
+      throw new Error("A blocked key must not get this far: " + url);
+    } });
+  await code(broker.prepare("USDT", closeDraft), "keyMovesMoney");
+  now += KEY_CHECK_EXPIRED;
+  lookupFails = true;
+  await code(broker.prepare("USDT", closeDraft), "keyMovesMoney");
+  assert.equal((await broker.status()).tradingBlocked, "keyMovesMoney");
+  assert.equal(calls.length, 0);
+});
+
+test("an error reply from the key lookup is retried instead of being remembered", async () => {
+  let attempts = 0;
+  const broker = new MexcBroker(new MemoryVault([]), { apiKey: API_KEY, apiSecret: SECRET, limits: { maxLeverage: 5, maxOrderNotional: 1000, marketProtection: 0.01 }, now: () => NOW,
+    fetch: async () => { attempts++; return new Response(JSON.stringify({ code: 500, msg: "busy" })); } });
+  assert.equal((await broker.status()).tradingBlocked, "keyCheckFailed");
+  await broker.status();
+  assert.equal(attempts, 2);
+});
+
+test("a hanging lookup during a cancel ends without sending anything", async () => {
+  const vault = new MemoryVault([]);
+  let writes = 0;
+  const broker = new MexcBroker(vault, { apiKey: API_KEY, apiSecret: SECRET, limits: { maxLeverage: 5, maxOrderNotional: 1000, marketProtection: 0.01 }, timeoutMilliseconds: 20, now: () => NOW,
+    fetch: async (_, init) => {
+      if (init.method === "POST") writes++;
+      return new Promise((_, reject) => { init.signal?.addEventListener("abort", () => reject(new Error("aborted"))); });
+    } });
+  await code(broker.cancel("USDT", ORDER_ID), "exchangeUnavailable");
+  assert.equal(writes, 0);
+  assert.equal(vault.values.has(MARKER), false);
+});
+
+test("cancel sends the full-length id once and clears the marker", async () => {
+  const context = fixture();
+  await context.broker.cancel("USDT", ORDER_ID);
+  assert.deepEqual(context.events, ["marker:set", "send:cancel", "marker:remove"]);
+  assert.equal(context.writes()[0].init.body, `[${ORDER_ID}]`);
+});
+
+test("cancel refuses finished orders and handles every answer", async () => {
+  const finished = fixture({ state: 3 });
+  await code(finished.broker.cancel("USDT", ORDER_ID), "orderChanged");
+  assert.equal(finished.writes().length, 0);
+  await code(fixture().broker.cancel("USDT", "12,13"), "invalidOrderIdentifier");
+  const gone = fixture({ cancel: () => new Response(`{"success":true,"code":0,"data":[{"orderId":${ORDER_ID},"errorCode":2041}]}`) });
+  await code(gone.broker.cancel("USDT", ORDER_ID), "orderChanged");
+  assert.equal(gone.vault.values.has(MARKER), false);
+  const lost = fixture({ cancel: () => Promise.reject(new Error("timeout")) });
+  await code(lost.broker.cancel("USDT", ORDER_ID), "orderOutcomeUnknown");
+  assert.equal(JSON.parse(lost.vault.values.get(MARKER)!).orderID, ORDER_ID);
+  assert.equal(lost.writes().length, 1);
+  const odd = fixture({ cancel: () => new Response(`{"success":true,"code":0,"data":[{"orderId":${ORDER_ID},"errorCode":9}]}`) });
+  await code(odd.broker.cancel("USDT", ORDER_ID), "orderOutcomeUnknown");
+});
+
+test("cancel still works when the key check would block new orders", async () => {
+  const context = fixture({ keyInfo: { status: "VALID", ipWhiteList: "", permissions: "" } });
+  await context.broker.cancel("USDT", ORDER_ID);
+  assert.equal(context.writes().length, 1);
+});
+
+test("closed-order queries validate their range", async () => {
+  const context = fixture();
+  await code(context.broker.closedOrders("bad", 0, 1), "invalidSymbol");
+  await code(context.broker.closedOrders(SYMBOL, 5, 1), "invalidRange");
+  await code(context.broker.closedOrders(SYMBOL, 0, 91 * 86_400_000), "invalidRange");
+  await code(context.broker.quotes(["bad"]), "invalidSymbol");
+  await code(context.broker.authorizationURL(), "methodNotAllowed");
+});

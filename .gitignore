@@ -24,3 +24,8 @@ xcuserdata/
 *.xcuserstate
 .DS_Store
 __pycache__/
+
+# MEXC gateway config and vault, wherever they are generated
+mexc.config.json
+mexc-vault.key
+mexc-data/

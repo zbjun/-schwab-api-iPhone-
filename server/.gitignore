@@ -1,5 +1,7 @@
 config.json
+mexc.config.json
 data/
+mexc-data/
 *.key
 *.pem
 *.enc

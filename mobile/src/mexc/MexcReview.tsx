@@ -62,6 +62,9 @@ export default function MexcReview({ m, palette: p, prepared, limits, embedded =
         {!prepared.isDemo && <Notice palette={p} text="真实账户：确认后会发送到 MEXC。" />}
         {prepared.isDemo && <Notice palette={p} tone="info" text="演示账户，不会发送到交易所。" />}
         {opening && <Notice palette={p} text="杠杆交易可能被强平，亏损可能超过预期。" />}
+        {(draft.takeProfitPrice !== undefined || draft.stopLossPrice !== undefined) && (
+          <Notice palette={p} text="止盈止损随委托一起提交，成交后才生效，按标记价触发，触发后按市价平仓。部分成交时，以持仓上显示的为准。" />
+        )}
         {market && (
           <Notice palette={p}
             text={`市价单按保护价成交，最多偏离 ${limits ? percent(limits.marketProtection, 2) : "—"}，超出部分取消。`} />
@@ -84,6 +87,8 @@ export default function MexcReview({ m, palette: p, prepared, limits, embedded =
               <Line palette={p} label="杠杆" value={`${prepared.leverage ?? "—"}x`} />
               <Line palette={p} label="所需保证金" value={prepared.margin === undefined ? "—" : `${money(prepared.margin)} USDT`} />
               <Line palette={p} label="可用保证金" value={prepared.available === undefined ? "—" : `${money(prepared.available)} USDT`} />
+              {draft.takeProfitPrice !== undefined && <Line palette={p} label="止盈价" value={draft.takeProfitPrice} />}
+              {draft.stopLossPrice !== undefined && <Line palette={p} label="止损价" value={draft.stopLossPrice} />}
             </>}
             {!opening && <Line palette={p} label="可平张数" value={prepared.closable === undefined ? "—" : String(prepared.closable)} />}
             <Line palette={p} label="吃单 / 挂单手续费率" value={`${percent(prepared.takerFeeRate, 3)} / ${percent(prepared.makerFeeRate, 3)}`} />

@@ -7,7 +7,7 @@ import type { MexcAction } from "../mexcRules.ts";
 import { Button, Chip, Glass, Input, Stepper, elevated, money, radius, styles, tabBar, tabClearance } from "../ui.tsx";
 import { useTickers, type MexcState } from "./useMexc.ts";
 import { percent, priceText, signedPercent, sortContracts, STOCK_NOTE, isStockContract } from "./mexcView.ts";
-import { Line, Notice, PositionSlider } from "./parts.tsx";
+import { Line, Notice, PositionSlider, StopFields } from "./parts.tsx";
 import MexcReview from "./MexcReview.tsx";
 import { useOrderTicket } from "./useOrderTicket.ts";
 
@@ -130,6 +130,12 @@ export default function MexcTrade({ m, palette: p, seed }: { m: MexcState; palet
             {opening && !choice && <Text style={{ color: p.secondary, fontSize: 12 }}>尚未读取到服务器杠杆上限，暂不能核对。</Text>}
             {opening && choice && choice.fixed === undefined && (
               <Text style={{ color: p.secondary, fontSize: 12 }}>可选 {choice.min}x–{choice.max}x（取服务器上限和合约上限的较小值）</Text>
+            )}
+            {opening && !!held && !t.stopsWereDropped && <Text style={{ color: p.secondary, fontSize: 12 }}>这个方向已有持仓，止盈止损请到合约详情页设置。</Text>}
+            {t.stopsWereDropped && <Button label="清除价格" palette={p} variant="tinted" color={p.secondary} onPress={t.clearStops} />}
+            {opening && !held && (
+              <StopFields palette={p} on={t.stopsOn} onToggle={t.setStopsOn} takeProfit={t.takeProfit} stopLoss={t.stopLoss}
+                onTakeProfit={t.setTakeProfit} onStopLoss={t.setStopLoss} onStepTakeProfit={t.stepTakeProfit} onStepStopLoss={t.stepStopLoss} />
             )}
             <View style={{ height: 1, backgroundColor: p.separator }} />
             <View>

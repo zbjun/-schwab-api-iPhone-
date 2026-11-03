@@ -25,9 +25,15 @@ if (process.argv.length < 3 || process.argv.length > 4 || (flag !== undefined &&
       const pending = await broker.pendingOperation();
       if (!pending) console.log('Nothing is locked.');
       else {
-        const { marker, order, position, lookup } = pending;
+        const { marker, order, position, stopOrders, lookup } = pending;
         console.log(`Locked ${marker.operation} on ${marker.symbol ?? 'unknown contract'} at ${new Date(marker.createdAt).toISOString()}, id ${marker.externalOid ?? marker.orderID ?? marker.positionId}.`);
-        if (marker.operation === 'leverage') {
+        if (marker.operation === 'stop') {
+          console.log(`The request was ${marker.stopKind}${marker.stopOrderId ? ` of ${marker.stopOrderId}` : ''} with take-profit ${marker.takeProfitPrice ?? 'none'} and stop-loss ${marker.stopLossPrice ?? 'none'}.`);
+          if (lookup === 'failed') console.log('The lookup failed, so this tells you nothing about the position. Check MEXC directly.');
+          else for (const row of stopOrders ?? []) console.log(`MEXC shows take-profit and stop-loss ${row.id} waiting: take-profit ${row.takeProfitPrice ?? 'none'}, stop-loss ${row.stopLossPrice ?? 'none'}, ${row.vol} contracts.`);
+          if (lookup === 'notFound') console.log('MEXC shows none waiting on this position.');
+          console.log('What MEXC shows now does not prove the request never landed. Check the position at MEXC before clearing.');
+        } else if (marker.operation === 'leverage') {
           if (lookup === 'found') console.log(`MEXC reports position ${position.id} at ${position.leverage}x. The change was from ${marker.previousLeverage}x to ${marker.leverage}x.`);
           else if (lookup === 'notFound') console.log('MEXC lists no such open position. Check the MEXC position history before clearing.');
           else console.log('The lookup failed, so this tells you nothing about the position. Check MEXC directly.');

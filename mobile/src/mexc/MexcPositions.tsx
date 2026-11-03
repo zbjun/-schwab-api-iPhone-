@@ -1,7 +1,7 @@
 import React from "react";
 import { Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
 import type { Palette } from "../types.ts";
-import type { MexcPosition } from "../mexcRules.ts";
+import type { MexcPosition, MexcStopOrder } from "../mexcRules.ts";
 import { DemoNotice } from "../DemoNotice.tsx";
 import { Button, Icon, money, radius, signed, styles } from "../ui.tsx";
 import type { MexcState } from "./useMexc.ts";
@@ -17,6 +17,17 @@ export default function MexcPositions({ m, palette: p, onClose, onSettings, onTr
   const unit = (symbol: string) => m.contracts.find(c => c.symbol === symbol)?.priceUnit;
   const pnlColor = (value?: number) => (value ?? 0) > 0 ? p.up : (value ?? 0) < 0 ? p.down : p.secondary;
   const positions = m.account?.positions ?? [];
+  const [stops, setStops] = React.useState<MexcStopOrder[]>([]);
+  const [stopsFailed, setStopsFailed] = React.useState(false);
+  React.useEffect(() => {
+    if (!positions.length) { setStops([]); setStopsFailed(false); return; }
+    let active = true;
+    m.api.stopOrders()
+      .then(rows => { if (active) { setStops(rows); setStopsFailed(false); } })
+      // A failed read must not look like nothing set. Only a gateway without this feature stays quiet.
+      .catch(error => { if (active) setStopsFailed((error as { code?: string })?.code !== "methodNotAllowed"); });
+    return () => { active = false; };
+  }, [m.api, m.account, positions.length]);
   return (
     <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={[styles.pageContent, { gap: 10, opacity: m.offline ? 0.45 : 1 }]}
       refreshControl={<RefreshControl refreshing={refreshing} tintColor={p.secondary}
@@ -74,6 +85,7 @@ export default function MexcPositions({ m, palette: p, onClose, onSettings, onTr
             const long = position.direction === "LONG";
             const pnl = position.unrealized;
             const u = unit(position.symbol);
+            const stop = stops.find(row => row.positionId === position.id);
             return (
               <Pressable key={position.id} accessibilityRole="button" disabled={m.sending}
                 accessibilityLabel={`${position.symbol} ${long ? "多" : "空"} 平仓`} onPress={() => onClose(position)}
@@ -85,6 +97,11 @@ export default function MexcPositions({ m, palette: p, onClose, onSettings, onTr
                     <Text style={{ color: long ? p.up : p.down, fontWeight: "700" }}>{long ? "多" : "空"}</Text>
                     {` ${openTypeLabel(position.openType)} ${position.leverage}x · 可平 ${closableOf(position)}`}
                   </Text>
+                  {!!stop && (
+                    <Text numberOfLines={1} style={[styles.number, { color: p.secondary, fontSize: 11, marginTop: 2 }]}>
+                      止盈 {priceText(stop.takeProfitPrice, u)} 止损 {priceText(stop.stopLossPrice, u)}
+                    </Text>
+                  )}
                 </View>
                 <View style={{ flex: 1, alignItems: "flex-end" }}>
                   <Text style={[styles.number, { color: p.text, fontSize: 15, fontWeight: "600" }]}>{String(position.holdVol)}</Text>
@@ -101,7 +118,7 @@ export default function MexcPositions({ m, palette: p, onClose, onSettings, onTr
       )}
       {m.account && positions.length === 0 && <EmptyState palette={p} text="暂无持仓" />}
       {positions.length > 0 && (
-        <Text style={{ color: p.secondary, fontSize: 11, lineHeight: 16 }}>点持仓行可预填平仓方向，仍需核对后下单。</Text>
+        <Text style={{ color: p.secondary, fontSize: 11, lineHeight: 16 }}>点持仓行可预填平仓方向，仍需核对后下单。止盈止损在合约详情页设置。{stopsFailed ? " 止盈止损读取失败，这里显示的可能不是最新的。" : ""}</Text>
       )}
     </ScrollView>
   );

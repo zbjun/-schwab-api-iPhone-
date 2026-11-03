@@ -1,15 +1,15 @@
 import { createHmac, randomBytes } from "node:crypto";
 import { TradingError } from "../mobile/src/orderRules.ts";
 import {
-  DEFINITE_REJECTIONS, LEVERAGE_REJECTIONS, MEXC_ACCOUNT, MEXC_REVIEW_TTL, cancelOutcome, classifyMexcResponse, createdOrderID,
+  DEFINITE_REJECTIONS, LEVERAGE_REJECTIONS, MEXC_ACCOUNT, MEXC_REVIEW_TTL, STOP_REJECTIONS, cancelOutcome, classifyMexcResponse, createdOrderID,
   decodeMexcAsset, decodeMexcContract, decodeMexcHistory, decodeMexcOrder, decodeMexcOrderPage,
-  decodeMexcPositions, decodeMexcTicker, encodeMexcCancel, encodeMexcLeverage, encodeMexcOrder, freezeMexcDraft, freezeMexcLeverageDraft,
-  invalidMexcResponse, isLeverageDraft, isOpening, mexcError, mexcHistoryRequest, mexcLiveRequest, mexcKeyProblem, parseLossless, planMexcLeverage, planMexcOrder,
-  validMexcOrderID, validMexcSymbol, validateMexcDraft, validateMexcLeverageDraft, validateMexcLimits,
+  decodeMexcPositions, decodeMexcStopOrders, decodeMexcTicker, encodeMexcCancel, encodeMexcLeverage, encodeMexcOrder, encodeMexcStop, freezeMexcDraft, freezeMexcLeverageDraft, freezeMexcStopDraft,
+  invalidMexcResponse, isLeverageDraft, isOpening, isStopDraft, mexcError, mexcHistoryRequest, mexcLiveRequest, mexcKeyProblem, mexcStopPath, parseLossless, planMexcLeverage, planMexcOrder, planMexcStop, planMexcStopCancel, stopOutcome,
+  validMexcOrderID, validMexcSymbol, validateMexcDraft, validateMexcLeverageDraft, validateMexcLimits, validateMexcStopDraft,
 } from "../mobile/src/mexcRules.ts";
 import type {
   MexcAccount, MexcContract, MexcDraft, MexcLeverageContext, MexcLeverageDraft, MexcLeveragePrepared, MexcLimits, MexcLive, MexcOrder, MexcOrderContext, MexcOrderPlan,
-  MexcPosition, MexcPrepared, MexcTicker,
+  MexcPosition, MexcPrepared, MexcStopContext, MexcStopDraft, MexcStopOrder, MexcStopPlan, MexcStopPrepared, MexcTicker,
 } from "../mobile/src/mexcRules.ts";
 import type { HistoryRange, History, SessionStatus, Vault } from "../mobile/src/types.ts";
 
@@ -33,7 +33,11 @@ const MAX_SYMBOLS = 100;
 const HISTORY_WINDOW_DAYS = 90;
 
 type Transport = (url: string, init: RequestInit) => Promise<Response>;
-interface Marker { operation: "create" | "cancel" | "leverage"; symbol?: string; externalOid?: string; orderID?: string; positionId?: string; leverage?: number; previousLeverage?: number }
+interface Marker {
+  operation: "create" | "cancel" | "leverage" | "stop";
+  symbol?: string; externalOid?: string; orderID?: string; positionId?: string; leverage?: number; previousLeverage?: number;
+  stopKind?: MexcStopDraft["kind"]; stopOrderId?: string; takeProfitPrice?: string; stopLossPrice?: string;
+}
 export interface MexcBrokerOptions {
   apiKey: string;
   apiSecret: string;
@@ -62,7 +66,7 @@ export class MexcBroker {
   private readonly now: () => number;
   private readonly timeout: number;
   private readonly keyCheckEnabled: boolean;
-  private readonly reviews = new Map<string, MexcPrepared | MexcLeveragePrepared>();
+  private readonly reviews = new Map<string, MexcPrepared | MexcLeveragePrepared | MexcStopPrepared>();
   private prepareSequence = 0;
   private writeBusy = false;
   private unresolved = false;
@@ -155,11 +159,11 @@ export class MexcBroker {
     this.keyCheck = { at: now, problem };
     return problem;
   }
-  private async requireUsableKey(reducesExposure: boolean, timeout?: number): Promise<void> {
+  private async requireUsableKey(allowFailedLookup: boolean, timeout?: number): Promise<void> {
     const problem = await this.keyProblem(timeout);
     if (!problem) return;
-    // A failed lookup says nothing bad about the key, and closing only reduces exposure.
-    if (problem === "keyCheckFailed" && reducesExposure) return;
+    // A failed lookup says nothing bad about the key, so what manages an existing position stays possible.
+    if (problem === "keyCheckFailed" && allowFailedLookup) return;
     throw mexcError(problem);
   }
 
@@ -233,6 +237,32 @@ export class MexcBroker {
     ]);
     if (typeof positionMode !== "number") throw invalidMexcResponse();
     return { draft, contract, positions, availableOpen: asset.availableOpen, positionMode, limits: this.limits };
+  }
+  private async readStopOrders(symbol?: string, timeout?: number): Promise<MexcStopOrder[]> {
+    return decodeMexcStopOrders(await this.read("/api/v1/private/stoporder/open_orders", symbol === undefined ? undefined : { symbol }, true, timeout));
+  }
+  private async stopContext(draft: MexcStopDraft, timeout?: number): Promise<MexcStopContext> {
+    const [contract, ticker, positionMode, positions, stopOrders] = await Promise.all([
+      this.read("/api/v1/contract/detail", { symbol: draft.symbol }, false, timeout).then(decodeMexcContract),
+      this.read("/api/v1/contract/ticker", { symbol: draft.symbol }, false, timeout).then(decodeMexcTicker),
+      this.read("/api/v1/private/position/position_mode", undefined, true, timeout),
+      this.read("/api/v1/private/position/open_positions", { symbol: draft.symbol }, true, timeout).then(decodeMexcPositions),
+      this.readStopOrders(draft.symbol, timeout),
+    ]);
+    if (typeof positionMode !== "number") throw invalidMexcResponse();
+    return { draft, contract, ticker, positions, stopOrders, positionMode, now: this.now() };
+  }
+  /** Taking one off reads only what it needs, so a market data outage cannot hold it up. */
+  private async stopPlan(draft: MexcStopDraft, timeout?: number): Promise<{ plan: MexcStopPlan; displayName?: string }> {
+    if (draft.kind === "STOP_CANCEL") {
+      const [positions, stopOrders] = await Promise.all([
+        this.read("/api/v1/private/position/open_positions", { symbol: draft.symbol }, true, timeout).then(decodeMexcPositions),
+        this.readStopOrders(draft.symbol, timeout),
+      ]);
+      return { plan: planMexcStopCancel(draft, positions, stopOrders) };
+    }
+    const context = await this.stopContext(draft, timeout);
+    return { plan: planMexcStop(context), displayName: context.contract.displayName };
   }
 
   async status(): Promise<SessionStatus & { tradingBlocked?: string; writeInProgress?: boolean }> {
@@ -336,6 +366,11 @@ export class MexcBroker {
     });
     return value;
   }
+  /** What is still waiting to trigger, for one contract or for the whole account. */
+  async stopOrders(symbol?: unknown): Promise<MexcStopOrder[]> {
+    if (symbol !== undefined && !validMexcSymbol(symbol)) throw mexcError("invalidSymbol");
+    return this.readStopOrders(symbol as string | undefined);
+  }
   async orders(accountID: unknown): Promise<MexcOrder[]> {
     this.assertAccount(accountID);
     return decodeMexcOrderPage(await this.read("/api/v1/private/order/list/open_orders", { page_num: 1, page_size: 100 }, true));
@@ -358,11 +393,12 @@ export class MexcBroker {
     return decodeMexcOrder(await this.read(`/api/v1/private/order/get/${id}`, undefined, true, SUBMIT_READ_TIMEOUT));
   }
 
-  async prepare(accountID: unknown, draft: MexcDraft | MexcLeverageDraft, extra?: unknown): Promise<MexcPrepared | MexcLeveragePrepared> {
+  async prepare(accountID: unknown, draft: MexcDraft | MexcLeverageDraft | MexcStopDraft, extra?: unknown): Promise<MexcPrepared | MexcLeveragePrepared | MexcStopPrepared> {
     if (this.writeBusy) throw busy();
     if (extra !== undefined) throw mexcError("invalidDraft");
     this.assertAccount(accountID);
     if (isLeverageDraft(draft)) return this.prepareLeverage(draft);
+    if (isStopDraft(draft)) return this.prepareStop(draft);
     validateMexcDraft(draft);
     const copy = freezeMexcDraft(draft);
     this.reviews.clear();
@@ -420,7 +456,29 @@ export class MexcBroker {
     this.reviews.set(snapshot.id, snapshot);
     return snapshot;
   }
-  async submit(prepared: MexcPrepared | MexcLeveragePrepared): Promise<{ orderID: string } | { leverage: number }> {
+  /** Cancelling is not held back by the key check, as with any cancel. A failed lookup lets the others through, since a stop may be needed most just then. */
+  private async prepareStop(draft: MexcStopDraft): Promise<MexcStopPrepared> {
+    validateMexcStopDraft(draft);
+    const copy = freezeMexcStopDraft(draft);
+    this.reviews.clear();
+    const sequence = ++this.prepareSequence;
+    if (await this.readMarker()) throw unknownOutcome();
+    if (copy.kind !== "STOP_CANCEL") await this.requireUsableKey(true);
+    const { plan, displayName } = await this.stopPlan(copy);
+    if (sequence !== this.prepareSequence || this.writeBusy) throw reviewExpired();
+    const snapshot: MexcStopPrepared = Object.freeze({
+      ...plan,
+      id: randomBytes(32).toString("base64url"),
+      draft: copy,
+      accountID: MEXC_ACCOUNT,
+      displayName: displayName ?? copy.symbol,
+      preparedAt: this.now(),
+      isDemo: false,
+    });
+    this.reviews.set(snapshot.id, snapshot);
+    return snapshot;
+  }
+  async submit(prepared: MexcPrepared | MexcLeveragePrepared | MexcStopPrepared): Promise<{ orderID: string } | { leverage: number } | { stopKind: MexcStopDraft["kind"] }> {
     if (this.writeBusy) throw busy();
     const review = this.reviews.get(prepared?.id);
     // Identity rejects constructed, altered and replayed reviews, and each review is used once.
@@ -438,6 +496,7 @@ export class MexcBroker {
     try {
       if (await this.readMarker()) throw unknownOutcome();
       if (isLeverageDraft(prepared.draft)) return await this.sendLeverage(prepared as MexcLeveragePrepared, outOfTime);
+      if (isStopDraft(prepared.draft)) return await this.sendStop(prepared as MexcStopPrepared, outOfTime);
       const order = prepared as MexcPrepared;
       await this.requireUsableKey(!isOpening(order.draft.action), SUBMIT_READ_TIMEOUT);
       const context = await this.orderContext(order.draft, SUBMIT_READ_TIMEOUT);
@@ -472,6 +531,26 @@ export class MexcBroker {
     await this.clearMarker();
     return { leverage: draft.leverage };
   }
+  /** Runs inside submit, so the write lock, the marker check and the time budget all apply. */
+  private async sendStop(prepared: MexcStopPrepared, outOfTime: () => boolean): Promise<{ stopKind: MexcStopDraft["kind"] }> {
+    const { draft } = prepared;
+    if (draft.kind !== "STOP_CANCEL") await this.requireUsableKey(true, SUBMIT_READ_TIMEOUT);
+    const { plan } = await this.stopPlan(draft, SUBMIT_READ_TIMEOUT);
+    // The reviewed position and prices must still be what they were, or the user approved something else.
+    if (plan.direction !== prepared.direction || plan.holdVol !== prepared.holdVol || plan.vol !== prepared.vol ||
+        plan.existing?.takeProfitPrice !== prepared.existing?.takeProfitPrice || plan.existing?.stopLossPrice !== prepared.existing?.stopLossPrice)
+      throw reviewExpired();
+    const data = await this.write(mexcStopPath(draft.kind), encodeMexcStop(draft, plan),
+      { operation: "stop", symbol: draft.symbol, positionId: draft.positionId, stopKind: draft.kind, stopOrderId: draft.stopOrderId, takeProfitPrice: draft.takeProfitPrice, stopLossPrice: draft.stopLossPrice }, outOfTime,
+      // A refusal of this request must not read like a refused order.
+      code => (["apiKeyRejected", "ipRejected", "permissionRejected", "rateLimited", "regionRejected", "contractUnavailable", "positionMode", "marketClosed", "priceLimit", "priceTick", "quoteMissing",
+        "positionChanged", "insufficientPosition", "stopPriceMissing", "stopPriceInvalid", "stopChanged", "stopExists", "stopVolume"].includes(code) ? code : "stopRejected"),
+      STOP_REJECTIONS);
+    // An answer that cannot be matched to this request stays locked, as an order without an id does.
+    if (stopOutcome(draft, data) === "unknown") throw unknownOutcome();
+    await this.clearMarker();
+    return { stopKind: draft.kind };
+  }
   async cancel(accountID: unknown, orderID: unknown): Promise<void> {
     if (this.writeBusy) throw busy();
     this.assertAccount(accountID);
@@ -495,7 +574,7 @@ export class MexcBroker {
   }
 
   /** For the offline recovery script: what is locked, and what MEXC says about it, if it answered. */
-  async pendingOperation(): Promise<{ marker: Marker & { createdAt: number }; lookup: "found" | "notFound" | "failed"; order?: MexcOrder; position?: MexcPosition } | null> {
+  async pendingOperation(): Promise<{ marker: Marker & { createdAt: number }; lookup: "found" | "notFound" | "failed"; order?: MexcOrder; position?: MexcPosition; stopOrders?: MexcStopOrder[] } | null> {
     const stored = await this.vault.get(OPERATION_KEY);
     if (stored === null) return null;
     const marker = JSON.parse(stored);
@@ -505,6 +584,13 @@ export class MexcBroker {
         const positions = decodeMexcPositions(await this.read("/api/v1/private/position/open_positions", { symbol: marker.symbol }, true));
         const position = positions.find(row => row.id === marker.positionId);
         return position ? { marker, lookup: "found", position } : { marker, lookup: "notFound" };
+      } catch { return { marker, lookup: "failed" }; }
+    }
+    if (marker.operation === "stop") {
+      if (!validMexcSymbol(marker.symbol)) return { marker, lookup: "failed" };
+      try {
+        const stopOrders = (await this.readStopOrders(marker.symbol)).filter(row => row.positionId === marker.positionId);
+        return { marker, lookup: stopOrders.length ? "found" : "notFound", stopOrders };
       } catch { return { marker, lookup: "failed" }; }
     }
     let path: string | undefined;

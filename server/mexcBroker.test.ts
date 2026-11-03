@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { MexcBroker } from "./mexcBroker.ts";
-import type { MexcDraft, MexcLeverageDraft, MexcLeveragePrepared, MexcPrepared } from "../mobile/src/mexcRules.ts";
+import type { MexcDraft, MexcLeverageDraft, MexcLeveragePrepared, MexcPrepared, MexcStopDraft, MexcStopPrepared } from "../mobile/src/mexcRules.ts";
 import type { Vault } from "../mobile/src/types.ts";
 
 // Fictional credentials and data only. This suite never reaches a network.
@@ -27,12 +27,13 @@ class MemoryVault implements Vault {
   async remove(key: string) { if (this.failRemove) throw new Error("vault"); this.events.push("marker:remove"); this.values.delete(key); }
 }
 interface Call { url: string; init: RequestInit }
-function fixture(overrides: { keyCheck?: boolean; keyInfo?: unknown; keyStatus?: number; positions?: unknown[]; positionMode?: number; create?: () => Promise<Response> | Response; cancel?: () => Promise<Response> | Response; changeLeverage?: () => Promise<Response> | Response; detail?: unknown; state?: number } = {}) {
+function fixture(overrides: { keyCheck?: boolean; keyInfo?: unknown; keyStatus?: number; positions?: unknown[]; positionMode?: number; create?: () => Promise<Response> | Response; cancel?: () => Promise<Response> | Response; changeLeverage?: () => Promise<Response> | Response; stopWrite?: () => Promise<Response> | Response; stops?: unknown[]; marketDown?: boolean; detail?: unknown; state?: number } = {}) {
   const events: string[] = [], calls: Call[] = [];
   const vault = new MemoryVault(events);
   let now = NOW;
   const keyInfo = overrides.keyInfo ?? { status: "VALID", ipWhiteList: "<gateway-host>", permissions: "SPOT_ACCOUNT_READ,CONTRACT_ACCOUNT_READ,CONTRACT_DEAL_READ,CONTRACT_DEAL_WRITE", remainingValidity: -999 };
   const routes: [RegExp, () => Response | Promise<Response>][] = [
+    ...(overrides.marketDown ? [[/contract\/(ticker|detail)|position_mode/, () => new Response("down", { status: 500 })] as [RegExp, () => Response]] : []),
     [/\/api\/v3\/apiKeyInfo/, () => new Response(JSON.stringify(keyInfo), { status: overrides.keyStatus ?? 200 })],
     [/\/api\/v1\/contract\/detail\?symbol=/, () => new Response(ok(overrides.detail ?? { symbol: SYMBOL, displayNameEn: "QQQ_USDT PERPETUAL", baseCoin: "QQQSTOCK", settleCoin: "USDT", futureType: 1, state: 0, apiAllowed: true, contractSize: 0.01, priceUnit: 0.01, volUnit: 1, minVol: 1, maxVol: 28000, minLeverage: 1, maxLeverage: 100, positionOpenType: 3, takerFeeRate: 0.0002, makerFeeRate: 0 }))],
     [/\/api\/v1\/contract\/kline\//, () => new Response(ok({ time: [1, 2], open: [1, 2], high: [1, 2], low: [1, 2], close: [1, 2], vol: [1, 2] }))],
@@ -40,6 +41,8 @@ function fixture(overrides: { keyCheck?: boolean; keyInfo?: unknown; keyStatus?:
     [/position_mode/, () => new Response(ok(overrides.positionMode ?? 1))],
     [/open_positions/, () => new Response(ok(overrides.positions ?? [{ positionId: 1109973831, symbol: SYMBOL, positionType: 1, openType: 1, holdVol: 10, frozenVol: 0, holdAvgPrice: 690, leverage: 5 }]))],
     [/account\/asset\/USDT/, () => new Response(ok({ currency: "USDT", equity: 1000, availableBalance: 900, availableOpen: 900, positionMargin: 100, frozenBalance: 0, unrealized: 0 }))],
+    [/stoporder\/open_orders/, () => new Response(ok(overrides.stops ?? []))],
+    [/stoporder\/(place|change_plan_price|cancel)/, overrides.stopWrite ?? (() => new Response(ok(357859177)))],
     [/open_orders/, () => new Response(ok({ resultList: [] }))],
     [/position\/change_leverage/, overrides.changeLeverage ?? (() => new Response(JSON.stringify({ success: true, code: 0 })))],
     [/order\/create/, overrides.create ?? (() => new Response(ok({ orderId: ORDER_ID, ts: NOW })))],
@@ -51,6 +54,7 @@ function fixture(overrides: { keyCheck?: boolean; keyInfo?: unknown; keyStatus?:
     calls.push({ url, init });
     if (/order\/(create|cancel)/.test(url)) events.push("send:" + (url.includes("create") ? "create" : "cancel"));
     if (url.includes("change_leverage")) events.push("send:leverage");
+    if (/stoporder\/(place|change_plan_price|cancel)/.test(url)) events.push("send:stop");
     const route = routes.find(([pattern]) => pattern.test(url));
     if (!route) throw new Error("Unexpected request " + url);
     return route[1]();
@@ -863,4 +867,217 @@ test("a closed stock market refuses orders and cancels, and neither stays locked
   await code(cancel.broker.cancel("USDT", ORDER_ID), "cancelRejected");
   assert.deepEqual(cancel.events, ["marker:set", "send:cancel", "marker:remove"]);
   assert.equal((await cancel.broker.status()).unresolvedOperation, false);
+});
+
+const stopPlace: MexcStopDraft = { kind: "STOP_PLACE", symbol: SYMBOL, positionId: "1109973831", takeProfitPrice: "720", stopLossPrice: "680" };
+const stopWaiting = { id: 357859177, symbol: SYMBOL, positionId: 1109973831, positionType: 1, state: 1, isFinished: 0, takeProfitPrice: 720, stopLossPrice: 680, vol: 10 };
+const stopChange: MexcStopDraft = { ...stopPlace, kind: "STOP_CHANGE", stopOrderId: "357859177", takeProfitPrice: "730", stopLossPrice: "670" };
+const stopCancel: MexcStopDraft = { kind: "STOP_CANCEL", symbol: SYMBOL, positionId: "1109973831", stopOrderId: "357859177" };
+const stopReview = (context: ReturnType<typeof fixture>, draft = stopPlace) => context.broker.prepare("USDT", draft) as Promise<MexcStopPrepared>;
+
+test("setting a take-profit and stop-loss writes the marker first, sends once and clears it", async () => {
+  const context = fixture({ positions: [held] });
+  const review = await stopReview(context);
+  assert.equal(review.vol, "10");
+  assert.equal(review.direction, "LONG");
+  assert.equal(context.writes().length, 0, "a review sends nothing");
+  assert.deepEqual(await context.broker.submit(review), { stopKind: "STOP_PLACE" });
+  assert.deepEqual(context.events, ["marker:set", "send:stop", "marker:remove"]);
+  const call = context.writes()[0], body = call.init.body as string, headers = call.init.headers as Record<string, string>;
+  assert.match(call.url, /\/api\/v1\/private\/stoporder\/place$/);
+  assert.equal(body, '{"positionId":1109973831,"vol":10,"volType":2,"profitLossVolType":"SAME","takeProfitType":0,"stopLossType":0,"lossTrend":2,"profitTrend":2,"takeProfitReverse":2,"stopLossReverse":2,"takeProfitPrice":720,"stopLossPrice":680}');
+  assert.equal(headers.Signature, createHmac("sha256", SECRET).update(API_KEY + NOW + body).digest("hex"));
+  assert.equal((await context.broker.status()).unresolvedOperation, false);
+});
+
+test("changing and cancelling reach their own endpoints with the id they named", async () => {
+  const changing = fixture({ positions: [held], stops: [stopWaiting], stopWrite: () => new Response(JSON.stringify({ success: true, code: 0 })) });
+  const change = await stopReview(changing, stopChange);
+  assert.deepEqual(change.existing, { takeProfitPrice: 720, stopLossPrice: 680, vol: 10 });
+  assert.deepEqual(await changing.broker.submit(change), { stopKind: "STOP_CHANGE" });
+  assert.match(changing.writes()[0].url, /stoporder\/change_plan_price$/);
+  assert.equal(changing.writes()[0].init.body, '{"stopPlanOrderId":357859177,"lossTrend":2,"profitTrend":2,"takeProfitReverse":2,"stopLossReverse":2,"takeProfitPrice":730,"stopLossPrice":670}');
+  const cancelling = fixture({ positions: [held], stops: [stopWaiting], stopWrite: () => new Response(JSON.stringify({ success: true, code: 0 })) });
+  assert.deepEqual(await cancelling.broker.submit(await stopReview(cancelling, stopCancel)), { stopKind: "STOP_CANCEL" });
+  assert.match(cancelling.writes()[0].url, /stoporder\/cancel$/);
+  assert.equal(cancelling.writes()[0].init.body, '[{"stopPlanOrderId":357859177}]');
+});
+
+test("a stop review works once, only as the original object, and only for 60 seconds", async () => {
+  const context = fixture();
+  const review = await stopReview(context);
+  await code(context.broker.submit({ ...review }), "reviewExpired");
+  await code(context.broker.submit(review), "reviewExpired");
+  const again = await stopReview(context);
+  await context.broker.submit(again);
+  await code(context.broker.submit(again), "reviewExpired");
+  assert.equal(context.writes().length, 1);
+  const stale = fixture();
+  const old = await stopReview(stale);
+  stale.advance(60_001);
+  await code(stale.broker.submit(old), "reviewExpired");
+  assert.equal(stale.writes().length, 0);
+});
+
+test("a newer review of any kind replaces a stop review, and the other way round", async () => {
+  const context = fixture();
+  const stop = await stopReview(context);
+  const order = await prepared(context);
+  await code(context.broker.submit(stop), "reviewExpired");
+  const next = await stopReview(context);
+  await code(context.broker.submit(order), "reviewExpired");
+  await leverageReview(context);
+  await code(context.broker.submit(next), "reviewExpired");
+  assert.equal(context.writes().length, 0);
+});
+
+test("the server's rules stop a stop request before anything is written", async () => {
+  await code(stopReview(fixture(), { ...stopPlace, takeProfitPrice: "690" }), "stopPriceSide");
+  await code(stopReview(fixture({ positions: [] })), "positionChanged");
+  await code(stopReview(fixture({ positionMode: 2 })), "positionMode");
+  await code(stopReview(fixture({ stops: [stopWaiting] })), "stopExists");
+  await code(stopReview(fixture(), stopChange), "stopChanged");
+  await code(stopReview(fixture({ stops: [stopWaiting] }), { ...stopChange, stopLossPrice: undefined }), "stopSideRequired");
+  await code(stopReview(fixture(), { ...stopPlace, vol: "1" } as unknown as MexcStopDraft), "invalidDraft");
+  await code(fixture().broker.prepare("OTHER", stopPlace), "invalidAccount");
+});
+
+test("submit re-checks the position and the prices instead of trusting the stop review", async () => {
+  for (const change of [{ holdVol: 12 }, { positionType: 2 }]) {
+    const positions = [{ ...held }];
+    const context = fixture({ positions });
+    const review = await stopReview(context);
+    Object.assign(positions[0], change);
+    await assert.rejects(context.broker.submit(review));
+    assert.equal(context.writes().length, 0, JSON.stringify(change));
+    assert.equal(context.vault.values.has(MARKER), false);
+  }
+  const stops = [{ ...stopWaiting }];
+  const moved = fixture({ stops });
+  const review = await stopReview(moved, stopChange);
+  stops[0].stopLossPrice = 675;
+  await code(moved.broker.submit(review), "reviewExpired");
+  assert.equal(moved.writes().length, 0);
+  // It triggered in the meantime, so there is nothing left to change.
+  const triggered = [{ ...stopWaiting }];
+  const gone = fixture({ stops: triggered });
+  const late = await stopReview(gone, stopChange);
+  triggered[0].state = 3;
+  await code(gone.broker.submit(late), "stopChanged");
+  assert.equal(gone.writes().length, 0);
+});
+
+test("a proven refusal of a stop request unlocks and says what happened", async () => {
+  for (const [exchange, expected] of [[5001, "stopPriceMissing"], [5002, "stopChanged"], [5003, "stopPriceInvalid"], [5004, "stopVolume"], [5005, "stopExists"], [5006, "stopRejected"],
+    [2009, "positionChanged"], [9073, "marketClosed"], [1000, "stopRejected"]] as const) {
+    const context = fixture({ stopWrite: () => new Response(JSON.stringify({ success: false, code: exchange, message: "internal text" })) });
+    await code(context.broker.submit(await stopReview(context)), expected);
+    assert.equal(context.vault.values.has(MARKER), false, String(exchange));
+    assert.equal(context.writes().length, 1);
+  }
+});
+
+test("anything short of proof leaves a stop request locked, and orders with it", async () => {
+  const answers: (() => Response | Promise<Response>)[] = [
+    () => new Response(JSON.stringify({ success: false, code: 9999 })),
+    () => new Response("bad gateway", { status: 502 }),
+    () => new Response("<html>"),
+    () => new Response(JSON.stringify({ success: true, code: 1 })),
+    () => { throw new Error("connection lost"); },
+  ];
+  for (const answer of answers) {
+    const context = fixture({ stopWrite: answer });
+    await code(context.broker.submit(await stopReview(context)), "orderOutcomeUnknown");
+    assert.equal(context.writes().length, 1, "never sent twice");
+    assert.equal(JSON.parse(context.vault.values.get(MARKER)!).operation, "stop");
+    await code(prepared(context), "orderOutcomeUnknown");
+    await code(stopReview(context), "orderOutcomeUnknown");
+    await code(leverageReview(context), "orderOutcomeUnknown");
+    assert.equal(context.writes().length, 1);
+  }
+});
+
+test("an accepted answer only counts when it says what the request should", async () => {
+  for (const data of [357859177, "739113577038255616", { id: 1 }, [{ id: 1, errorCode: 0 }]]) {
+    const context = fixture({ stopWrite: () => new Response(ok(data)) });
+    assert.deepEqual(await context.broker.submit(await stopReview(context)), { stopKind: "STOP_PLACE" });
+    assert.equal(context.vault.values.has(MARKER), false);
+  }
+  for (const data of [null, [], {}, 0, [{ id: 1, errorCode: 5 }]]) {
+    const context = fixture({ stopWrite: () => new Response(ok(data)) });
+    await code(context.broker.submit(await stopReview(context)), "orderOutcomeUnknown");
+    assert.ok(context.vault.values.has(MARKER), JSON.stringify(data));
+    assert.equal(context.writes().length, 1);
+  }
+  const partly = fixture({ stops: [stopWaiting], stopWrite: () => new Response(ok([{ stopPlanOrderId: 357859177, errorCode: 2041 }])) });
+  await code(partly.broker.submit(await stopReview(partly, stopCancel)), "orderOutcomeUnknown");
+  assert.ok(partly.vault.values.has(MARKER));
+  const other = fixture({ stops: [stopWaiting], stopWrite: () => new Response(ok([{ stopPlanOrderId: 2, errorCode: 0 }])) });
+  await code(other.broker.submit(await stopReview(other, stopCancel)), "orderOutcomeUnknown");
+  assert.ok(other.vault.values.has(MARKER));
+});
+
+test("a market data outage cannot hold up cancelling, and does hold up setting", async () => {
+  const context = fixture({ marketDown: true, stops: [stopWaiting], stopWrite: () => new Response(JSON.stringify({ success: true, code: 0 })) });
+  const review = await stopReview(context, stopCancel);
+  assert.equal(review.displayName, SYMBOL);
+  assert.deepEqual(await context.broker.submit(review), { stopKind: "STOP_CANCEL" });
+  await assert.rejects(stopReview(fixture({ marketDown: true })));
+});
+
+test("a failed key lookup lets stops through as it does a close, and a bad key does not", async () => {
+  const lookup = fixture({ keyStatus: 500 });
+  assert.deepEqual(await lookup.broker.submit(await stopReview(lookup)), { stopKind: "STOP_PLACE" });
+  const moves = { status: "VALID", ipWhiteList: "<gateway-host>", permissions: "CONTRACT_DEAL_WRITE,SPOT_WITHDRAW", remainingValidity: -999 };
+  const bad = fixture({ keyInfo: moves, stops: [stopWaiting] });
+  await assert.rejects(stopReview(bad, stopChange));
+  assert.equal(bad.writes().length, 0);
+  // A cancel is never held back by the key.
+  const cancel = fixture({ keyInfo: moves, stops: [stopWaiting] });
+  assert.deepEqual(await cancel.broker.submit(await stopReview(cancel, stopCancel)), { stopKind: "STOP_CANCEL" });
+});
+
+test("reading stops needs a real symbol and returns only what is waiting", async () => {
+  const context = fixture({ stops: [stopWaiting, { ...stopWaiting, id: 2, state: 3 }] });
+  const rows = await context.broker.stopOrders(SYMBOL);
+  assert.deepEqual(rows.map(row => row.id), ["357859177"]);
+  assert.match(context.calls.at(-1)!.url, /stoporder\/open_orders\?symbol=QQQSTOCK_USDT$/);
+  assert.equal((await context.broker.stopOrders()).length, 1);
+  await code(context.broker.stopOrders("a/b"), "invalidSymbol");
+  assert.equal(context.writes().length, 0);
+});
+
+test("an opening order's take-profit and stop-loss reach the exchange in the order itself", async () => {
+  const context = fixture({ positions: [] });
+  const review = await prepared(context, { ...openDraft, takeProfitPrice: "720", stopLossPrice: "680" });
+  assert.equal(review.draft.takeProfitPrice, "720");
+  await context.broker.submit(review);
+  const body = JSON.parse(context.writes()[0].init.body as string);
+  assert.equal(body.takeProfitPrice, 720);
+  assert.equal(body.profitTrend, 2);
+  assert.equal(body.stopLossPrice, 680);
+  assert.equal(body.lossTrend, 2);
+  await code(prepared(fixture({ positions: [] }), { ...openDraft, takeProfitPrice: "690" }), "stopPriceSide");
+  // MEXC's wording does not prove the order was not created, so this stays locked.
+  const refused = fixture({ positions: [], create: () => new Response(JSON.stringify({ success: false, code: 5003 })) });
+  await code(refused.broker.submit(await prepared(refused, { ...openDraft, stopLossPrice: "680" })), "orderOutcomeUnknown");
+  assert.ok(refused.vault.values.has(MARKER));
+  // Nothing is sent when a position already held would make MEXC refuse it that way.
+  const onHeld = fixture({ positions: [held] });
+  await code(prepared(onHeld, { ...openDraft, stopLossPrice: "680" }), "stopOnHeldPosition");
+  assert.equal(onHeld.writes().length, 0);
+});
+
+test("the recovery lookup reports what is waiting and never clears the lock", async () => {
+  const stops = [{ ...stopWaiting }];
+  const context = fixture({ stops, stopWrite: () => { throw new Error("connection lost"); } });
+  await code(context.broker.submit(await stopReview(context, stopChange)), "orderOutcomeUnknown");
+  const found = await context.broker.pendingOperation();
+  assert.equal(found?.lookup, "found");
+  assert.equal(found?.marker.stopKind, "STOP_CHANGE");
+  assert.equal(found?.marker.takeProfitPrice, "730");
+  assert.equal(found?.stopOrders?.[0].takeProfitPrice, 720);
+  stops.length = 0;
+  assert.equal((await context.broker.pendingOperation())?.lookup, "notFound");
+  assert.ok(context.vault.values.has(MARKER));
 });

@@ -73,6 +73,18 @@ test('a locked leverage change is described without claiming it failed, and stay
   assert.notEqual(await new EncryptedVault(data, key).get(markerKey), null);
 });
 
+test('a locked stop request is described without claiming it failed, and stays locked', async t => {
+  const { key, data, config } = await workspace(t);
+  // A symbol that cannot be looked up stops before any request, so this stays offline.
+  await new EncryptedVault(data, key).set(markerKey, JSON.stringify({ pending: true, version: 1, createdAt: 1, operation: 'stop', symbol: 'a/b', positionId: '1', stopKind: 'STOP_CHANGE', stopOrderId: '7', stopLossPrice: '680' }));
+  const result = await execute(process.execPath, [script('mexcReconcile.mjs'), config]);
+  assert.match(result.stdout, /Locked stop on a\/b/);
+  assert.match(result.stdout, /STOP_CHANGE of 7 with take-profit none and stop-loss 680/);
+  assert.match(result.stdout, /tells you nothing about the position/);
+  assert.match(result.stdout, /does not prove the request never landed/);
+  assert.notEqual(await new EncryptedVault(data, key).get(markerKey), null);
+});
+
 test('init creates private files, unique device tokens and never overwrites', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'ths-mexc-init-test-'));
   t.after(() => rm(directory, { recursive: true, force: true }));

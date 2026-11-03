@@ -20,7 +20,8 @@ const memory = (): Vault & { data: Map<string, string> } => {
 const contractRow = { symbol: SYMBOL, displayNameEn: "QQQ_USDT PERPETUAL", baseCoin: "QQQSTOCK", settleCoin: "USDT", futureType: 1, state: 0, apiAllowed: true, contractSize: 0.01, priceUnit: 0.01, volUnit: 1, minVol: 1, maxVol: 28000, minLeverage: 1, maxLeverage: 100, positionOpenType: 3, takerFeeRate: 0.0002, makerFeeRate: 0 };
 
 async function setup(t: { after: (work: () => void) => void }, create: () => Response | Promise<Response> = () => ok({ orderId: ORDER_ID, ts: 1 }),
-  positions: unknown[] = [], changeLeverage: () => Response | Promise<Response> = () => new Response(JSON.stringify({ success: true, code: 0 }))) {
+  positions: unknown[] = [], changeLeverage: () => Response | Promise<Response> = () => new Response(JSON.stringify({ success: true, code: 0 })),
+  stops: unknown[] = [], stopWrite: () => Response | Promise<Response> = () => ok(357859177)) {
   const exchange: string[] = [];
   const exchangeFetch = async (url: string, init: RequestInit) => {
     if (init.method === "POST") exchange.push(url);
@@ -28,8 +29,10 @@ async function setup(t: { after: (work: () => void) => void }, create: () => Res
     if (url.includes("/contract/detail?symbol=")) return ok(contractRow);
     if (url.endsWith("/contract/detail")) return ok([contractRow, { ...contractRow, symbol: "HIDDEN_USDT", apiAllowed: false }, { broken: true }]);
     if (url.includes("/contract/kline/")) return ok({ time: [1, 2, 3], open: [1, 2, 3], high: [1, 2, 3], low: [1, 2, 3], close: [1, 2, 3], vol: [1, 2, 3] });
-    if (url.includes("/contract/ticker")) return ok({ symbol: SYMBOL, lastPrice: 700, bid1: 699.9, ask1: 700.1, timestamp: Date.now() });
+    if (url.includes("/contract/ticker")) return ok({ symbol: SYMBOL, lastPrice: 700, bid1: 699.9, ask1: 700.1, fairPrice: 700, timestamp: Date.now() });
     if (url.includes("position_mode")) return ok(1);
+    if (url.includes("stoporder/open_orders")) return ok(stops);
+    if (url.includes("stoporder/")) return stopWrite();
     if (url.includes("open_positions")) return ok(positions);
     if (url.includes("change_leverage")) return changeLeverage();
     if (url.includes("account/asset/USDT")) return ok({ currency: "USDT", equity: 1000, availableBalance: 900, availableOpen: 900, positionMargin: 0, frozenBalance: 0, unrealized: 0 });
@@ -39,6 +42,7 @@ async function setup(t: { after: (work: () => void) => void }, create: () => Res
   const broker = new MexcBroker(memory(), { apiKey: "fictional", apiSecret: "fictional", limits: { maxLeverage: 5, maxOrderNotional: 1000, marketProtection: 0.01 }, fetch: exchangeFetch });
   const server = createGateway({ broker, devices: [{ id: "phone-a", token: TOKEN }, { id: "phone-b", token: OTHER }], extraReads: {
     contracts: () => broker.contracts(), limits: () => broker.limits, live: (...args: unknown[]) => (broker.live as (...a: unknown[]) => unknown)(...args), closedOrders: (...args: unknown[]) => (broker.closedOrders as (...a: unknown[]) => unknown)(...args),
+    stopOrders: (...args: unknown[]) => (broker.stopOrders as (...a: unknown[]) => unknown)(...args),
   } });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -290,4 +294,46 @@ test("a lost reply to a leverage change locks both the device and the server", a
   await code(app.reviewLeverage(leverage), "orderOutcomeUnknown");
   await code(app.review(draft), "orderOutcomeUnknown");
   assert.equal(exchange.length, 1);
+});
+
+const stop = { kind: "STOP_PLACE" as const, symbol: SYMBOL, positionId: "1109973831", takeProfitPrice: "600", stopLossPrice: "800" };
+
+test("a stop request goes from the app through the gateway to the exchange exactly once", async t => {
+  const { client, exchange } = await setup(t, undefined, [heldPosition]);
+  const { app, vault } = await client(TOKEN);
+  const review = await app.reviewStop(stop);
+  assert.equal(review.direction, "SHORT");
+  assert.equal(review.vol, "10");
+  assert.equal(exchange.length, 0);
+  assert.deepEqual(await app.changeStop(review), { stopKind: "STOP_PLACE" });
+  assert.equal(exchange.length, 1);
+  assert.ok(exchange[0].endsWith("/api/v1/private/stoporder/place"));
+  await code(app.changeStop(review), "reviewExpired");
+  assert.equal(exchange.length, 1);
+  assert.equal(await vault.get("mexc.ths.server.operation.v1"), null);
+});
+
+test("another device cannot use a stop review, and a lost reply locks both sides", async t => {
+  const { client, exchange, broker } = await setup(t, undefined, [heldPosition], undefined, [], () => { throw new Error("connection lost"); });
+  const { app } = await client(TOKEN);
+  const { app: other } = await client(OTHER);
+  const review = await app.reviewStop(stop);
+  await code(other.changeStop(review), "reviewExpired");
+  assert.equal(exchange.length, 0);
+  const again = await app.reviewStop(stop);
+  await code(app.changeStop(again), "orderOutcomeUnknown");
+  assert.equal(exchange.length, 1);
+  assert.equal((await broker.status()).unresolvedOperation, true);
+  await code(app.reviewStop(stop), "orderOutcomeUnknown");
+  await code(app.review(draft), "orderOutcomeUnknown");
+  assert.equal(exchange.length, 1);
+});
+
+test("the waiting list reaches the app through the gateway", async t => {
+  const { client } = await setup(t, undefined, [heldPosition], undefined, [{ id: 7, symbol: SYMBOL, positionId: 1109973831, positionType: 2, state: 1, stopLossPrice: 800, vol: 10 }]);
+  const { app } = await client(TOKEN);
+  const rows = await app.stopOrders(SYMBOL);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].stopLossPrice, 800);
+  assert.equal((await app.stopOrders()).length, 1);
 });

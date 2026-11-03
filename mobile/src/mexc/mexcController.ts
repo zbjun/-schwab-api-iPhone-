@@ -1,5 +1,5 @@
 import type { MexcApi, MexcStatus } from "../MexcClient.ts";
-import type { MexcAccount, MexcContract, MexcLeveragePrepared, MexcLimits, MexcOrder, MexcPrepared } from "../mexcRules.ts";
+import type { MexcAccount, MexcContract, MexcLeveragePrepared, MexcLimits, MexcOrder, MexcPrepared, MexcStopPrepared } from "../mexcRules.ts";
 import { orderEntryBlocked, tradingLocked } from "./mexcView.ts";
 
 export const errorText = (error: unknown) => (error instanceof Error && error.message ? error.message : "操作失败，请稍后重试。");
@@ -133,7 +133,9 @@ export class MexcController {
     this.set({ sending: true });
     try {
       const result = await this.api.place(prepared);
-      this.set({ message: `${this.api.isDemo ? "演示" : ""}委托已提交，编号 ${result.orderID}。` });
+      // MEXC's answer says nothing about what the order carries, so the position is the proof.
+      const carried = prepared.draft.takeProfitPrice !== undefined || prepared.draft.stopLossPrice !== undefined;
+      this.set({ message: `${this.api.isDemo ? "演示" : ""}委托已提交，编号 ${result.orderID}。${carried ? "成交后请确认持仓上显示了止盈止损。" : ""}` });
       void this.refreshAfter();
       return { orderID: result.orderID };
     } catch (error) {
@@ -158,6 +160,29 @@ export class MexcController {
       this.set({ message: `${this.api.isDemo ? "演示持仓" : "MEXC 已接受，"}杠杆改为 ${result.leverage}x，请以持仓显示为准。` });
       void this.refreshAfter();
       return { leverage: result.leverage };
+    } catch (error) {
+      this.noteError(error);
+      void this.refreshAfter();
+      return { error: errorText(error), ...(isUnknown(error) ? { unknown: true } : {}) };
+    } finally {
+      this.set({ sending: false });
+    }
+  }
+
+  /** Sets, changes or cancels one take-profit and stop-loss after its own review, under the same rules as an order. */
+  async changeStop(prepared: MexcStopPrepared): Promise<{ done?: boolean; error?: string; unknown?: boolean }> {
+    if (this.snapshot.sending) return { error: "上一笔操作还在发送中。" };
+    if (this.locked) return { error: "交易已锁定，不能修改止盈止损。" };
+    // A failed key lookup lets this through as it does a close. Cancelling is never closed.
+    if (prepared.draft.kind !== "STOP_CANCEL" && orderEntryBlocked(this.snapshot.status?.tradingBlocked, "CLOSE_LONG")) return { error: "服务器已关闭下单。" };
+    this.set({ sending: true });
+    try {
+      await this.api.changeStop(prepared);
+      const verb = prepared.draft.kind === "STOP_CANCEL" ? "已取消" : prepared.draft.kind === "STOP_CHANGE" ? "已修改" : "已设置";
+      // MEXC's answer only says it accepted; the list shown after this refresh is the proof.
+      this.set({ message: `${this.api.isDemo ? "演示" : "MEXC 已接受，"}止盈止损${verb}，请以持仓显示为准。` });
+      void this.refreshAfter();
+      return { done: true };
     } catch (error) {
       this.noteError(error);
       void this.refreshAfter();

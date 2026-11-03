@@ -36,6 +36,8 @@ function OrderRow({ order, palette: p, unit, action, first }: { order: MexcOrder
       </View>
       <Text style={{ color: p.secondary, fontSize: 11 }}>
         {`${openTypeLabel(order.openType)}${order.leverage ? " " + order.leverage + "x" : ""}`}
+        {order.takeProfitPrice !== undefined ? ` · 止盈 ${priceText(order.takeProfitPrice, unit)}` : ""}
+        {order.stopLossPrice !== undefined ? ` · 止损 ${priceText(order.stopLossPrice, unit)}` : ""}
         {order.dealAvgPrice !== undefined && order.dealVol > 0
           ? ` · 成交均价 ${priceText(order.dealAvgPrice, unit)}${order.profit !== undefined ? ` · 盈亏 ${signed(order.profit)}` : ""}${order.fee ? ` · 手续费 ${money(order.fee, 4)}` : ""}`
           : ""}

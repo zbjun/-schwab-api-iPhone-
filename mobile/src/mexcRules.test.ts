@@ -5,8 +5,9 @@ import {
   decodeMexcPositions, encodeMexcCancel, encodeMexcOrder, freezeMexcDraft, isMultipleOf, mexcClosable, mexcHistoryRequest, mexcKeyProblem, mexcLiveRequest,
   parseLossless, planMexcOrder, plainNumber, toTick, validateMexcDraft, validateMexcLimits,
   LEVERAGE_REJECTIONS, encodeMexcLeverage, freezeMexcLeverageDraft, isLeverageDraft, planMexcLeverage, validateMexcLeverageDraft,
+  STOP_REJECTIONS, decodeMexcStopOrders, encodeMexcStop, freezeMexcStopDraft, isStopDraft, mexcStopPath, orderStopReferences, planMexcStop, planMexcStopCancel, stopOutcome, validateMexcStopDraft,
 } from "./mexcRules.ts";
-import type { MexcContract, MexcDraft, MexcLeverageContext, MexcLeverageDraft, MexcOrderContext, MexcPosition, MexcTicker } from "./mexcRules.ts";
+import type { MexcContract, MexcDraft, MexcLeverageContext, MexcLeverageDraft, MexcOrderContext, MexcPosition, MexcStopContext, MexcStopDraft, MexcStopOrder, MexcTicker } from "./mexcRules.ts";
 
 const NOW = 1_800_000_000_000;
 const contract: MexcContract = {
@@ -219,6 +220,8 @@ test("the list of codes that may unlock trading only changes on purpose", () => 
   // Only a leverage change may be unlocked by these. Each says in MEXC's documentation that it was refused.
   assert.deepEqual(Object.keys(LEVERAGE_REJECTIONS).map(Number).filter(key => !Object.hasOwn(DEFINITE_REJECTIONS, key)).sort((a, b) => a - b),
     [2019, 2026, 2038, 2044, 8815, 8816, 8818, 8819, 8821, 8931]);
+  assert.deepEqual(Object.keys(STOP_REJECTIONS).map(Number).filter(key => !Object.hasOwn(DEFINITE_REJECTIONS, key)).sort((a, b) => a - b),
+    [5001, 5002, 5003, 5004, 5005, 5006]);
   for (const ambiguous of [0, 500, 501, 603, 604, 801, 2042, 6008, 9999]) assert.equal(Object.hasOwn(DEFINITE_REJECTIONS, ambiguous), false, String(ambiguous));
 });
 
@@ -360,4 +363,216 @@ test("refusals only a leverage change can get unlock only a leverage change", ()
   assert.deepEqual(classifyMexcResponse(502, "bad gateway", LEVERAGE_REJECTIONS), { kind: "unknown" });
   // A closed stock market is a documented refusal: nothing can open or close.
   assert.equal(DEFINITE_REJECTIONS[9073], "marketClosed");
+});
+
+const place: MexcStopDraft = { kind: "STOP_PLACE", symbol: "QQQSTOCK_USDT", positionId: "1109973831", takeProfitPrice: "720", stopLossPrice: "680" };
+const waiting: MexcStopOrder = { id: "357859177", symbol: "QQQSTOCK_USDT", positionId: "1109973831", direction: "LONG", takeProfitPrice: 720, stopLossPrice: 680, vol: 8 };
+const stopContext = (overrides: Partial<MexcStopContext> = {}): MexcStopContext => ({
+  draft: place, contract, ticker, positions: [long], stopOrders: [], positionMode: 1, now: NOW, ...overrides,
+});
+
+test("setting a take-profit and stop-loss covers what can be closed and names the position as found", () => {
+  const plan = planMexcStop(stopContext());
+  assert.equal(plan.direction, "LONG");
+  assert.equal(plan.holdVol, 10);
+  assert.equal(plan.vol, "8", "held minus what resting closes already reserve");
+  assert.equal(plan.existing, undefined);
+  assert.ok(Math.abs(plan.atTakeProfit! - (720 - 690) * 8 * contract.contractSize) < 1e-9);
+  assert.ok(Math.abs(plan.atStopLoss! - (680 - 690) * 8 * contract.contractSize) < 1e-9);
+});
+
+test("each price must be on its own side of the fair price, for either direction", () => {
+  const draft = (takeProfitPrice?: string, stopLossPrice?: string): MexcStopDraft => ({ ...place, takeProfitPrice, stopLossPrice });
+  const short: MexcPosition = { ...long, direction: "SHORT" };
+  planMexcStop(stopContext({ draft: draft("701", undefined) }));
+  planMexcStop(stopContext({ draft: draft(undefined, "699") }));
+  for (const bad of [draft("700", undefined), draft("699", undefined), draft(undefined, "700"), draft(undefined, "701")])
+    code(() => planMexcStop(stopContext({ draft: bad })), "stopPriceSide");
+  planMexcStop(stopContext({ draft: draft("699", "701"), positions: [short] }));
+  for (const bad of [draft("701", undefined), draft(undefined, "699")])
+    code(() => planMexcStop(stopContext({ draft: bad, positions: [short] })), "stopPriceSide");
+  code(() => planMexcStop(stopContext({ draft: draft("720.001", undefined) })), "priceTick");
+});
+
+test("setting stops on every rule before anything could be sent", () => {
+  code(() => planMexcStop(stopContext({ positions: [] })), "positionChanged");
+  code(() => planMexcStop(stopContext({ positions: [{ ...long, id: "1" }] })), "positionChanged");
+  code(() => planMexcStop(stopContext({ positions: [{ ...long, holdVol: 0, frozenVol: 0 }] })), "positionChanged");
+  code(() => planMexcStop(stopContext({ positionMode: 2 })), "positionMode");
+  code(() => planMexcStop(stopContext({ contract: { ...contract, state: 1 } })), "contractUnavailable");
+  code(() => planMexcStop(stopContext({ now: NOW + 120_000 })), "quoteStale");
+  code(() => planMexcStop(stopContext({ ticker: { ...ticker, fairPrice: undefined } })), "quoteMissing");
+  code(() => planMexcStop(stopContext({ stopOrders: [waiting] })), "stopExists");
+  code(() => planMexcStop(stopContext({ positions: [{ ...long, frozenVol: 10 }] })), "insufficientPosition");
+  assert.throws(() => planMexcStop(stopContext({ contract: { ...contract, symbol: "OTHER_USDT" } })));
+});
+
+test("a change needs the one it names, keeps its size and cannot silently drop a price", () => {
+  const change: MexcStopDraft = { ...place, kind: "STOP_CHANGE", stopOrderId: waiting.id, takeProfitPrice: "730", stopLossPrice: "670" };
+  const plan = planMexcStop(stopContext({ draft: change, stopOrders: [waiting] }));
+  assert.equal(plan.vol, "8");
+  assert.deepEqual(plan.existing, { takeProfitPrice: 720, stopLossPrice: 680, vol: 8 });
+  code(() => planMexcStop(stopContext({ draft: change, stopOrders: [] })), "stopChanged");
+  code(() => planMexcStop(stopContext({ draft: change, stopOrders: [{ ...waiting, positionId: "2" }] })), "stopChanged");
+  code(() => planMexcStop(stopContext({ draft: { ...change, stopLossPrice: undefined }, stopOrders: [waiting] })), "stopSideRequired");
+  code(() => planMexcStop(stopContext({ draft: { ...change, takeProfitPrice: undefined }, stopOrders: [waiting] })), "stopSideRequired");
+  // A side it never had may be added.
+  planMexcStop(stopContext({ draft: change, stopOrders: [{ ...waiting, stopLossPrice: undefined }] }));
+});
+
+test("cancelling takes no quote or contract at all, only what it names", () => {
+  const cancel: MexcStopDraft = { kind: "STOP_CANCEL", symbol: place.symbol, positionId: place.positionId, stopOrderId: waiting.id };
+  const plan = planMexcStopCancel(cancel, [long], [waiting]);
+  assert.equal(plan.vol, "8");
+  assert.equal(plan.fairPrice, undefined);
+  assert.deepEqual(plan.existing, { takeProfitPrice: 720, stopLossPrice: 680, vol: 8 });
+  code(() => planMexcStopCancel(cancel, [long], []), "stopChanged");
+  code(() => planMexcStopCancel(cancel, [], [waiting]), "positionChanged");
+  // Each draft keeps to its own plan.
+  code(() => planMexcStopCancel(place, [long], []), "invalidDraft");
+  code(() => planMexcStop(stopContext({ draft: cancel, stopOrders: [waiting] })), "invalidDraft");
+});
+
+test("an accepted answer must say what the request should", () => {
+  const set = { kind: "STOP_PLACE" as const };
+  for (const data of [357859177, "739113577038255616", { id: 1 }, { orderId: "739113577038255616" }, { stopPlanOrderId: 5 }, [{ id: 1, errorCode: 0 }], [{ id: 1, errorCode: null }], [357859177]])
+    assert.equal(stopOutcome(set, data), "done", JSON.stringify(data));
+  for (const data of [undefined, null, false, true, [], {}, [{}], { id: "1,2" }, 1.5, -1, 0, "0", { id: 0 }, [{ id: 1, errorCode: 5 }], [{ id: 1 }, { errorCode: 2 }]])
+    assert.equal(stopOutcome(set, data), "unknown", JSON.stringify(data));
+  for (const kind of ["STOP_CHANGE", "STOP_CANCEL"] as const) {
+    const named = { kind, stopOrderId: "7" };
+    for (const data of [undefined, null, true, [], [{ errorCode: 0 }], [{ stopPlanOrderId: 7, errorCode: 0 }], [{ stopPlanOrderId: "7" }]]) assert.equal(stopOutcome(named, data), "done", JSON.stringify(data));
+    for (const data of [false, [{ stopPlanOrderId: 7, errorCode: 2041 }], { errorCode: 1 }, [{ stopPlanOrderId: 8, errorCode: 0 }]]) assert.equal(stopOutcome(named, data), "unknown", JSON.stringify(data));
+  }
+});
+
+test("a stop draft is strict and is never an order", () => {
+  validateMexcStopDraft(place);
+  assert.equal(isStopDraft(place), true);
+  for (const other of [openDraft, null, { kind: "LIMIT" }, { kind: "LEVERAGE" }]) assert.equal(isStopDraft(other), false);
+  const row = place as unknown as Record<string, unknown>;
+  code(() => validateMexcStopDraft({ ...row, vol: "1" } as unknown as MexcStopDraft), "invalidDraft");
+  code(() => validateMexcStopDraft({ ...place, stopOrderId: "1" }), "invalidDraft");
+  code(() => validateMexcStopDraft({ ...place, kind: "STOP_CHANGE" }), "invalidDraft");
+  code(() => validateMexcStopDraft({ ...place, kind: "STOP_CHANGE", stopOrderId: "1,2" }), "invalidDraft");
+  code(() => validateMexcStopDraft({ kind: "STOP_CANCEL", symbol: place.symbol, positionId: place.positionId, stopOrderId: "1", stopLossPrice: "1" }), "invalidDraft");
+  code(() => validateMexcStopDraft({ kind: "STOP_PLACE", symbol: place.symbol, positionId: place.positionId }), "stopPriceMissing");
+  code(() => validateMexcStopDraft({ ...place, symbol: "a/b" }), "invalidSymbol");
+  code(() => validateMexcStopDraft({ ...place, positionId: "12x" }), "positionChanged");
+  for (const bad of ["0", "-1", "abc", "", "1e5"]) code(() => validateMexcStopDraft({ ...place, stopLossPrice: bad }), "stopPriceInvalid");
+  assert.ok(Object.isFrozen(freezeMexcStopDraft(place)));
+  assert.equal(freezeMexcStopDraft({ ...place, stopLossPrice: "680.50" }).stopLossPrice, "680.5");
+  code(() => validateMexcDraft(place as unknown as MexcDraft), "invalidDraft");
+});
+
+test("stop requests carry exact values, a market exit and no reverse", () => {
+  const plan = planMexcStop(stopContext());
+  assert.equal(encodeMexcStop(place, plan),
+    '{"positionId":1109973831,"vol":8,"volType":2,"profitLossVolType":"SAME","takeProfitType":0,"stopLossType":0,"lossTrend":2,"profitTrend":2,"takeProfitReverse":2,"stopLossReverse":2,"takeProfitPrice":720,"stopLossPrice":680}');
+  const change: MexcStopDraft = { ...place, kind: "STOP_CHANGE", stopOrderId: "739113577038255616" };
+  assert.equal(encodeMexcStop(change, plan), '{"stopPlanOrderId":739113577038255616,"lossTrend":2,"profitTrend":2,"takeProfitReverse":2,"stopLossReverse":2,"takeProfitPrice":720,"stopLossPrice":680}');
+  const cancel: MexcStopDraft = { kind: "STOP_CANCEL", symbol: place.symbol, positionId: place.positionId, stopOrderId: "739113577038255616" };
+  assert.equal(encodeMexcStop(cancel, plan), '[{"stopPlanOrderId":739113577038255616}]');
+  assert.equal(encodeMexcStop({ ...place, stopLossPrice: undefined }, plan).includes("stopLossPrice"), false);
+  assert.throws(() => encodeMexcStop({ ...place, positionId: '1,"vol":999' }, plan));
+  assert.throws(() => encodeMexcStop({ ...cancel, stopOrderId: '1},{"stopPlanOrderId":2' }, plan));
+  assert.equal(mexcStopPath("STOP_PLACE"), "/api/v1/private/stoporder/place");
+  assert.equal(mexcStopPath("STOP_CHANGE"), "/api/v1/private/stoporder/change_plan_price");
+  assert.equal(mexcStopPath("STOP_CANCEL"), "/api/v1/private/stoporder/cancel");
+});
+
+test("only what is still waiting comes back from the list", () => {
+  const row = { id: 357859177, symbol: "QQQSTOCK_USDT", positionId: "1109973831", positionType: 1, state: 1, isFinished: 0, stopLossPrice: 680, takeProfitPrice: 0, vol: 8 };
+  assert.deepEqual(decodeMexcStopOrders([row]), [{ id: "357859177", symbol: "QQQSTOCK_USDT", positionId: "1109973831", direction: "LONG", takeProfitPrice: undefined, stopLossPrice: 680, vol: 8 }]);
+  for (const finished of [{ ...row, state: 3 }, { ...row, state: 2 }, { ...row, isFinished: 1 }]) assert.deepEqual(decodeMexcStopOrders([finished]), []);
+  assert.deepEqual(decodeMexcStopOrders(null), []);
+  assert.deepEqual(decodeMexcStopOrders({ resultList: [row] }).length, 1);
+  assert.throws(() => decodeMexcStopOrders([{ ...row, positionType: 3 }]));
+  assert.throws(() => decodeMexcStopOrders([{ ...row, id: "1,2" }]));
+  assert.throws(() => decodeMexcStopOrders("no"));
+});
+
+test("an opening order can carry a take-profit and stop-loss, and a close cannot", () => {
+  const draft: MexcDraft = { ...openDraft, takeProfitPrice: "720", stopLossPrice: "680" };
+  validateMexcDraft(draft);
+  const frozen = freezeMexcDraft(draft);
+  assert.equal(frozen.takeProfitPrice, "720");
+  const plan = planMexcOrder(context({ draft: frozen, positions: [] }));
+  const body = JSON.parse(encodeMexcOrder(frozen, plan, "ths0123456789abcdef"));
+  assert.equal(body.takeProfitPrice, 720);
+  assert.equal(body.profitTrend, 2);
+  assert.equal(body.stopLossPrice, 680);
+  assert.equal(body.lossTrend, 2);
+  const plain = JSON.parse(encodeMexcOrder(openDraft, planMexcOrder(context()), "ths0123456789abcdef"));
+  for (const field of ["takeProfitPrice", "stopLossPrice", "profitTrend", "lossTrend"]) assert.equal(Object.hasOwn(plain, field), false);
+  code(() => validateMexcDraft({ symbol: draft.symbol, action: "CLOSE_LONG", kind: "MARKET", vol: "1", stopLossPrice: "680" }), "invalidDraft");
+  for (const bad of ["0", "-1", "x"]) code(() => validateMexcDraft({ ...openDraft, stopLossPrice: bad }), "stopPriceInvalid");
+});
+
+test("what an order carries is measured from where it should fill", () => {
+  const limit = (takeProfitPrice?: string, stopLossPrice?: string) => context({ draft: { ...openDraft, takeProfitPrice, stopLossPrice }, positions: [] });
+  planMexcOrder(limit("701", "699"));
+  for (const bad of [limit("700", undefined), limit(undefined, "700"), limit("699", undefined), limit(undefined, "701")])
+    code(() => planMexcOrder(bad), "stopPriceSide");
+  code(() => planMexcOrder(limit("720.001", undefined)), "priceTick");
+  // A market buy's order price is only its protection limit, one percent up: a take-profit below that is still fine.
+  const market: MexcDraft = { symbol: openDraft.symbol, action: "OPEN_LONG", kind: "MARKET", vol: "10", leverage: 5, takeProfitPrice: "703" };
+  planMexcOrder(context({ draft: market, positions: [] }));
+  code(() => planMexcOrder(context({ draft: { ...market, takeProfitPrice: "700" }, positions: [] })), "stopPriceSide");
+  const short: MexcDraft = { ...openDraft, action: "OPEN_SHORT", takeProfitPrice: "680", stopLossPrice: "720" };
+  planMexcOrder(context({ draft: short, positions: [] }));
+  code(() => planMexcOrder(context({ draft: { ...short, takeProfitPrice: "720", stopLossPrice: "680" }, positions: [] })), "stopPriceSide");
+});
+
+test("a stop-loss must clear the worst place an order could fill, and the fair price it watches", () => {
+  const order = (rest: Partial<MexcDraft>, tick: Partial<MexcTicker> = {}) => context({ draft: { ...openDraft, ...rest }, positions: [], ticker: { ...ticker, ...tick } });
+  // These fill near the quote, past a stop measured only from the limit.
+  code(() => planMexcOrder(order({ price: "800", stopLossPrice: "750" })), "stopPriceSide");
+  code(() => planMexcOrder(order({ action: "OPEN_SHORT", price: "600", stopLossPrice: "650" })), "stopPriceSide");
+  planMexcOrder(order({ price: "800", stopLossPrice: "699" }));
+  planMexcOrder(order({ action: "OPEN_SHORT", price: "600", stopLossPrice: "701" }));
+  // Waiting below the market for a dip is fine: only the limit counts for a take-profit.
+  planMexcOrder(order({ price: "650", takeProfitPrice: "690", stopLossPrice: "640" }));
+  // A market order's stops watch the fair price, so they must clear that as well.
+  const market = { kind: "MARKET" as const, price: undefined };
+  code(() => planMexcOrder(order({ ...market, stopLossPrice: "699.5" }, { fairPrice: 699 })), "stopPriceSide");
+  planMexcOrder(order({ ...market, stopLossPrice: "698.5" }, { fairPrice: 699 }));
+  code(() => planMexcOrder(order({ ...market, action: "OPEN_SHORT", stopLossPrice: "700.5" }, { fairPrice: 701 })), "stopPriceSide");
+  code(() => planMexcOrder(order({ ...market, takeProfitPrice: "700.5" }, { fairPrice: 701 })), "stopPriceSide");
+  // A limit that crosses the book fills at once, so it must clear the fair price too. One still waiting is not held to that.
+  assert.deepEqual(orderStopReferences("LIMIT", "LONG", 110, 100, 98), { takeProfit: 110, stopLoss: 98 });
+  assert.deepEqual(orderStopReferences("LIMIT", "SHORT", 90, 100, 102), { takeProfit: 90, stopLoss: 102 });
+  assert.deepEqual(orderStopReferences("LIMIT", "LONG", 90, 100, 80), { takeProfit: 90, stopLoss: 90 });
+  assert.deepEqual(orderStopReferences("LIMIT", "SHORT", 110, 100, 120), { takeProfit: 110, stopLoss: 110 });
+  code(() => planMexcOrder(order({ price: "800", stopLossPrice: "699.5" }, { fairPrice: 699 })), "stopPriceSide");
+  planMexcOrder(order({ price: "650", stopLossPrice: "640" }, { fairPrice: 630 }));
+  assert.deepEqual(orderStopReferences("MARKET", "LONG", undefined, 100, 99), { takeProfit: 100, stopLoss: 99 });
+  assert.deepEqual(orderStopReferences("MARKET", "SHORT", undefined, 100, 99), { takeProfit: 99, stopLoss: 100 });
+  // A blank limit or a missing quote judges nothing rather than the wrong thing.
+  assert.deepEqual(orderStopReferences("LIMIT", "LONG", 0, undefined, undefined), { takeProfit: undefined, stopLoss: undefined });
+});
+
+test("an order cannot carry a take-profit or stop-loss onto a position already held", () => {
+  code(() => planMexcOrder(context({ draft: { ...openDraft, stopLossPrice: "680" }, positions: [long] })), "stopOnHeldPosition");
+  // The other direction is a separate position in hedge mode.
+  planMexcOrder(context({ draft: { ...openDraft, action: "OPEN_SHORT", stopLossPrice: "720" }, positions: [long] }));
+});
+
+test("what an order carries is read back from its details", () => {
+  const row = { orderId: "1", symbol: "QQQSTOCK_USDT", side: 1, price: 700, vol: 1, state: 2 };
+  const plain = decodeMexcOrder(row);
+  assert.equal(Object.hasOwn(plain, "takeProfitPrice"), false);
+  const carried = decodeMexcOrder({ ...row, takeProfitPrice: 720, stopLossPrice: 0 });
+  assert.equal(carried.takeProfitPrice, 720);
+  assert.equal(carried.stopLossPrice, undefined);
+});
+
+test("refusals of a stop request unlock only a stop request", () => {
+  const refused = (exchange: number, table?: Record<number, string>) => classifyMexcResponse(200, JSON.stringify({ success: false, code: exchange }), table);
+  for (const [exchange, expected] of [[5001, "stopPriceMissing"], [5002, "stopChanged"], [5003, "stopPriceInvalid"], [5004, "stopVolume"], [5005, "stopExists"], [5006, "stopRejected"]] as const) {
+    assert.deepEqual(refused(exchange, STOP_REJECTIONS), { kind: "rejected", code: expected, exchangeCode: exchange });
+    assert.deepEqual(refused(exchange), { kind: "unknown" });
+  }
+  assert.equal(STOP_REJECTIONS[2009], "positionChanged");
+  for (const exchange of [500, 603, 9999]) assert.deepEqual(refused(exchange, STOP_REJECTIONS), { kind: "unknown" });
 });

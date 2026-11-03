@@ -1,7 +1,11 @@
 import { ServerBroker } from "./ServerBroker.ts";
 import { TradingError } from "./orderRules.ts";
-import { MEXC_ACCOUNT, MEXC_MESSAGES, freezeMexcDraft, freezeMexcLeverageDraft, isOpening, validateMexcDraft, validateMexcLeverageDraft, validMexcOrderID } from "./mexcRules.ts";
-import type { MexcAccount, MexcContract, MexcDraft, MexcLeverageDraft, MexcLeveragePrepared, MexcLimits, MexcLive, MexcOrder, MexcPrepared, MexcTicker } from "./mexcRules.ts";
+import {
+  MEXC_ACCOUNT, MEXC_MESSAGES, freezeMexcDraft, freezeMexcLeverageDraft, freezeMexcStopDraft, isOpening, validateMexcDraft, validateMexcLeverageDraft, validateMexcStopDraft, validMexcOrderID,
+} from "./mexcRules.ts";
+import type {
+  MexcAccount, MexcContract, MexcDraft, MexcLeverageDraft, MexcLeveragePrepared, MexcLimits, MexcLive, MexcOrder, MexcPrepared, MexcStopDraft, MexcStopOrder, MexcStopPrepared, MexcTicker,
+} from "./mexcRules.ts";
 import type { FetchTransport } from "./broker.ts";
 import type { History, HistoryRange, SessionStatus, Vault } from "./types.ts";
 
@@ -27,6 +31,10 @@ export interface MexcApi {
   cancelOrder(orderID: string): Promise<void>;
   reviewLeverage(draft: MexcLeverageDraft): Promise<MexcLeveragePrepared>;
   changeLeverage(prepared: MexcLeveragePrepared): Promise<{ leverage: number }>;
+  /** Waiting to trigger, for one contract or the whole account. */
+  stopOrders(symbol?: string): Promise<MexcStopOrder[]>;
+  reviewStop(draft: MexcStopDraft): Promise<MexcStopPrepared>;
+  changeStop(prepared: MexcStopPrepared): Promise<{ stopKind: MexcStopDraft["kind"] }>;
   acknowledgeReconciliation(): Promise<void>;
 }
 
@@ -84,7 +92,7 @@ export class MexcClient extends ServerBroker implements MexcApi {
     // The screen must show what the server will send, not what was asked for.
     if (!prepared || typeof prepared.id !== "string" || !prepared.id || prepared.isDemo !== false || !back ||
         back.symbol !== sent.symbol || back.action !== sent.action || back.kind !== sent.kind || back.vol !== sent.vol ||
-        back.price !== sent.price || back.leverage !== sent.leverage ||
+        back.price !== sent.price || back.leverage !== sent.leverage || back.takeProfitPrice !== sent.takeProfitPrice || back.stopLossPrice !== sent.stopLossPrice ||
         typeof prepared.orderPrice !== "string" || !Number.isFinite(prepared.notional) ||
         (sent.kind === "LIMIT" && prepared.orderPrice !== sent.price) || prepared.leverage !== sent.leverage ||
         (isOpening(sent.action) && prepared.openType !== 1))
@@ -126,6 +134,30 @@ export class MexcClient extends ServerBroker implements MexcApi {
         !Number.isFinite(prepared.previousLeverage) || !Number.isFinite(prepared.holdVol) || (prepared.direction !== "LONG" && prepared.direction !== "SHORT"))
       throw new TradingError("serverUnavailable", "服务器返回的核对信息无效，本次未提交。");
     return { ...prepared, preparedAt: startedAt };
+  }
+  stopOrders(symbol?: string) { return this.rpc<MexcStopOrder[]>("stopOrders", symbol === undefined ? [] : [symbol]); }
+  /** Same one-use review as an order. An older gateway refuses this draft as invalid, and nothing is sent. */
+  async reviewStop(draft: MexcStopDraft): Promise<MexcStopPrepared> {
+    validateMexcStopDraft(draft);
+    const sent = freezeMexcStopDraft(draft);
+    const startedAt = Date.now();
+    const prepared = await this.rpc<MexcStopPrepared>("prepare", [MEXC_ACCOUNT, sent]);
+    const back = prepared?.draft;
+    // The screen must show what the server will send, not what was asked for.
+    if (!prepared || typeof prepared.id !== "string" || !prepared.id || prepared.isDemo !== false || !back || back.kind !== sent.kind ||
+        back.symbol !== sent.symbol || back.positionId !== sent.positionId || back.stopOrderId !== sent.stopOrderId ||
+        back.takeProfitPrice !== sent.takeProfitPrice || back.stopLossPrice !== sent.stopLossPrice ||
+        !Number.isFinite(prepared.holdVol) || typeof prepared.vol !== "string" || (prepared.direction !== "LONG" && prepared.direction !== "SHORT"))
+      throw new TradingError("serverUnavailable", "服务器返回的核对信息无效，本次未提交。");
+    return { ...prepared, preparedAt: startedAt };
+  }
+  changeStop(prepared: MexcStopPrepared) {
+    return this.honest(() => this.write<{ stopKind: MexcStopDraft["kind"] }>("submit", [{ id: prepared.id }], result => {
+      // An accepted write that names another action cannot be matched to this one.
+      if (result?.stopKind !== prepared.draft.kind)
+        throw new TradingError("orderOutcomeUnknown", MEXC_MESSAGES.orderOutcomeUnknown);
+      return result;
+    }));
   }
   changeLeverage(prepared: MexcLeveragePrepared) {
     return this.honest(() => this.write<{ leverage: number }>("submit", [{ id: prepared.id }], result => {

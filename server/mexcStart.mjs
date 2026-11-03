@@ -21,6 +21,7 @@ try {
     limits: () => broker.limits,
     closedOrders: (...args) => broker.closedOrders(...args),
     live: (...args) => broker.live(...args),
+    stopOrders: (...args) => broker.stopOrders(...args),
   } });
   await new Promise((done, reject) => { server.once('error', reject); server.listen(config.port, '127.0.0.1', done); });
   console.log(`MEXC gateway listening on 127.0.0.1:${config.port}; HTTPS reverse proxy required.`);

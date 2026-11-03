@@ -2,7 +2,7 @@ import React, { useEffect, useRef } from "react";
 import { PanResponder, Pressable, Text, View, type StyleProp, type TextStyle } from "react-native";
 import { tick } from "../haptics.ts";
 import type { Palette } from "../types.ts";
-import { Glass, Icon, elevated, radius, styles } from "../ui.tsx";
+import { Glass, Icon, Stepper, elevated, radius, styles } from "../ui.tsx";
 
 /** One label and value line, as in the Schwab order review (`SummaryRow`). */
 export function Line({ label, value, palette: p, color, strong }: {
@@ -160,6 +160,28 @@ export function PositionSlider({ value, onChange, onDragStart, onDragEnd, palett
       </View>
       <Text numberOfLines={1} style={[styles.number, { color: p.text, fontSize: 13, fontWeight: "600", width: 38, textAlign: "right" }]}>{shownPercent}%</Text>
     </View>
+  );
+}
+
+/** Optional take-profit and stop-loss for an opening order. Closed, the order carries neither. */
+export function StopFields({ palette: p, on, onToggle, takeProfit, stopLoss, onTakeProfit, onStopLoss, onStepTakeProfit, onStepStopLoss, compact = false }: {
+  palette: Palette; on: boolean; onToggle: (on: boolean) => void; takeProfit: string; stopLoss: string;
+  onTakeProfit: (value: string) => void; onStopLoss: (value: string) => void;
+  onStepTakeProfit: (direction: 1 | -1) => void; onStepStopLoss: (direction: 1 | -1) => void; compact?: boolean;
+}) {
+  return (
+    <>
+      <Pressable accessibilityRole="button" accessibilityLabel="止盈止损" accessibilityState={{ expanded: on }} onPress={() => onToggle(!on)}
+        style={[styles.spread, { minHeight: 28 }]}>
+        <Text style={{ color: p.text, fontSize: 13, fontWeight: "600" }}>止盈止损</Text>
+        <Text style={{ color: on ? p.accent : p.secondary, fontSize: 12 }}>{on ? "收起" : "设置"}</Text>
+      </Pressable>
+      {on && <>
+        <Stepper compact={compact} palette={p} label="止盈" value={takeProfit} placeholder="不设置" keyboardType="decimal-pad" onChangeText={onTakeProfit} onStep={onStepTakeProfit} />
+        <Stepper compact={compact} palette={p} label="止损" value={stopLoss} placeholder="不设置" keyboardType="decimal-pad" onChangeText={onStopLoss} onStep={onStepStopLoss} />
+        <Text style={{ color: p.secondary, fontSize: 11, lineHeight: 15 }}>按标记价触发，委托成交后才生效，触发后按市价平仓。</Text>
+      </>}
+    </>
   );
 }
 

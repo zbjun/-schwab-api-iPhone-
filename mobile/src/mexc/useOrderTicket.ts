@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { isBuying, isOpening } from "../mexcRules.ts";
+import { MEXC_MESSAGES, isBuying, isOpening, orderStopReferences } from "../mexcRules.ts";
 import type { MexcAction, MexcDraft, MexcKind, MexcPrepared, MexcTicker } from "../mexcRules.ts";
 import type { MexcState } from "./useMexc.ts";
 import {
   clampLeverage, closableOf, draftIssueOf, findPosition, fractionOfCapacity, hasClosable, leverageChoice, marginOf, notionalOf, openCapacity,
-  orderEntryBlocked, snapToTick, stepDecimal, ticketBlocked, valuationPrice, volForFraction,
+  orderEntryBlocked, snapToTick, stepDecimal, stopSideIssue, stopsDropped, ticketBlocked, valuationPrice, volForFraction,
 } from "./mexcView.ts";
 
 /**
@@ -21,6 +21,9 @@ export function useOrderTicket(m: MexcState, symbol: string, action: MexcAction,
   const [prepared, setPrepared] = useState<MexcPrepared>();
   const [reviewing, setReviewing] = useState(false);
   const [sizeDragging, setSizeDragging] = useState(false);
+  const [stopsOn, setStopsOn] = useState(false);
+  const [takeProfit, setTakeProfit] = useState("");
+  const [stopLoss, setStopLoss] = useState("");
   const sizeBeforeDrag = useRef("");
   // Once the user has touched the price (or it was prefilled), a quote update never overwrites it.
   const priceSettled = useRef(false);
@@ -42,20 +45,30 @@ export function useOrderTicket(m: MexcState, symbol: string, action: MexcAction,
     if (!contract) return;
     setVol(!isOpening(action) && hasClosable(closable) ? closable : String(contract.minVol));
     setPrice(""); priceSettled.current = false;
+    // Prices for one side would be on the wrong side of the other.
+    setStopsOn(false); setTakeProfit(""); setStopLoss("");
   }, [symbol, action, contract?.symbol]);
   useEffect(() => {
     if (contract && ticker && !priceSettled.current) { priceSettled.current = true; setPrice(snapToTick(ticker.lastPrice, contract.priceUnit)); }
   }, [contract, ticker, symbol, action, price]);
 
+  // A position already held keeps its stops on the position itself.
+  const carriesStops = opening && stopsOn && !held;
   const draft: MexcDraft = {
     symbol, action, kind, vol: vol.trim(),
     ...(kind === "LIMIT" ? { price: price.trim() } : {}),
     ...(opening ? { leverage: effectiveLeverage } : {}),
+    ...(carriesStops && takeProfit.trim() ? { takeProfitPrice: takeProfit.trim() } : {}),
+    ...(carriesStops && stopLoss.trim() ? { stopLossPrice: stopLoss.trim() } : {}),
   };
   const draftKey = JSON.stringify(draft);
   const latestDraftKey = useRef(draftKey);
   latestDraftKey.current = draftKey;
-  const draftIssue = draftIssueOf(draft, closable);
+  // As the server measures them.
+  const stopReferences = orderStopReferences(kind, buying ? "LONG" : "SHORT", kind === "LIMIT" ? Number(price) : undefined, (buying ? ticker?.ask1 : ticker?.bid1) ?? ticker?.lastPrice, ticker?.fairPrice);
+  const dropped = stopsDropped(opening, stopsOn, !!held, takeProfit, stopLoss);
+  const draftIssue = (dropped ? MEXC_MESSAGES.stopsDropped : "") || draftIssueOf(draft, closable) ||
+    (carriesStops && stopSideIssue(buying ? "LONG" : "SHORT", takeProfit, stopLoss, stopReferences) ? MEXC_MESSAGES.stopPriceSide : "");
 
   // The price the review will use, so the estimate here does not read lower than the review does.
   const unitPrice = contract ? valuationPrice(kind, buying, price, ticker, m.limits?.marketProtection ?? NaN) : undefined;
@@ -92,7 +105,8 @@ export function useOrderTicket(m: MexcState, symbol: string, action: MexcAction,
 
   return {
     contract, kind, setKind, vol, setVol, price, leverage, setLeverage, prepared, setPrepared, reviewing,
-    opening, buying, held, closable, choice, effectiveLeverage, notional, margin, entryBlocked, draftIssue, submitDisabled, capacity, sizeFraction, sliderDisabled, sizeDragging,
+    opening, buying, held, closable, choice, effectiveLeverage, notional, margin, entryBlocked, draftIssue, submitDisabled, capacity, sizeFraction, sliderDisabled, sizeDragging, stopsOn, setStopsOn, takeProfit, setTakeProfit, stopLoss, setStopLoss, stopsWereDropped: dropped,
+    clearStops: () => { setStopsOn(false); setTakeProfit(""); setStopLoss(""); },
     submit,
     recheck: () => { setPrepared(undefined); void submit(); },
     typePrice: (value: string) => { priceSettled.current = true; setPrice(value); },
@@ -107,6 +121,8 @@ export function useOrderTicket(m: MexcState, symbol: string, action: MexcAction,
       const next = stepDecimal(vol, contract.volUnit, direction, contract.minVol);
       setVol(!opening && hasClosable(closable) && Number(next) > Number(closable) ? closable : next);
     },
+    stepTakeProfit: (direction: 1 | -1) => { if (contract) setTakeProfit(stepDecimal(takeProfit || price || String(ticker?.lastPrice ?? contract.priceUnit), contract.priceUnit, direction)); },
+    stepStopLoss: (direction: 1 | -1) => { if (contract) setStopLoss(stepDecimal(stopLoss || price || String(ticker?.lastPrice ?? contract.priceUnit), contract.priceUnit, direction)); },
     typeLeverage: (value: string) => { const digits = value.replace(/\D/g, ""); setLeverage(digits ? Number(digits) : undefined); },
     stepLeverage: (direction: 1 | -1) => { if (choice) setLeverage(clampLeverage(effectiveLeverage + direction, choice)); },
     chooseFraction: (fraction: number) => {

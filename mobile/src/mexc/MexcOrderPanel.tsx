@@ -6,7 +6,7 @@ import type { MexcAction, MexcContract, MexcKind, MexcPosition, MexcTicker } fro
 import { Button, Stepper, elevated, money, radius, styles } from "../ui.tsx";
 import type { MexcState } from "./useMexc.ts";
 import { STOCK_NOTE, isStockContract, openTypeLabel, percent } from "./mexcView.ts";
-import { Notice, PositionSlider, Segmented } from "./parts.tsx";
+import { Notice, PositionSlider, Segmented, StopFields } from "./parts.tsx";
 import MexcLeverageEditor from "./MexcLeverageEditor.tsx";
 import MexcReview from "./MexcReview.tsx";
 import { useOrderTicket } from "./useOrderTicket.ts";
@@ -83,6 +83,12 @@ export default function MexcOrderPanel({ m, palette: p, contract, ticker, initia
         <Stepper compact palette={p} label="张数" value={t.vol} keyboardType="decimal-pad" onChangeText={t.setVol} onStep={t.stepVol} />
         <PositionSlider palette={p} color={tradeColor} value={t.sizeFraction} disabled={t.sliderDisabled} onChange={t.chooseFraction}
           onDragStart={t.beginSizeDrag} onDragEnd={t.endSizeDrag} />
+        {t.opening && !!t.held && !t.stopsWereDropped && <Text style={{ color: p.secondary, fontSize: 11, lineHeight: 15 }}>这个方向已有持仓，止盈止损请关闭面板后在持仓条上设置。</Text>}
+        {t.stopsWereDropped && <Button label="清除价格" palette={p} variant="tinted" color={p.secondary} onPress={t.clearStops} />}
+        {t.opening && !t.held && (
+          <StopFields compact palette={p} on={t.stopsOn} onToggle={t.setStopsOn} takeProfit={t.takeProfit} stopLoss={t.stopLoss}
+            onTakeProfit={t.setTakeProfit} onStopLoss={t.setStopLoss} onStepTakeProfit={t.stepTakeProfit} onStepStopLoss={t.stepStopLoss} />
+        )}
         {t.opening ? (
           <View style={styles.spread}>
             <Text numberOfLines={1} style={[small, { flexShrink: 1 }]}>

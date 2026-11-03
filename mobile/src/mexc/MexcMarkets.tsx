@@ -5,12 +5,13 @@ import { isLineRange } from "../chartData.ts";
 import { DemoNotice } from "../DemoNotice.tsx";
 import type { History, HistoryRange, Palette } from "../types.ts";
 import { mexcActionLabels } from "../mexcRules.ts";
-import type { MexcAction, MexcContract, MexcTicker } from "../mexcRules.ts";
+import type { MexcAction, MexcContract, MexcPosition, MexcStopOrder, MexcTicker } from "../mexcRules.ts";
 import MarketChart, { ChartControls, type ChartControlHandle } from "../MarketChart.tsx";
 import { Button, Chip, Icon, Input, elevated, radius, styles } from "../ui.tsx";
 import { useTickers, type MexcState } from "./useMexc.ts";
 import { closableOf, closeActionFor, favoriteContracts, hasClosable, isStockContract, mergeLiveCandles, percent, priceText, signedPercent, sortContracts, STOCK_NOTE } from "./mexcView.ts";
 import MexcOrderPanel from "./MexcOrderPanel.tsx";
+import MexcStopEditor from "./MexcStopEditor.tsx";
 import { EmptyState, Notice, Segmented } from "./parts.tsx";
 
 const PAGE = 30;
@@ -103,7 +104,8 @@ const STALE_AFTER_FAILURES = 3;
 function Detail({ m, palette: p, contract, ticker: listTicker }: {
   m: MexcState; palette: Palette; contract: MexcContract; ticker?: MexcTicker;
 }) {
-  const fullChartHeight = chartHeightFor(useWindowDimensions().height);
+  const windowHeight = useWindowDimensions().height;
+  const fullChartHeight = chartHeightFor(windowHeight);
   const [range, setRange] = useState<HistoryRange>("minute15");
   const [history, setHistory] = useState<History>();
   const [error, setError] = useState("");
@@ -112,10 +114,14 @@ function Detail({ m, palette: p, contract, ticker: listTicker }: {
   const [more, setMore] = useState(false);
   const chartControls = useRef<ChartControlHandle>(null);
   const [ticket, setTicket] = useState<MexcAction>();
+  const [stopTarget, setStopTarget] = useState<MexcPosition>();
+  const [stops, setStops] = useState<MexcStopOrder[]>([]);
+  const [stopsVersion, setStopsVersion] = useState(0);
+  const [stopsFailed, setStopsFailed] = useState(false);
   const [scrollHeight, setScrollHeight] = useState(0);
   const [chartTop, setChartTop] = useState(0);
   // With the order panel open the chart fits what is left above it, so the latest candle stays in view.
-  const chartHeight = ticket && scrollHeight > 0 ? Math.min(fullChartHeight, Math.max(200, scrollHeight - chartTop - 4)) : fullChartHeight;
+  const chartHeight = (ticket || stopTarget) && scrollHeight > 0 ? Math.min(fullChartHeight, Math.max(200, scrollHeight - chartTop - 4)) : fullChartHeight;
   const ticker = liveTicker?.symbol === contract.symbol ? liveTicker : listTicker;
   useEffect(() => {
     let active = true, loading = false, ticking = false, failures = 0;
@@ -152,6 +158,17 @@ function Detail({ m, palette: p, contract, ticker: listTicker }: {
     const foreground = AppState.addEventListener("change", state => { if (state === "active") load(); });
     return () => { active = false; clearInterval(reload); clearInterval(live); foreground.remove(); };
   }, [m.api, contract.symbol, range]);
+  const held = (m.account?.positions ?? []).filter(position => position.symbol === contract.symbol && position.holdVol > 0);
+  // Asked for again whenever the account is, so a triggered or newly set one shows up without a visit elsewhere.
+  useEffect(() => {
+    if (!held.length) { setStops([]); setStopsFailed(false); return; }
+    let active = true;
+    m.api.stopOrders(contract.symbol)
+      .then(rows => { if (active) { setStops(rows); setStopsFailed(false); } })
+      // A failed read must not look like nothing set. Only a gateway without this feature stays quiet.
+      .catch(error => { if (active) setStopsFailed((error as { code?: string })?.code !== "methodNotAllowed"); });
+    return () => { active = false; };
+  }, [m.api, contract.symbol, m.account, held.length, stopsVersion]);
   const rate = ticker?.riseFallRate, color = (rate ?? 0) > 0 ? p.up : (rate ?? 0) < 0 ? p.down : p.secondary;
   const unit = contract.priceUnit;
   // Hedge mode can hold both directions in one contract, so each gets its own named button rather than a guess.
@@ -235,9 +252,28 @@ function Detail({ m, palette: p, contract, ticker: listTicker }: {
         {(stale || (!!error && !!history)) && <Notice palette={p} text="行情刷新失败，当前显示的价格和 K 线是旧数据。" style={{ marginHorizontal: 12 }} />}
         {isStockContract(contract) && <Notice palette={p} tone="info" text={STOCK_NOTE} style={{ marginHorizontal: 12 }} />}
       </ScrollView>
-      {ticket ? (
+      {stopTarget ? (
+        <MexcStopEditor key={`${stopTarget.id}:${stops.find(row => row.positionId === stopTarget.id)?.id ?? "new"}`} m={m} palette={p} contract={contract} ticker={ticker}
+          position={held.find(row => row.id === stopTarget.id) ?? stopTarget} stops={stops.filter(row => row.positionId === stopTarget.id)}
+          maxHeight={Math.round(windowHeight * 0.72)} onClose={() => setStopTarget(undefined)}
+          onChanged={() => { setStopTarget(undefined); setStopsVersion(version => version + 1); }} />
+      ) : ticket ? (
         <MexcOrderPanel key={ticket} m={m} palette={p} contract={contract} ticker={ticker} initialAction={ticket} onClose={() => setTicket(undefined)} />
       ) : (
+        <>
+        {held.map(position => {
+          const stop = stops.find(row => row.positionId === position.id), long = position.direction === "LONG";
+          return (
+            <Pressable key={position.id} accessibilityRole="button" accessibilityLabel={`${long ? "多仓" : "空仓"}止盈止损`} disabled={m.sending} onPress={() => setStopTarget(position)}
+              style={{ flexDirection: "row", alignItems: "center", gap: 8, minHeight: 36, paddingHorizontal: 12, backgroundColor: p.surface, borderTopWidth: 1, borderTopColor: p.separator }}>
+              <Text numberOfLines={1} style={[styles.number, { color: long ? p.up : p.down, fontSize: 12, fontWeight: "700" }]}>{long ? "多" : "空"} {position.holdVol} 张 · {position.leverage}x</Text>
+              <Text numberOfLines={1} style={[styles.number, { flex: 1, color: p.secondary, fontSize: 12, textAlign: "right" }]}>
+                {stopsFailed ? "止盈止损读取失败" : `止盈 ${priceText(stop?.takeProfitPrice, unit)}  止损 ${priceText(stop?.stopLossPrice, unit)}${stop && stop.vol !== position.holdVol ? `  覆盖 ${stop.vol} 张` : ""}`}
+              </Text>
+              <Text style={{ color: p.accent, fontSize: 12, fontWeight: "600" }}>设置</Text>
+            </Pressable>
+          );
+        })}
         <View style={{ flexDirection: "row", paddingHorizontal: 16, paddingTop: 10, paddingBottom: 14, gap: 12,
           backgroundColor: p.surface, borderTopWidth: 1, borderTopColor: p.separator }}>
           {action("开多", p.up, () => setTicket("OPEN_LONG"), m.sending)}
@@ -249,6 +285,7 @@ function Detail({ m, palette: p, contract, ticker: listTicker }: {
             })
             : action("平仓", elevated(p), () => {}, true, 0.7)}
         </View>
+        </>
       )}
     </View>
   );

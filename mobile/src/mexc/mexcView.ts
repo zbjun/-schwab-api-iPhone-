@@ -1,6 +1,6 @@
 import { MEXC_MESSAGES, MEXC_REVIEW_TTL, isOpening, mexcClosable, plainNumber, validMexcSymbol, validateMexcDraft } from "../mexcRules.ts";
 import type { Candle, History } from "../types.ts";
-import type { MexcAction, MexcContract, MexcDraft, MexcKind, MexcLimits, MexcOrder, MexcPosition, MexcTicker } from "../mexcRules.ts";
+import type { MexcAction, MexcContract, MexcDraft, MexcKind, MexcLimits, MexcOrder, MexcPosition, MexcStopDraft, MexcTicker } from "../mexcRules.ts";
 
 /** Pure display helpers for the MEXC screens. Nothing here decides whether an order may be sent. */
 
@@ -107,6 +107,30 @@ export function valuationPrice(kind: MexcKind, buying: boolean, limitPrice: stri
   }
   if (quoted === undefined || !Number.isFinite(marketProtection)) return undefined;
   return buying ? quoted * (1 + marketProtection) : quoted;
+}
+/** Estimated profit or loss of the whole position at a price, from the average entry and before fees. */
+export function stopEstimate(position: Pick<MexcPosition, "direction" | "averagePrice" | "holdVol">, contractSize: number, price: string): number | undefined {
+  const value = price.trim() === "" ? NaN : Number(price);
+  if (!Number.isFinite(value) || value <= 0) return undefined;
+  return (value - position.averagePrice) * position.holdVol * contractSize * (position.direction === "LONG" ? 1 : -1);
+}
+/** The side check the server makes, so a price on the wrong side shows before a review is asked for. */
+export function stopSideIssue(direction: "LONG" | "SHORT", takeProfit: string, stopLoss: string, references: { takeProfit?: number; stopLoss?: number }): boolean {
+  const sign = direction === "LONG" ? 1 : -1;
+  const wrong = (price: string, reference: number | undefined, side: 1 | -1) =>
+    reference !== undefined && Number.isFinite(reference) && price.trim() !== "" && Number.isFinite(Number(price)) && (Number(price) - reference) * sign * side <= 0;
+  return wrong(takeProfit, references.takeProfit, 1) || wrong(stopLoss, references.stopLoss, -1);
+}
+/**
+ * Prices were typed for an order that can no longer carry them, because a position in that direction has
+ * appeared since. They cannot simply be dropped: the person would believe the order was protected.
+ */
+export const stopsDropped = (opening: boolean, stopsOn: boolean, held: boolean, takeProfit: string, stopLoss: string) =>
+  opening && stopsOn && held && (takeProfit.trim() !== "" || stopLoss.trim() !== "");
+/** Same text whichever way a price is written or its fields are ordered, so a review can be matched to the form. */
+export function stopDraftKey(draft: MexcStopDraft): string {
+  const price = (value: string | undefined) => (value === undefined || !Number.isFinite(Number(value)) ? value ?? "" : String(Number(value)));
+  return [draft.kind, draft.symbol, draft.positionId, draft.stopOrderId ?? "", price(draft.takeProfitPrice), price(draft.stopLossPrice)].join("|");
 }
 /** Slightly under the real limits, so the quote can move a little before the review at full size. */
 const CAPACITY_ROOM = 0.995;

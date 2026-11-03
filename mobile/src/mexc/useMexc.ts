@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { MexcApi, MexcStatus } from "../MexcClient.ts";
-import type { MexcAccount, MexcContract, MexcLeveragePrepared, MexcLimits, MexcOrder, MexcPrepared, MexcTicker } from "../mexcRules.ts";
+import type { MexcAccount, MexcContract, MexcLeveragePrepared, MexcLimits, MexcOrder, MexcPrepared, MexcStopPrepared, MexcTicker } from "../mexcRules.ts";
 import { batches, blockMessage, lockUnconfirmed, tradingLocked, writeInProgress } from "./mexcView.ts";
 import { MexcController } from "./mexcController.ts";
 
@@ -41,6 +41,7 @@ export interface MexcState {
   place: (prepared: MexcPrepared) => Promise<{ orderID?: string; error?: string; unknown?: boolean }>;
   cancel: (orderID: string) => Promise<boolean>;
   changeLeverage: (prepared: MexcLeveragePrepared) => Promise<{ leverage?: number; error?: string; unknown?: boolean }>;
+  changeStop: (prepared: MexcStopPrepared) => Promise<{ done?: boolean; error?: string; unknown?: boolean }>;
 }
 
 /** Thin React wrapper; every rule lives in MexcController. */
@@ -63,6 +64,7 @@ export function useMexc(api: MexcApi): MexcState {
     pollOk: controller.pollOk, acknowledge: () => controller.acknowledge(), clear: () => controller.reset(),
     sending: snap.sending, place: p => controller.place(p), cancel: id => controller.cancel(id),
     changeLeverage: p => controller.changeLeverage(p),
+    changeStop: p => controller.changeStop(p),
   }), [api, controller, snap]);
 }
 

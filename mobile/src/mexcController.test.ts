@@ -314,3 +314,83 @@ test("only a write whose outcome is unknown says so", async () => {
   const lost = wrap(demo, { place: () => Promise.reject(unknown()) });
   assert.equal((await new MexcController(lost.api).place(await reviewOf(demo))).unknown, true);
 });
+
+const stopDraft = { kind: "STOP_PLACE" as const, symbol: "QQQSTOCK_USDT", positionId: "9000000000001", takeProfitPrice: "900.00", stopLossPrice: "500.00" };
+
+test("a stop request is sent once, and an unknown outcome locks everything", async () => {
+  const demo = new MexcDemo(() => T0);
+  const gate = later<{ stopKind: "STOP_PLACE" }>();
+  const { api, calls } = wrap(demo, { changeStop: () => gate.promise });
+  const c = new MexcController(api);
+  const prepared = await demo.reviewStop(stopDraft);
+  const first = c.changeStop(prepared), second = c.changeStop(prepared);
+  assert.ok((await second).error);
+  gate.resolve({ stopKind: "STOP_PLACE" });
+  assert.deepEqual(await first, { done: true });
+  assert.equal(calls.changeStop, 1);
+
+  const lost = wrap(demo, { changeStop: () => Promise.reject(unknown()) });
+  const locked = new MexcController(lost.api);
+  const result = await locked.changeStop(await demo.reviewStop(stopDraft));
+  assert.equal(result.unknown, true);
+  assert.equal(locked.locked, true);
+  assert.ok((await locked.changeStop(await demo.reviewStop(stopDraft))).error);
+  assert.ok((await locked.place(await reviewOf(demo))).error);
+  await new Promise(r => setTimeout(r, 5));
+  assert.equal(lost.calls.changeStop, 1);
+});
+
+test("a failed key lookup lets stops through as it does a close, and a closed key stops them but not a cancel", async () => {
+  const demo = new MexcDemo(() => T0);
+  const failed = wrap(demo, { status: async () => ok({ tradingBlocked: "keyCheckFailed" }) });
+  const lookup = new MexcController(failed.api);
+  await lookup.refresh();
+  assert.deepEqual(await lookup.changeStop(await demo.reviewStop(stopDraft)), { done: true });
+  const id = (await demo.stopOrders())[0].id;
+  const closed = wrap(demo, { status: async () => ok({ tradingBlocked: "keyMovesMoney" }) });
+  const blocked = new MexcController(closed.api);
+  await blocked.refresh();
+  assert.ok((await blocked.changeStop(await demo.reviewStop({ ...stopDraft, kind: "STOP_CHANGE", stopOrderId: id }))).error);
+  assert.equal(closed.calls.changeStop ?? 0, 0);
+  assert.deepEqual(await blocked.changeStop(await demo.reviewStop({ kind: "STOP_CANCEL", symbol: stopDraft.symbol, positionId: stopDraft.positionId, stopOrderId: id })), { done: true });
+});
+
+test("the demo sets, changes and cancels through the same one-use review", async () => {
+  const demo = new MexcDemo(() => T0);
+  const placed = await demo.reviewStop(stopDraft);
+  assert.equal(placed.vol, "20");
+  assert.deepEqual(await demo.changeStop(placed), { stopKind: "STOP_PLACE" });
+  await assert.rejects(demo.changeStop(placed), (error: { code?: string }) => error.code === "reviewExpired");
+  const [row] = await demo.stopOrders("QQQSTOCK_USDT");
+  assert.equal(row.takeProfitPrice, 900);
+  assert.equal(row.stopLossPrice, 500);
+  await assert.rejects(demo.reviewStop(stopDraft), (error: { code?: string }) => error.code === "stopExists");
+  await demo.changeStop(await demo.reviewStop({ ...stopDraft, kind: "STOP_CHANGE", stopOrderId: row.id, stopLossPrice: "450.00" }));
+  assert.equal((await demo.stopOrders())[0].stopLossPrice, 450);
+  // A newer review of any kind replaces the older one.
+  const older = await demo.reviewStop({ kind: "STOP_CANCEL", symbol: stopDraft.symbol, positionId: stopDraft.positionId, stopOrderId: row.id });
+  await leverageReviewOf(demo);
+  await assert.rejects(demo.changeStop(older), (error: { code?: string }) => error.code === "reviewExpired");
+  await demo.changeStop(await demo.reviewStop({ kind: "STOP_CANCEL", symbol: stopDraft.symbol, positionId: stopDraft.positionId, stopOrderId: row.id }));
+  assert.deepEqual(await demo.stopOrders(), []);
+});
+
+test("in the demo an opening order's stops attach once it fills, and leave with the position", async () => {
+  const demo = new MexcDemo(() => T0);
+  await demo.place(await demo.review({ symbol: "TSLASTOCK_USDT", action: "OPEN_SHORT", kind: "MARKET", vol: "4", leverage: 5, takeProfitPrice: "100.00", stopLossPrice: "400.00" }));
+  const [row] = await demo.stopOrders("TSLASTOCK_USDT");
+  assert.equal(row.direction, "SHORT");
+  assert.equal(row.takeProfitPrice, 100);
+  await demo.place(await demo.review({ symbol: "TSLASTOCK_USDT", action: "CLOSE_SHORT", kind: "MARKET", vol: "4" }));
+  assert.deepEqual(await demo.stopOrders("TSLASTOCK_USDT"), []);
+});
+
+test("a position of the marked size simulates an unknown stop request", async () => {
+  const demo = new MexcDemo(() => T0);
+  await demo.place(await demo.review({ symbol: "QQQSTOCK_USDT", action: "OPEN_LONG", kind: "MARKET", vol: "57", leverage: 5 }));
+  const c = new MexcController(demo);
+  const result = await c.changeStop(await demo.reviewStop(stopDraft));
+  assert.equal(result.unknown, true);
+  assert.equal(c.locked, true);
+  assert.deepEqual(await demo.stopOrders(), []);
+});

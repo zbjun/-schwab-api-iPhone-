@@ -20,6 +20,9 @@ export interface MexcDraft {
   price?: string;
   /** Required when opening, absent when closing. */
   leverage?: number;
+  /** Opening only, as decimal text. They take effect once the order fills and trigger on the fair price. */
+  takeProfitPrice?: string;
+  stopLossPrice?: string;
 }
 /** Server-held limits. The app only displays them and cannot change them. */
 export interface MexcLimits {
@@ -96,6 +99,9 @@ export interface MexcAccount {
 }
 export interface MexcOrder {
   id: string;
+  /** What an opening order carries, shown while it is still waiting to fill. */
+  takeProfitPrice?: number;
+  stopLossPrice?: number;
   symbol: string;
   action: MexcAction;
   /** Exchange order type: 1 limit, 2 post only, 3 IOC, 4 FOK, 5 market. */
@@ -181,6 +187,53 @@ export interface MexcLeveragePrepared extends MexcLeveragePlan {
   preparedAt: number;
   isDemo: boolean;
 }
+/** A take-profit and stop-loss waiting on a position. Prices it does not set are absent. */
+export interface MexcStopOrder {
+  id: string;
+  symbol: string;
+  positionId: string;
+  direction: "LONG" | "SHORT";
+  takeProfitPrice?: number;
+  stopLossPrice?: number;
+  vol: number;
+}
+/**
+ * Setting, changing or cancelling the take-profit and stop-loss of an open position.
+ * Like a leverage change it carries no side, so it can never be read as an order.
+ */
+export interface MexcStopDraft {
+  kind: "STOP_PLACE" | "STOP_CHANGE" | "STOP_CANCEL";
+  symbol: string;
+  positionId: string;
+  /** Required to change or cancel, absent when placing. */
+  stopOrderId?: string;
+  /** As decimal text. At least one when placing or changing, none when cancelling. */
+  takeProfitPrice?: string;
+  stopLossPrice?: string;
+}
+/** The position and the prices as the server found them, so the review shows what is really changing. */
+export interface MexcStopPlan {
+  direction: "LONG" | "SHORT";
+  holdVol: number;
+  averagePrice: number;
+  liquidatePrice?: number;
+  leverage: number;
+  /** Exact contracts covered. */
+  vol: string;
+  fairPrice?: number;
+  existing?: { takeProfitPrice?: number; stopLossPrice?: number; vol: number };
+  /** Estimated profit or loss at each price from the average entry, before fees. */
+  atTakeProfit?: number;
+  atStopLoss?: number;
+}
+export interface MexcStopPrepared extends MexcStopPlan {
+  id: string;
+  draft: MexcStopDraft;
+  accountID: string;
+  displayName: string;
+  preparedAt: number;
+  isDemo: boolean;
+}
 
 /** The only text an exchange problem can show. Exchange messages are never forwarded. */
 export const MEXC_MESSAGES: Record<string, string> = {
@@ -228,6 +281,16 @@ export const MEXC_MESSAGES: Record<string, string> = {
   leverageMargin: "可用保证金不够，MEXC 没有修改杠杆。",
   leverageSizeLimit: "当前持仓超过目标杠杆允许的上限，MEXC 没有修改杠杆。",
   leverageRejected: "MEXC 拒绝了这次杠杆修改，杠杆没有变化。",
+  stopPriceMissing: "请至少填写止盈价或止损价。",
+  stopPriceInvalid: "止盈价或止损价无效。",
+  stopPriceSide: "价格方向不对：做多时止盈要高于、止损要低于当前价，做空相反。",
+  stopExists: "这个持仓已有止盈止损，请修改现有的那一个。",
+  stopChanged: "这个止盈止损已触发或已取消，请刷新后重新核对。",
+  stopSideRequired: "要去掉止盈或止损，请先取消现有的，再重新设置。",
+  stopRejected: "MEXC 拒绝了这次止盈止损操作，没有生效。",
+  stopVolume: "止盈止损的张数超过了 MEXC 允许的可平张数，没有生效。请先撤掉占用持仓的委托，或到 MEXC 设置。",
+  stopOnHeldPosition: "这个方向已有持仓，请在持仓上设置止盈止损。",
+  stopsDropped: "这个方向现在有持仓了，刚填的止盈止损不能随单提交。请先清除价格，再到持仓上设置。",
   keyInvalid: "API Key 已失效，下单已关闭。",
   keyNotBound: "API Key 没有绑定具体 IP，下单已关闭。",
   keyMovesMoney: "API Key 带转账或提现权限，下单已关闭，请换一个只有合约权限的 Key。",
@@ -362,7 +425,7 @@ export function validMexcOrderID(value: unknown): value is string {
 export function validateMexcDraft(draft: MexcDraft): void {
   const row = draft as unknown as Record<string, unknown>;
   if (!row || typeof row !== "object" || Array.isArray(row) ||
-      Object.keys(row).some(key => !["symbol", "action", "kind", "vol", "price", "leverage"].includes(key)))
+      Object.keys(row).some(key => !["symbol", "action", "kind", "vol", "price", "leverage", "takeProfitPrice", "stopLossPrice"].includes(key)))
     throw mexcError("invalidDraft");
   if (!validMexcSymbol(draft.symbol)) throw mexcError("invalidSymbol");
   if (!ACTIONS.includes(draft.action)) throw mexcError("invalidDraft");
@@ -374,7 +437,13 @@ export function validateMexcDraft(draft: MexcDraft): void {
   } else throw mexcError("invalidDraft");
   if (isOpening(draft.action)) {
     if (!Number.isInteger(draft.leverage) || draft.leverage! < 1) throw mexcError("leverageLimit");
-  } else if (draft.leverage !== undefined) throw mexcError("invalidDraft");
+  } else if (draft.leverage !== undefined || draft.takeProfitPrice !== undefined || draft.stopLossPrice !== undefined) throw mexcError("invalidDraft");
+  validateStopPrices(draft);
+}
+/** Each price, when present, is a positive decimal. Whether it is on the right side needs a quote. */
+function validateStopPrices(prices: { takeProfitPrice?: string; stopLossPrice?: string }): void {
+  for (const price of [prices.takeProfitPrice, prices.stopLossPrice])
+    if (price !== undefined && (typeof price !== "string" || !parseDecimal(price)?.units)) throw mexcError("stopPriceInvalid");
 }
 export function freezeMexcDraft(draft: MexcDraft): MexcDraft {
   return Object.freeze({
@@ -384,6 +453,36 @@ export function freezeMexcDraft(draft: MexcDraft): MexcDraft {
     vol: canonicalDecimal(draft.vol),
     ...(draft.price === undefined ? {} : { price: canonicalDecimal(draft.price) }),
     ...(draft.leverage === undefined ? {} : { leverage: draft.leverage }),
+    ...(draft.takeProfitPrice === undefined ? {} : { takeProfitPrice: canonicalDecimal(draft.takeProfitPrice) }),
+    ...(draft.stopLossPrice === undefined ? {} : { stopLossPrice: canonicalDecimal(draft.stopLossPrice) }),
+  });
+}
+export const isStopDraft = (draft: unknown): draft is MexcStopDraft => {
+  const kind = !!draft && typeof draft === "object" ? (draft as { kind?: unknown }).kind : undefined;
+  return kind === "STOP_PLACE" || kind === "STOP_CHANGE" || kind === "STOP_CANCEL";
+};
+export function validateMexcStopDraft(draft: MexcStopDraft): void {
+  const row = draft as unknown as Record<string, unknown>;
+  if (!isStopDraft(row) || Array.isArray(row) || Object.keys(row).some(key => !["kind", "symbol", "positionId", "stopOrderId", "takeProfitPrice", "stopLossPrice"].includes(key)))
+    throw mexcError("invalidDraft");
+  if (!validMexcSymbol(draft.symbol)) throw mexcError("invalidSymbol");
+  if (!validMexcOrderID(draft.positionId)) throw mexcError("positionChanged");
+  if (draft.kind === "STOP_PLACE" ? draft.stopOrderId !== undefined : !validMexcOrderID(draft.stopOrderId)) throw mexcError("invalidDraft");
+  if (draft.kind === "STOP_CANCEL") {
+    if (draft.takeProfitPrice !== undefined || draft.stopLossPrice !== undefined) throw mexcError("invalidDraft");
+    return;
+  }
+  validateStopPrices(draft);
+  if (draft.takeProfitPrice === undefined && draft.stopLossPrice === undefined) throw mexcError("stopPriceMissing");
+}
+export function freezeMexcStopDraft(draft: MexcStopDraft): MexcStopDraft {
+  return Object.freeze({
+    kind: draft.kind,
+    symbol: draft.symbol,
+    positionId: draft.positionId,
+    ...(draft.stopOrderId === undefined ? {} : { stopOrderId: draft.stopOrderId }),
+    ...(draft.takeProfitPrice === undefined ? {} : { takeProfitPrice: canonicalDecimal(draft.takeProfitPrice) }),
+    ...(draft.stopLossPrice === undefined ? {} : { stopLossPrice: canonicalDecimal(draft.stopLossPrice) }),
   });
 }
 
@@ -468,6 +567,11 @@ export function planMexcOrder(context: MexcOrderContext): MexcOrderPlan {
   const notional = vol * contract.contractSize * Math.max(price, referencePrice);
   const direction = directionOf(draft.action);
   const matching = positions.filter(position => position.symbol === draft.symbol && position.direction === direction && position.holdVol > 0);
+  if (draft.takeProfitPrice !== undefined || draft.stopLossPrice !== undefined) {
+    // MEXC refuses these on top of a position's own with codes that prove nothing about the order, which would lock everything.
+    if (matching.length) throw mexcError("stopOnHeldPosition");
+    checkStopPrices(direction, draft, orderStopReferences(draft.kind, direction, price, referencePrice, ticker.fairPrice), contract.priceUnit);
+  }
 
   if (isOpening(draft.action)) {
     const leverage = draft.leverage!;
@@ -526,9 +630,98 @@ export function planMexcLeverage(context: MexcLeverageContext): MexcLeveragePlan
 }
 
 /**
+ * What each price of an opening order is measured from. A limit order can fill better than its price, so a stop-loss
+ * must clear both its price and the quote: a limit buy at 110 with the ask at 100 fills near 100, and a stop at 105 would
+ * fire at once. A market order fills near the quote and its stops watch the fair price, so it must clear both of those.
+ */
+export function orderStopReferences(kind: MexcKind, direction: "LONG" | "SHORT", limitPrice: number | undefined, quote: number | undefined, fair: number | undefined): { takeProfit?: number; stopLoss?: number } {
+  const usable = (values: (number | undefined)[]) => values.filter((value): value is number => value !== undefined && Number.isFinite(value) && value > 0);
+  const long = direction === "LONG";
+  // A limit that crosses the book fills at once, so its stop watches the fair price straight away. One still
+  // waiting is not judged by where the fair price is today: waiting for a dip is the point of it.
+  const crossing = limitPrice !== undefined && quote !== undefined && (long ? limitPrice >= quote : limitPrice <= quote);
+  const takeProfit = usable(kind === "LIMIT" ? [limitPrice] : [quote, fair]);
+  const stopLoss = usable(kind === "LIMIT" ? [limitPrice, quote, ...(crossing ? [fair] : [])] : [quote, fair]);
+  return {
+    takeProfit: takeProfit.length ? (long ? Math.max : Math.min)(...takeProfit) : undefined,
+    stopLoss: stopLoss.length ? (long ? Math.min : Math.max)(...stopLoss) : undefined,
+  };
+}
+/** A price on the wrong side would trigger as soon as it was placed. */
+function checkStopPrices(direction: "LONG" | "SHORT", prices: { takeProfitPrice?: string; stopLossPrice?: string }, references: { takeProfit?: number; stopLoss?: number }, tick: number): void {
+  const { takeProfitPrice, stopLossPrice } = prices;
+  for (const price of [takeProfitPrice, stopLossPrice])
+    if (price !== undefined && !isMultipleOf(price, tick)) throw mexcError("priceTick");
+  const sign = direction === "LONG" ? 1 : -1;
+  if ((takeProfitPrice !== undefined && references.takeProfit !== undefined && (Number(takeProfitPrice) - references.takeProfit) * sign <= 0) ||
+      (stopLossPrice !== undefined && references.stopLoss !== undefined && (references.stopLoss - Number(stopLossPrice)) * sign <= 0))
+    throw mexcError("stopPriceSide");
+}
+function stopTarget(draft: MexcStopDraft, positions: MexcPosition[], stopOrders: MexcStopOrder[]) {
+  const position = positions.find(row => row.id === draft.positionId && row.symbol === draft.symbol && row.holdVol > 0);
+  if (!position) throw mexcError("positionChanged");
+  const held = stopOrders.filter(row => row.positionId === draft.positionId);
+  const found = draft.stopOrderId === undefined ? undefined : held.find(row => row.id === draft.stopOrderId);
+  if (draft.kind !== "STOP_PLACE" && !found) throw mexcError("stopChanged");
+  const existing = found && { takeProfitPrice: found.takeProfitPrice, stopLossPrice: found.stopLossPrice, vol: found.vol };
+  const base = {
+    direction: position.direction, holdVol: position.holdVol, averagePrice: position.averagePrice, liquidatePrice: position.liquidatePrice,
+    leverage: position.leverage, existing,
+  };
+  return { position, held, found, base };
+}
+/** Needs no quote or contract state, and the reads behind it none either: taking a stop off must work whatever the market is doing. */
+export function planMexcStopCancel(draft: MexcStopDraft, positions: MexcPosition[], stopOrders: MexcStopOrder[]): MexcStopPlan {
+  if (draft.kind !== "STOP_CANCEL") throw mexcError("invalidDraft");
+  const { found, base } = stopTarget(draft, positions, stopOrders);
+  return { ...base, vol: plainNumber(found!.vol) };
+}
+export interface MexcStopContext {
+  draft: MexcStopDraft;
+  contract: MexcContract;
+  ticker: MexcTicker;
+  positions: MexcPosition[];
+  stopOrders: MexcStopOrder[];
+  /** 1 hedge, 2 one-way. */
+  positionMode: number;
+  now: number;
+}
+/** The single place that decides whether setting or changing one may leave the server, at review and again immediately before the write. */
+export function planMexcStop(context: MexcStopContext): MexcStopPlan {
+  const { draft, contract, ticker, positions, stopOrders, positionMode, now } = context;
+  if (draft.kind === "STOP_CANCEL") throw mexcError("invalidDraft");
+  if (contract.symbol !== draft.symbol || ticker.symbol !== draft.symbol) throw invalidMexcResponse();
+  const { position, held, found, base } = stopTarget(draft, positions, stopOrders);
+  if (positionMode !== 1) throw mexcError("positionMode");
+  if (contract.state !== 0 || contract.apiAllowed !== true || contract.futureType !== 1 || contract.settleCoin !== "USDT")
+    throw mexcError("contractUnavailable");
+  if (!Number.isFinite(ticker.timestamp) || Math.abs(now - ticker.timestamp) > QUOTE_MAX_AGE) throw mexcError("quoteStale");
+  const fair = ticker.fairPrice;
+  if (fair === undefined || fair <= 0) throw mexcError("quoteMissing");
+  // Both trigger on the fair price, so that is what each is measured from.
+  checkStopPrices(position.direction, draft, { takeProfit: fair, stopLoss: fair }, contract.priceUnit);
+  let vol: string;
+  if (draft.kind === "STOP_PLACE") {
+    if (held.length) throw mexcError("stopExists");
+    vol = mexcClosable(position.holdVol, position.frozenVol);
+    if (Number(vol) < contract.minVol || !isMultipleOf(vol, contract.volUnit)) throw mexcError("insufficientPosition");
+  } else {
+    // Leaving a price out of a change would not clearly remove it, so that takes a cancel and a new one.
+    if ((found!.takeProfitPrice !== undefined && draft.takeProfitPrice === undefined) || (found!.stopLossPrice !== undefined && draft.stopLossPrice === undefined))
+      throw mexcError("stopSideRequired");
+    vol = plainNumber(found!.vol);
+  }
+  const sign = position.direction === "LONG" ? 1 : -1;
+  const atPrice = (price?: string) => (price === undefined ? undefined : (Number(price) - position.averagePrice) * Number(vol) * contract.contractSize * sign);
+  return { ...base, fairPrice: fair, vol, atTakeProfit: atPrice(draft.takeProfitPrice), atStopLoss: atPrice(draft.stopLossPrice) };
+}
+
+/**
  * Built by hand so the signed text carries exact decimals and full-length ids.
  * Every interpolated value has already passed a strict format check.
  */
+// 2 is the fair price, which one stray trade on a thin book cannot move the way it can the latest price.
+const STOP_TRIGGER_FAIR = 2;
 export function encodeMexcOrder(draft: MexcDraft, plan: MexcOrderPlan, externalOid: string): string {
   if (!validMexcSymbol(draft.symbol) || !/^[A-Za-z0-9]{8,32}$/.test(externalOid) ||
       (plan.positionId !== undefined && !validMexcOrderID(plan.positionId)))
@@ -552,6 +745,8 @@ export function encodeMexcOrder(draft: MexcDraft, plan: MexcOrderPlan, externalO
     fields.push(`"leverage":${plan.leverage}`);
   }
   if (plan.positionId !== undefined) fields.push(`"positionId":${plan.positionId}`);
+  if (draft.takeProfitPrice !== undefined) fields.push(`"takeProfitPrice":${canonicalDecimal(draft.takeProfitPrice)}`, `"profitTrend":${STOP_TRIGGER_FAIR}`);
+  if (draft.stopLossPrice !== undefined) fields.push(`"stopLossPrice":${canonicalDecimal(draft.stopLossPrice)}`, `"lossTrend":${STOP_TRIGGER_FAIR}`);
   return `{${fields.join(",")}}`;
 }
 /** Bare digits, never Number: order ids do not fit in a double. */
@@ -564,6 +759,44 @@ export function encodeMexcCancel(orderID: string): string {
 export function encodeMexcLeverage(draft: MexcLeverageDraft): string {
   if (!validMexcOrderID(draft.positionId) || !Number.isInteger(draft.leverage)) throw invalidMexcResponse();
   return `{"positionId":${draft.positionId},"leverage":${draft.leverage}}`;
+}
+
+/**
+ * An accepted answer only counts when it says what the request should. Setting one must name an id, in any of the shapes
+ * MEXC's documentation and its other endpoints show, though not necessarily a new one: at the same price it returns the old id.
+ * A row reporting its own error, or naming a different one, is a partial failure inside a successful answer.
+ * Anything else cannot be matched to this request.
+ */
+export function stopOutcome(draft: Pick<MexcStopDraft, "kind" | "stopOrderId">, data: unknown): "done" | "unknown" {
+  if (data === false) return "unknown";
+  const rows: unknown[] = Array.isArray(data) ? data : data === null || data === undefined || data === true ? [] : [data];
+  const field = (row: unknown, name: string) => (row && typeof row === "object" ? (row as Record<string, unknown>)[name] : undefined);
+  if (rows.some(row => { const code = field(row, "errorCode"); return code !== undefined && code !== null && code !== 0; })) return "unknown";
+  const idText = (value: unknown) => (typeof value === "number" && Number.isSafeInteger(value) ? String(value) : value);
+  if (draft.kind !== "STOP_PLACE") {
+    // A row that names which one it answered must name this one.
+    return rows.every(row => { const named = field(row, "stopPlanOrderId"); return named === undefined || idText(named) === draft.stopOrderId; }) ? "done" : "unknown";
+  }
+  const usableID = (value: unknown) => { const text = idText(value); return validMexcOrderID(text) && !/^0+$/.test(text); };
+  return rows.length > 0 && rows.every(row => usableID(row) || usableID(field(row, "id")) || usableID(field(row, "orderId")) || usableID(field(row, "stopPlanOrderId"))) ? "done" : "unknown";
+}
+export const mexcStopPath = (kind: MexcStopDraft["kind"]) =>
+  ({ STOP_PLACE: "/api/v1/private/stoporder/place", STOP_CHANGE: "/api/v1/private/stoporder/change_plan_price", STOP_CANCEL: "/api/v1/private/stoporder/cancel" })[kind];
+/**
+ * Bare digits, never Number. Reversing is turned off by name, because a reverse would open a
+ * position in the other direction; a market exit is named too, as MEXC's documentation marks both required.
+ */
+export function encodeMexcStop(draft: MexcStopDraft, plan: MexcStopPlan): string {
+  const ids = [draft.positionId, ...(draft.stopOrderId === undefined ? [] : [draft.stopOrderId])];
+  if (!ids.every(validMexcOrderID)) throw invalidMexcResponse();
+  if (draft.kind === "STOP_CANCEL") return `[{"stopPlanOrderId":${draft.stopOrderId}}]`;
+  const prices = [
+    ...(draft.takeProfitPrice === undefined ? [] : [`"takeProfitPrice":${canonicalDecimal(draft.takeProfitPrice)}`]),
+    ...(draft.stopLossPrice === undefined ? [] : [`"stopLossPrice":${canonicalDecimal(draft.stopLossPrice)}`]),
+  ];
+  const trigger = [`"lossTrend":${STOP_TRIGGER_FAIR}`, `"profitTrend":${STOP_TRIGGER_FAIR}`, `"takeProfitReverse":2`, `"stopLossReverse":2`];
+  if (draft.kind === "STOP_CHANGE") return `{${[`"stopPlanOrderId":${draft.stopOrderId}`, ...trigger, ...prices].join(",")}}`;
+  return `{${[`"positionId":${draft.positionId}`, `"vol":${canonicalDecimal(plan.vol)}`, `"volType":2`, `"profitLossVolType":"SAME"`, `"takeProfitType":0`, `"stopLossType":0`, ...trigger, ...prices].join(",")}}`;
 }
 
 /**
@@ -594,6 +827,12 @@ export const LEVERAGE_REJECTIONS: Record<number, string> = {
   2005: "leverageMargin", 2044: "leverageMargin", 2009: "positionChanged", 2019: "leverageOrdersOpen", 2021: "leverageRejected", 2026: "leverageCross",
   2038: "leverageSizeLimit", 8815: "leverageSizeLimit", 8816: "leverageSizeLimit", 8818: "leverageSizeLimit", 8819: "leverageSizeLimit", 8821: "leverageSizeLimit",
   8931: "leverageLimit",
+};
+/** The same again for take-profit and stop-loss requests. */
+export const STOP_REJECTIONS: Record<number, string> = {
+  ...DEFINITE_REJECTIONS,
+  2008: "insufficientPosition", 2009: "positionChanged",
+  5001: "stopPriceMissing", 5002: "stopChanged", 5003: "stopPriceInvalid", 5004: "stopVolume", 5005: "stopExists", 5006: "stopRejected",
 };
 export type MexcOutcome =
   | { kind: "accepted"; data: unknown }
@@ -701,6 +940,26 @@ export function decodeMexcPositions(value: unknown): MexcPosition[] {
     };
   });
 }
+/** Only what is still waiting to trigger. A price of zero means that side is not set. */
+export function decodeMexcStopOrders(value: unknown): MexcStopOrder[] {
+  if (value === null || value === undefined) return [];
+  const rows = Array.isArray(value) ? value : array(object(value).resultList);
+  return rows.flatMap(item => {
+    const row = object(item);
+    if (required(row.state) !== 1 || row.isFinished === 1) return [];
+    if (row.positionType !== 1 && row.positionType !== 2) throw invalidMexcResponse();
+    const price = (raw: unknown) => { const number = optional(raw); return number !== undefined && number > 0 ? number : undefined; };
+    return [{
+      id: identifier(row.id),
+      symbol: text(row.symbol),
+      positionId: identifier(row.positionId),
+      direction: row.positionType === 1 ? "LONG" as const : "SHORT" as const,
+      takeProfitPrice: price(row.takeProfitPrice),
+      stopLossPrice: price(row.stopLossPrice),
+      vol: required(row.vol),
+    }];
+  });
+}
 export function decodeMexcAsset(value: unknown): MexcAsset {
   const row = object(value);
   return {
@@ -716,6 +975,7 @@ export function decodeMexcAsset(value: unknown): MexcAsset {
 }
 export function decodeMexcOrder(value: unknown): MexcOrder {
   const row = object(value);
+  const takeProfitPrice = optional(row.takeProfitPrice), stopLossPrice = optional(row.stopLossPrice);
   const action = ({ 1: "OPEN_LONG", 2: "CLOSE_SHORT", 3: "OPEN_SHORT", 4: "CLOSE_LONG" } as const)[required(row.side) as 1 | 2 | 3 | 4];
   if (!action) throw invalidMexcResponse();
   const state = required(row.state);
@@ -737,6 +997,8 @@ export function decodeMexcOrder(value: unknown): MexcOrder {
     fee: (optional(row.takerFee) ?? 0) + (optional(row.makerFee) ?? 0),
     createdAt: optional(row.createTime),
     updatedAt: optional(row.updateTime),
+    ...(takeProfitPrice !== undefined && takeProfitPrice > 0 ? { takeProfitPrice } : {}),
+    ...(stopLossPrice !== undefined && stopLossPrice > 0 ? { stopLossPrice } : {}),
   };
 }
 export function decodeMexcOrderPage(value: unknown): MexcOrder[] {

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   mergeLiveCandles, batches, blockMessage, clampLeverage, closableOf, closedOrderWindow, closeActionFor, confirmArmed, draftIssueOf, leverageChoice, marginOf,
   notionalOf, parseVenue, reviewExpired, reviewRemainingSeconds, snapToTick, sortContracts, stepDecimal, tradingLocked,
-  MAX_FAVORITES, favoriteContracts, fractionOfCapacity, openCapacity, parseFavorites, ticketBlocked, toggleFavorite, valuationPrice, volForFraction,
+  MAX_FAVORITES, favoriteContracts, fractionOfCapacity, openCapacity, parseFavorites, stopDraftKey, stopEstimate, stopSideIssue, stopsDropped, ticketBlocked, toggleFavorite, valuationPrice, volForFraction,
 } from "./mexc/mexcView.ts";
 import { planMexcOrder, validateMexcDraft } from "./mexcRules.ts";
 import type { MexcContract, MexcPosition } from "./mexcRules.ts";
@@ -273,4 +273,49 @@ test("favourites keep their order and skip anything no longer listed", () => {
   const listed = [contract("A_USDT"), contract("B_USDT"), contract("C_USDT")];
   assert.deepEqual(favoriteContracts(["C_USDT", "GONE_USDT", "A_USDT"], listed).map(c => c.symbol), ["C_USDT", "A_USDT"]);
   assert.deepEqual(favoriteContracts([], listed), []);
+});
+
+test("stop estimates run from the average entry, for either direction", () => {
+  const long = { direction: "LONG" as const, averagePrice: 100, holdVol: 10 };
+  assert.ok(Math.abs(stopEstimate(long, 0.01, "110")! - 1) < 1e-9);
+  assert.ok(Math.abs(stopEstimate(long, 0.01, "90")! + 1) < 1e-9);
+  assert.ok(Math.abs(stopEstimate({ ...long, direction: "SHORT" }, 0.01, "90")! - 1) < 1e-9);
+  for (const bad of ["", " ", "abc", "0", "-5"]) assert.equal(stopEstimate(long, 0.01, bad), undefined);
+});
+
+test("a price on the wrong side shows before a review, without judging what cannot be judged", () => {
+  const at = { takeProfit: 100, stopLoss: 100 };
+  assert.equal(stopSideIssue("LONG", "110", "90", at), false);
+  assert.equal(stopSideIssue("LONG", "", "", at), false);
+  assert.equal(stopSideIssue("LONG", "100", "", at), true);
+  assert.equal(stopSideIssue("LONG", "", "100", at), true);
+  assert.equal(stopSideIssue("LONG", "90", "", at), true);
+  assert.equal(stopSideIssue("LONG", "", "110", at), true);
+  assert.equal(stopSideIssue("SHORT", "90", "110", at), false);
+  assert.equal(stopSideIssue("SHORT", "110", "", at), true);
+  assert.equal(stopSideIssue("SHORT", "", "90", at), true);
+  // Each price has its own reference: a limit buy at 110 with the ask at 100.
+  assert.equal(stopSideIssue("LONG", "120", "105", { takeProfit: 110, stopLoss: 100 }), true);
+  assert.equal(stopSideIssue("LONG", "120", "95", { takeProfit: 110, stopLoss: 100 }), false);
+  assert.equal(stopSideIssue("LONG", "90", "", {}), false, "no quote yet");
+  assert.equal(stopSideIssue("LONG", "abc", "", at), false, "the format check reports that one");
+});
+
+test("a review matches its form however its prices are written or its fields ordered", () => {
+  const form = { symbol: "A_USDT", positionId: "1", kind: "STOP_CHANGE" as const, stopOrderId: "2", takeProfitPrice: "720.00", stopLossPrice: "680" };
+  const back = { kind: "STOP_CHANGE" as const, symbol: "A_USDT", positionId: "1", stopOrderId: "2", takeProfitPrice: "720", stopLossPrice: "680" };
+  assert.equal(stopDraftKey(form), stopDraftKey(back));
+  assert.notEqual(stopDraftKey(form), stopDraftKey({ ...back, stopLossPrice: "681" }));
+  assert.notEqual(stopDraftKey(form), stopDraftKey({ ...back, stopLossPrice: undefined }));
+  assert.notEqual(stopDraftKey(form), stopDraftKey({ ...back, stopOrderId: "3" }));
+  assert.notEqual(stopDraftKey(form), stopDraftKey({ ...back, kind: "STOP_CANCEL" }));
+});
+
+test("prices typed before a position appeared are never dropped without a word", () => {
+  assert.equal(stopsDropped(true, true, true, "720", ""), true);
+  assert.equal(stopsDropped(true, true, true, "", "680"), true);
+  assert.equal(stopsDropped(true, true, true, " ", " "), false, "nothing was typed");
+  assert.equal(stopsDropped(true, true, false, "720", "680"), false, "still carried");
+  assert.equal(stopsDropped(true, false, true, "720", "680"), false, "folded away, so nothing was promised");
+  assert.equal(stopsDropped(false, true, true, "720", "680"), false, "a close carries none");
 });

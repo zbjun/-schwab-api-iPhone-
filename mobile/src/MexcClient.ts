@@ -74,6 +74,8 @@ export class MexcClient extends ServerBroker implements MexcApi {
       throw new TradingError("serverUnavailable", CONNECTION_TEXT.serverUnavailable);
     return account;
   }
+  /** For the floating chart's native read loop, which keeps going while this JavaScript may be paused. It only asks `live`. */
+  liveConnection() { return this.config(); }
   contracts() { return this.rpc<MexcContract[]>("contracts"); }
   limits() { return this.rpc<MexcLimits>("limits"); }
   tickers(symbols: string[]) { return this.rpc<MexcTicker[]>("quotes", [symbols]); }

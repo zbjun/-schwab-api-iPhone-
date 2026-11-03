@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { barMilliseconds, candleCountdown, chartHeightFor, priceAxisWidth } from "./chartCountdown.ts";
+import { lineLabelWidth, placeLineLabels } from "./chartLines.ts";
 
 const start = 1_700_000_000_000;
 
@@ -56,4 +57,23 @@ test("price axis fits its longest label and keeps room for the countdown", () =>
   assert.equal(priceAxisWidth(["1.23M"]), 34);
   assert.equal(priceAxisWidth(["1.23"]), 34);
   assert.equal(priceAxisWidth([]), 34);
+});
+
+test("line labels stay on the plot and never cover each other", () => {
+  assert.deepEqual(placeLineLabels([], 0, 100, 17), []);
+  assert.deepEqual(placeLineLabels([40], 0, 100, 17), [40]);
+  // Far apart: each stays where it wants to be.
+  assert.deepEqual(placeLineLabels([60, 10], 0, 100, 17), [60, 10]);
+  // Close together: pushed apart, in the same order and returned in the order given.
+  assert.deepEqual(placeLineLabels([45, 40], 0, 100, 17), [57, 40]);
+  // Off the chart: pinned to an edge without stacking.
+  assert.deepEqual(placeLineLabels([-300, -200], 0, 100, 17), [0, 17]);
+  assert.deepEqual(placeLineLabels([500, 400], 0, 100, 17), [83, 66]);
+  // More than fit: they share the top edge rather than leave the plot.
+  for (const top of placeLineLabels([0, 0, 0, 0], 0, 34, 17)) assert.ok(top >= 0 && top <= 17);
+});
+
+test("line label width leaves room for its text", () => {
+  assert.ok(lineLabelWidth("成本 690.00") >= 50);
+  assert.ok(lineLabelWidth("多止损 101,234.50") > lineLabelWidth("成本 690.00"));
 });

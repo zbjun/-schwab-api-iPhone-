@@ -107,3 +107,24 @@ test("cost uses current long holdings and never fabricates missing cost or close
   ])
     assert.equal(positionAverageCost(positions, "SNDU"), undefined);
 });
+
+test("on a market that never closes a fill belongs to the bar it falls in", () => {
+  const hour = 3_600_000, day = 24 * hour;
+  // 13:00 UTC starts a bar that runs from premarket into the regular session in New York.
+  const start = Date.UTC(2026, 9, 6, 13);
+  const hourly = [start, start + hour, start + 2 * hour].map(time => ({ time, open: 1, high: 1, low: 1, close: 1 }));
+  const fill = (time: number) => ({ id: String(time), symbol: "A", side: "BUY" as const, time, price: 1, quantity: 1 });
+  const across = fill(start + 45 * 60_000);
+  assert.equal(tradeMarkers(hourly, "minute60", "A", [across]).length, 0, "the session rule drops it");
+  assert.equal(tradeMarkers(hourly, "minute60", "A", [across], true)[0].index, 0);
+  // Nothing snaps across a gap, and nothing lands before the first bar.
+  const gap = [hourly[0], hourly[2]];
+  assert.equal(tradeMarkers(gap, "minute60", "A", [fill(start + hour + 60_000)], true).length, 0);
+  assert.equal(tradeMarkers(hourly, "minute60", "A", [fill(start - 1)], true).length, 0);
+  // Daily bars start at 00:00 UTC, which is the evening before in New York.
+  const midnight = Date.UTC(2026, 9, 6);
+  const daily = [midnight, midnight + day].map(time => ({ time, open: 1, high: 1, low: 1, close: 1 }));
+  assert.equal(tradeMarkers(daily, "daily", "A", [fill(midnight + 6 * hour)], true)[0].index, 0);
+  assert.equal(tradeMarkers(daily, "daily", "A", [fill(midnight + day + 6 * hour)], true)[0].index, 1);
+  assert.equal(tradeMarkers(daily, "daily", "A", [fill(midnight + 400 * day)], true).length, 0, "far past the last bar");
+});

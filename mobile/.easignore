@@ -16,6 +16,11 @@
 !/src/mexc
 !/src/mexc/*.ts
 !/src/mexc/*.tsx
+!/modules
+!/modules/ths-chart-pip
+!/modules/ths-chart-pip/expo-module.config.json
+!/modules/ths-chart-pip/ios
+!/modules/ths-chart-pip/ios/*
 !/.eas
 !/.eas/build
 !/.eas/build/unsigned-ios.yml

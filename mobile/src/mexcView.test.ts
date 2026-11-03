@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   mergeLiveCandles, batches, blockMessage, clampLeverage, closableOf, closedOrderWindow, closeActionFor, confirmArmed, draftIssueOf, leverageChoice, marginOf,
   notionalOf, parseVenue, reviewExpired, reviewRemainingSeconds, snapToTick, sortContracts, stepDecimal, tradingLocked,
-  MAX_FAVORITES, favoriteContracts, fractionOfCapacity, openCapacity, parseFavorites, stopDraftKey, stopEstimate, stopSideIssue, stopsDropped, ticketBlocked, toggleFavorite, valuationPrice, volForFraction,
+  MAX_FAVORITES, chartFillWindow, pipCandles, priceDecimals, favoriteContracts, fractionOfCapacity, mexcExecutions, openCapacity, positionPriceLines, parseFavorites, stopDraftKey, stopEstimate, stopSideIssue, stopsDropped, ticketBlocked, toggleFavorite, valuationPrice, volForFraction,
 } from "./mexc/mexcView.ts";
 import { planMexcOrder, validateMexcDraft } from "./mexcRules.ts";
 import type { MexcContract, MexcPosition } from "./mexcRules.ts";
@@ -318,4 +318,44 @@ test("prices typed before a position appeared are never dropped without a word",
   assert.equal(stopsDropped(true, true, false, "720", "680"), false, "still carried");
   assert.equal(stopsDropped(true, false, true, "720", "680"), false, "folded away, so nothing was promised");
   assert.equal(stopsDropped(false, true, true, "720", "680"), false, "a close carries none");
+});
+
+test("fills reach the chart with the right side and price, and unfilled orders do not", () => {
+  const order = { id: "1", symbol: "A_USDT", action: "OPEN_LONG" as const, price: 700, vol: 5, dealVol: 5, dealAvgPrice: 699, state: 3, cancelable: false, updatedAt: 1000 };
+  assert.deepEqual(mexcExecutions([order]), [{ id: "1", symbol: "A_USDT", side: "BUY", time: 1000, price: 699, quantity: 5 }]);
+  const side = (action: "OPEN_LONG" | "OPEN_SHORT" | "CLOSE_LONG" | "CLOSE_SHORT") => mexcExecutions([{ ...order, action }])[0].side;
+  assert.equal(side("OPEN_SHORT"), "SELL");
+  assert.equal(side("CLOSE_LONG"), "SELL");
+  assert.equal(side("CLOSE_SHORT"), "BUY");
+  assert.equal(mexcExecutions([{ ...order, dealVol: 0 }]).length, 0);
+  assert.equal(mexcExecutions([{ ...order, updatedAt: undefined }]).length, 0, "no time, no marker");
+  assert.equal(mexcExecutions([{ ...order, updatedAt: undefined, createdAt: 900 }])[0].time, 900);
+  assert.equal(mexcExecutions([{ ...order, dealAvgPrice: undefined }])[0].price, 700);
+  const window = chartFillWindow(100 * 86_400_000);
+  assert.equal(window.to - window.from, 90 * 86_400_000, "the most MEXC and the gateway allow");
+});
+
+test("each position's cost and stops become lines, saying whose they are only when both directions are held", () => {
+  const colors = { cost: "c", takeProfit: "t", stopLoss: "s" };
+  const long = position({ id: "1", direction: "LONG", averagePrice: 690 });
+  const short = position({ id: "2", direction: "SHORT", averagePrice: 710 });
+  const stop = { id: "9", symbol: "QQQSTOCK_USDT", positionId: "1", direction: "LONG" as const, takeProfitPrice: 720, stopLossPrice: 680, vol: 10 };
+  assert.deepEqual(positionPriceLines([long], [], colors), [{ id: "1:cost", price: 690, label: "成本", color: "c" }]);
+  assert.deepEqual(positionPriceLines([long], [stop], colors).map(line => [line.label, line.price, line.color]), [["成本", 690, "c"], ["止盈", 720, "t"], ["止损", 680, "s"]]);
+  assert.deepEqual(positionPriceLines([long, short], [stop], colors).map(line => line.label), ["多成本", "多止盈", "多止损", "空成本"]);
+  // A side it does not set draws nothing, and a stop on another position is not this one's.
+  assert.deepEqual(positionPriceLines([long], [{ ...stop, takeProfitPrice: undefined }], colors).map(line => line.label), ["成本", "止损"]);
+  assert.deepEqual(positionPriceLines([long], [{ ...stop, positionId: "3" }], colors).map(line => line.label), ["成本"]);
+  assert.deepEqual(positionPriceLines([], [stop], colors), []);
+});
+
+test("the floating chart gets the last stretch of good candles and only what it draws", () => {
+  const bar = (time: number) => ({ time, open: 1, high: 2, low: 0.5, close: 1.5, volume: 9, provisional: true });
+  assert.deepEqual(pipCandles([bar(1)]), [{ time: 1, open: 1, high: 2, low: 0.5, close: 1.5 }]);
+  assert.deepEqual(pipCandles([bar(1), bar(2), bar(3)], 2).map(c => c.time), [2, 3]);
+  for (const broken of [{ close: NaN }, { high: 0 }, { low: -1 }, { time: Infinity }]) assert.deepEqual(pipCandles([{ ...bar(1), ...broken }]), []);
+  assert.equal(pipCandles(Array.from({ length: 500 }, (_, i) => bar(i + 1))).length, 120);
+  assert.equal(priceDecimals(0.01), 2);
+  assert.equal(priceDecimals(1), 0);
+  assert.equal(priceDecimals(0.0001), 4);
 });

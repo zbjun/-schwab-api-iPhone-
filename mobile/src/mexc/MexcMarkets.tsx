@@ -5,13 +5,16 @@ import { isLineRange } from "../chartData.ts";
 import { DemoNotice } from "../DemoNotice.tsx";
 import type { History, HistoryRange, Palette } from "../types.ts";
 import { mexcActionLabels } from "../mexcRules.ts";
-import type { MexcAction, MexcContract, MexcPosition, MexcStopOrder, MexcTicker } from "../mexcRules.ts";
+import type { MexcAction, MexcContract, MexcOrder, MexcPosition, MexcStopOrder, MexcTicker } from "../mexcRules.ts";
 import MarketChart, { ChartControls, type ChartControlHandle } from "../MarketChart.tsx";
 import { Button, Chip, Icon, Input, elevated, radius, styles } from "../ui.tsx";
 import { useTickers, type MexcState } from "./useMexc.ts";
-import { closableOf, closeActionFor, favoriteContracts, hasClosable, isStockContract, mergeLiveCandles, percent, priceText, signedPercent, sortContracts, STOCK_NOTE } from "./mexcView.ts";
+import {
+  chartFillWindow, closableOf, closeActionFor, favoriteContracts, hasClosable, isStockContract, mergeLiveCandles, mexcExecutions, percent, positionPriceLines, priceText, signedPercent, sortContracts, STOCK_NOTE,
+} from "./mexcView.ts";
 import MexcOrderPanel from "./MexcOrderPanel.tsx";
 import MexcStopEditor from "./MexcStopEditor.tsx";
+import { useChartPip } from "./useChartPip.ts";
 import { EmptyState, Notice, Segmented } from "./parts.tsx";
 
 const PAGE = 30;
@@ -118,6 +121,7 @@ function Detail({ m, palette: p, contract, ticker: listTicker }: {
   const [stops, setStops] = useState<MexcStopOrder[]>([]);
   const [stopsVersion, setStopsVersion] = useState(0);
   const [stopsFailed, setStopsFailed] = useState(false);
+  const [closedOrders, setClosedOrders] = useState<MexcOrder[]>([]);
   const [scrollHeight, setScrollHeight] = useState(0);
   const [chartTop, setChartTop] = useState(0);
   // With the order panel open the chart fits what is left above it, so the latest candle stays in view.
@@ -169,6 +173,26 @@ function Detail({ m, palette: p, contract, ticker: listTicker }: {
       .catch(error => { if (active) setStopsFailed((error as { code?: string })?.code !== "methodNotAllowed"); });
     return () => { active = false; };
   }, [m.api, contract.symbol, m.account, held.length, stopsVersion]);
+  const working = m.openOrders.filter(order => order.symbol === contract.symbol);
+  // Asked for again as soon as a position or a partial fill moves, and now and then for what closed on another device.
+  const fillsKey = [...held.map(row => `${row.id}:${row.holdVol}`), ...working.map(order => `${order.id}:${order.dealVol}`)].join();
+  useEffect(() => {
+    let active = true;
+    const load = () => {
+      const { from, to } = chartFillWindow(Date.now());
+      // Markers are a convenience on a chart: without them it is still right, so a failed read stays quiet.
+      m.api.closedOrders(contract.symbol, from, to).then(rows => { if (active) setClosedOrders(rows); }).catch(() => {});
+    };
+    load();
+    const timer = setInterval(load, 60_000);
+    return () => { active = false; clearInterval(timer); };
+  }, [m.api, contract.symbol, fillsKey]);
+  const executions = useMemo(() => mexcExecutions([...closedOrders, ...working]), [closedOrders, fillsKey]);
+  // Both follow the account and the stops, not the live ticks, so the chart is not asked to redo them every second.
+  const priceLines = useMemo(() => positionPriceLines(held, stops, { cost: p.accent, takeProfit: p.up, stopLoss: p.down }), [m.account, contract.symbol, stops, p]);
+  const pip = useChartPip({
+    m, contract, history, range, rangeLabel: RANGES.find(([id]) => id === range)?.[1] ?? (range === "intraday" ? "分时" : ""), priceLines, palette: p,
+  });
   const rate = ticker?.riseFallRate, color = (rate ?? 0) > 0 ? p.up : (rate ?? 0) < 0 ? p.down : p.secondary;
   const unit = contract.priceUnit;
   // Hedge mode can hold both directions in one contract, so each gets its own named button rather than a guess.
@@ -230,6 +254,12 @@ function Detail({ m, palette: p, contract, ticker: listTicker }: {
             {!!minorLabel && underline}
           </Pressable>
           <View style={{ flex: 1 }} />
+          {pip.available && (
+            <Pressable accessibilityRole="button" accessibilityLabel={pip.active ? "关闭小窗" : pip.enabled ? "打开小窗" : "开启小窗"} accessibilityState={{ selected: pip.enabled }}
+              onPress={pip.toggle} style={{ paddingHorizontal: 6, justifyContent: "center" }}>
+              <Text style={{ color: pip.enabled ? p.accent : p.secondary, fontSize: 11, fontWeight: pip.active ? "700" : "500" }}>小窗</Text>
+            </Pressable>
+          )}
           <ChartControls controls={chartControls} palette={p} zoomable={!isLineRange(range)} />
         {more && (
             <View style={{ position: "absolute", top: 28, left: 8, width: 244, zIndex: 10, backgroundColor: p.surface, borderWidth: 1,
@@ -242,7 +272,8 @@ function Detail({ m, palette: p, contract, ticker: listTicker }: {
         </View>
         <View onLayout={event => setChartTop(event.nativeEvent.layout.y)} style={{ paddingLeft: 12, paddingRight: 4 }}>
           {history ? (
-            <MarketChart history={history} range={range} palette={p} height={chartHeight} controlsRef={chartControls} />
+            <MarketChart history={history} range={range} palette={p} height={chartHeight} controlsRef={chartControls}
+              continuousMarket executions={executions} priceLines={priceLines} />
           ) : (
             <View style={{ height: chartHeight, justifyContent: "center" }}>
               {error ? <Text style={{ color: p.secondary, textAlign: "center", padding: 20 }}>{error}</Text> : <ActivityIndicator color={p.secondary} />}

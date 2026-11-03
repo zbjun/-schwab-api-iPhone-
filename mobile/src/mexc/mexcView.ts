@@ -1,6 +1,7 @@
-import { MEXC_MESSAGES, MEXC_REVIEW_TTL, isOpening, mexcClosable, plainNumber, validMexcSymbol, validateMexcDraft } from "../mexcRules.ts";
-import type { Candle, History } from "../types.ts";
-import type { MexcAction, MexcContract, MexcDraft, MexcKind, MexcLimits, MexcOrder, MexcPosition, MexcStopDraft, MexcTicker } from "../mexcRules.ts";
+import { MEXC_MESSAGES, MEXC_REVIEW_TTL, isBuying, isOpening, mexcClosable, plainNumber, validMexcSymbol, validateMexcDraft } from "../mexcRules.ts";
+import type { ChartPriceLine } from "../chartLines.ts";
+import type { Candle, History, TradeExecution } from "../types.ts";
+import type { MexcAction, MexcContract, MexcDraft, MexcKind, MexcLimits, MexcOrder, MexcPosition, MexcStopDraft, MexcStopOrder, MexcTicker } from "../mexcRules.ts";
 
 /** Pure display helpers for the MEXC screens. Nothing here decides whether an order may be sent. */
 
@@ -11,6 +12,14 @@ export const parseVenue = (raw: string | null | undefined): Venue => (raw === "m
 
 export const isStockContract = (contract: Pick<MexcContract, "symbol">) => contract.symbol.includes("STOCK");
 
+export const PIP_KEY = "ths.expo.mexc.pip.v1";
+/** The floating chart only shows the last stretch, and a chart with bad numbers must not reach native drawing. */
+export function pipCandles(candles: readonly Candle[], limit = 120) {
+  return candles
+    .filter(c => [c.time, c.open, c.high, c.low, c.close].every(value => Number.isFinite(value) && value > 0))
+    .slice(-limit)
+    .map(({ time, open, high, low, close }) => ({ time, open, high, low, close }));
+}
 export const FAVORITES_KEY = "ths.expo.mexc.favorites.v1";
 export const MAX_FAVORITES = 50;
 /** Anything unreadable counts as no favourites; only well-formed symbols survive, once each. */
@@ -176,6 +185,7 @@ export function fractionOfCapacity(vol: string, capacity: number | undefined): n
   return Math.min(1, value / capacity);
 }
 
+export const priceDecimals = (unit: number) => decimalPlaces(unit);
 const decimalPlaces = (unit: number) => (plainNumber(unit).split(".")[1] ?? "").length;
 /** Moves a typed number one tick up or down, snapping to the grid first. */
 export function stepDecimal(value: string, unit: number, direction: 1 | -1, min = unit): string {
@@ -238,6 +248,36 @@ export const ORDER_STATE_LABELS: Record<number, string> = { 1: "待处理", 2: "
 export const orderStateLabel = (order: Pick<MexcOrder, "state"> & { dealVol?: number }) =>
   order.state === 2 && (order.dealVol ?? 0) > 0 ? "部分成交" : ORDER_STATE_LABELS[order.state] ?? "未知";
 
+/**
+ * What orders have filled, as the chart's markers expect. MEXC reports these per order, so the time is when the order
+ * last changed: a fill's own moment only for an order that filled all at once, and one marker for a partly filled order.
+ */
+export function mexcExecutions(orders: readonly MexcOrder[]): TradeExecution[] {
+  return orders.flatMap(order => {
+    const time = order.updatedAt ?? order.createdAt;
+    return order.dealVol > 0 && time !== undefined
+      ? [{ id: order.id, symbol: order.symbol, side: isBuying(order.action) ? "BUY" as const : "SELL" as const, time, price: order.dealAvgPrice ?? order.price, quantity: order.dealVol }]
+      : [];
+  });
+}
+/** Each position's cost and whatever is waiting on it. Hedge mode can hold both directions, and then each line says whose it is. */
+export function positionPriceLines(
+  positions: readonly MexcPosition[],
+  stops: readonly MexcStopOrder[],
+  colors: { cost: string; takeProfit: string; stopLoss: string },
+): ChartPriceLine[] {
+  return positions.flatMap(position => {
+    const side = positions.length > 1 ? (position.direction === "LONG" ? "多" : "空") : "";
+    const lines: ChartPriceLine[] = [{ id: `${position.id}:cost`, price: position.averagePrice, label: `${side}成本`, color: colors.cost }];
+    for (const stop of stops.filter(row => row.positionId === position.id)) {
+      if (stop.takeProfitPrice !== undefined) lines.push({ id: `${stop.id}:tp`, price: stop.takeProfitPrice, label: `${side}止盈`, color: colors.takeProfit });
+      if (stop.stopLossPrice !== undefined) lines.push({ id: `${stop.id}:sl`, price: stop.stopLossPrice, label: `${side}止损`, color: colors.stopLoss });
+    }
+    return lines;
+  });
+}
+/** MEXC allows 90 days in one query, and bars older than that are too long for a marker to say much anyway. */
+export const chartFillWindow = (now: number) => ({ from: now - 90 * 86_400_000, to: now });
 export const CLOSED_ORDER_DAYS = 7;
 export const closedOrderWindow = (now: number) => ({ from: now - CLOSED_ORDER_DAYS * 86_400_000, to: now });
 /** The tickers endpoint takes at most 100 symbols per call. */

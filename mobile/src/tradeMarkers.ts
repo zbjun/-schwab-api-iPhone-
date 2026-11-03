@@ -26,18 +26,25 @@ function calendarKey(time: number, range: HistoryRange): string | undefined {
   return day;
 }
 
-/** Map fills to actual candles; never snap a fill across missing bars or sessions. */
+/** A bar longer than any calendar month cannot be the bar a fill belongs to. */
+const LONGEST_CALENDAR_BAR = 32 * 86_400_000;
+
+/**
+ * Map fills to actual candles; never snap a fill across missing bars or sessions. `continuous` is for a market that never
+ * closes, whose bars run across US sessions and start on UTC boundaries: there the fill belongs to the bar it falls in.
+ */
 export function tradeMarkers(
   candles: Candle[],
   range: HistoryRange,
   symbol: string,
   executions: TradeExecution[],
+  continuous = false,
 ): TradeMarker[] {
   const minutes =
     minuteInterval(range) ??
     (range === "intraday" ? 1 : range === "fiveDay" ? 5 : undefined);
   const calendar = new Map<string, number>();
-  if (minutes === undefined)
+  if (minutes === undefined && !continuous)
     candles.forEach((c, index) => {
       const key = calendarKey(c.time, range);
       if (key) calendar.set(key, index);
@@ -58,7 +65,7 @@ export function tradeMarkers(
       continue;
     seen.add(fill.id);
     let index: number | undefined;
-    if (minutes === undefined)
+    if (minutes === undefined && !continuous)
       index = calendar.get(calendarKey(fill.time, range) ?? "");
     else {
       let lo = 0,
@@ -70,8 +77,11 @@ export function tradeMarkers(
       }
       const candidate = lo - 1,
         candle = candles[candidate];
-      if (
+      if (candle && continuous) {
+        if (fill.time < candle.time + (minutes === undefined ? LONGEST_CALENDAR_BAR : minutes * 60_000)) index = candidate;
+      } else if (
         candle &&
+        minutes !== undefined &&
         fill.time < candle.time + minutes * 60_000 &&
         newYorkDateKey(candle.time) === newYorkDateKey(fill.time) &&
         chartSessionWindow(candle.time)?.session === chartSessionWindow(fill.time)?.session

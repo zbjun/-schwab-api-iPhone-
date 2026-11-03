@@ -35,6 +35,7 @@ import type {
   TradeExecution,
 } from "./types";
 import { tradeMarkers } from "./tradeMarkers.ts";
+import { lineLabelWidth, placeLineLabels, type ChartPriceLine } from "./chartLines.ts";
 import {
   candlePriceDomain,
   chartSessionWindow,
@@ -64,6 +65,10 @@ interface Props {
   onSelectionChange?: (candle: Candle | undefined) => void;
   executions?: TradeExecution[];
   averageCost?: number;
+  /** Further levels across the chart, such as a position's cost, take-profit and stop-loss. Keep the array stable. */
+  priceLines?: ChartPriceLine[];
+  /** A market that never closes, so fills are not held to US sessions. */
+  continuousMarket?: boolean;
   controlsRef?: React.Ref<ChartControlHandle>;
 }
 interface GestureBaseline {
@@ -82,6 +87,7 @@ interface SessionSegment {
 }
 const periods = [5, 10, 20, 30];
 const noExecutions: TradeExecution[] = [];
+const noPriceLines: ChartPriceLine[] = [];
 const clamp = (value: number, lower: number, upper: number): number =>
   Math.min(upper, Math.max(lower, value));
 const finite = (value: number | undefined): value is number =>
@@ -311,6 +317,8 @@ function MarketChart({
   onSelectionChange,
   executions = noExecutions,
   averageCost,
+  priceLines = noPriceLines,
+  continuousMarket = false,
   controlsRef,
 }: Props) {
   const [width, setWidth] = useState(0);
@@ -322,8 +330,8 @@ function MarketChart({
   }, [history.candles]);
   const identity = `${history.symbol}:${range}`;
   const markers = useMemo(
-    () => tradeMarkers(candles, range, history.symbol, executions),
-    [candles, range, history.symbol, executions],
+    () => tradeMarkers(candles, range, history.symbol, executions, continuousMarket),
+    [candles, range, history.symbol, executions, continuousMarket],
   );
   const cost =
     !compact && finite(averageCost) && averageCost > 0
@@ -842,6 +850,12 @@ function MarketChart({
     latest,
   }));
 
+  const levels: ChartPriceLine[] = compact ? [] : [
+    ...(cost === undefined ? [] : [{ id: "cost", price: cost, label: "成本", color: palette.accent }]),
+    ...priceLines.filter(level => finite(level.price) && level.price > 0),
+  ];
+  const levelTops = placeLineLabels(levels.map(level => y(level.price) - 17), plotTop, priceBottom, 17);
+
   return (
     <View
       testID={compact ? `watchlist.chart.${history.symbol}` : "detail.chart"}
@@ -1104,36 +1118,39 @@ function MarketChart({
                   ))}
                 </>
               )}
-              {cost !== undefined && (
-                <G testID="chart.costBasis">
-                  {cost >= domain.low && cost <= domain.high && <Line
-                    x1={left}
-                    x2={plotRight}
-                    y1={y(cost)}
-                    y2={y(cost)}
-                    stroke={palette.accent}
-                    strokeWidth={1.2}
-                    strokeDasharray="6 4"
-                  />}
-                  <Rect
-                    x={left + 2}
-                    y={clamp(y(cost) - 17, plotTop, priceBottom - 17)}
-                    width={122}
-                    height={16}
-                    rx={3}
-                    fill={palette.background}
-                    opacity={0.9}
-                  />
-                  <SvgText
-                    x={left + 6}
-                    y={clamp(y(cost) - 17, plotTop, priceBottom - 17) + 12}
-                    fill={palette.accent}
-                    fontSize={11}
-                  >
-                    {cost > domain.high ? "↑ " : cost < domain.low ? "↓ " : ""}成本 {price(cost)}
-                  </SvgText>
-                </G>
-              )}
+              {levels.map((level, index) => {
+                const text = `${level.price > domain.high ? "↑ " : level.price < domain.low ? "↓ " : ""}${level.label} ${price(level.price)}`;
+                return (
+                  <G key={level.id} testID={level.id === "cost" ? "chart.costBasis" : `chart.priceLine.${level.id}`}>
+                    {level.price >= domain.low && level.price <= domain.high && <Line
+                      x1={left}
+                      x2={plotRight}
+                      y1={y(level.price)}
+                      y2={y(level.price)}
+                      stroke={level.color}
+                      strokeWidth={1.2}
+                      strokeDasharray="6 4"
+                    />}
+                    <Rect
+                      x={left + 2}
+                      y={levelTops[index]}
+                      width={level.id === "cost" ? 122 : lineLabelWidth(text)}
+                      height={16}
+                      rx={3}
+                      fill={palette.background}
+                      opacity={0.9}
+                    />
+                    <SvgText
+                      x={left + 6}
+                      y={levelTops[index] + 12}
+                      fill={level.color}
+                      fontSize={11}
+                    >
+                      {text}
+                    </SvgText>
+                  </G>
+                );
+              })}
               {visibleMarkers.map((marker) => {
                 const cx = clamp(x(marker.index), left + 10, plotRight - 10);
                 const py = y(marker.price);

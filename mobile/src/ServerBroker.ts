@@ -39,7 +39,7 @@ export class ServerBroker implements Broker {
   protected async hasUnconfirmedWrite(): Promise<boolean> { return !!await this.vault.get(OPERATION); }
   /** Controlled text for another venue on the same gateway; it replaces the Schwab wording. */
   protected messages(): Record<string, string> { return {}; }
-  private async config(): Promise<Configuration | null> {
+  protected async config(): Promise<Configuration | null> {
     const stored = await this.vault.get(CONNECTION);
     if (!stored) return null;
     try {

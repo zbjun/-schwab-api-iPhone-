@@ -1,6 +1,15 @@
-# 2026-10-06: Missing device connection recovery (source only)
+> Commit IDs in the notes dated before 2026-10-18 predate that day's history rewrite; see the old → new list at the top of `server/DEPLOYMENT.md`.
 
-> Commit IDs in these notes predate the 2026-10-18 history rewrite; see the old → new list at the top of `server/DEPLOYMENT.md`.
+# 2026-11-03: 1.0.0 (15) MEXC chart levels and floating chart
+
+- Expo build `6fd8a3a9-8c95-4ac1-8929-1542e5efb29a` completed for `ths-expo-personal`, version 1.0.0/build 15. It was the first compile of the floating chart's Swift. The archive succeeded, and the build log holds no warning or error for its files and no "nearly matches". That log is condensed, so this does not prove the compiler had nothing else to say.
+- Local checks: 431 mobile tests, 167 server tests, TypeScript and web export passed. The tests do not run Swift; `chartPip.test.ts` only checks its source, for example that it sends `live` alone and keeps the device key to one request header.
+- MEXC chart: buy and sell points, cost, take-profit and stop-loss lines were checked in the browser preview with the demo account. They have not been seen with real fills.
+- Floating chart: reviewed for correctness and for safety. The review confirmed the device key only goes to the gateway and nothing reaches a write path. It also found old prices could pass for current ones, which is fixed: a floating chart ignores the app's candles, and an old price turns grey with a warning, judged by time. If iOS suspends the app the frame freezes with no warning, leaving only the printed quote time and the stopped countdown.
+- Not verified: the floating chart has not run on a phone, so automatic opening, staying current in the background, the warnings and the redirect refusal are all untested. No real MEXC order, leverage change or stop has been sent. Nothing on the gateway changed, so `mexc-stops-20261103` stays active.
+- Both personalized IPAs passed ZIP/path, arm64, version/build, embedded Hermes and server-config checks, and the general package holds no server address. Each package is about 8.4 MB and requires user signing. SHA-256: device1 `c50a061671c491b9d3ecaed1179439944c20b22db91ac400c13589b858ea0f2d`; device2 `b4bd96dcf1350b8c6dba165150f55a82aa7f4428170e163b583b8e2dae21102a`.
+
+# 2026-10-06: Missing device connection recovery (source only)
 
 - Live shared-server status checks succeed for both device keys: configured/authenticated=true, reauthorizationRequired=false and unresolvedOperation=false. The phone screenshot has blank local connection fields; its local loss cause is unverified.
 - Added explicit recovery from the personalized IPA resource even after the one-time import flag. Startup still respects an explicit disconnect. Recovery preserves an existing device identity; storage errors propagate and failed restores can retry.

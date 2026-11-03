@@ -4,6 +4,8 @@ One server owns the existing Schwab Client ID, Client Secret and OAuth tokens. E
 
 The personal server has now been deployed over HTTPS; see [DEPLOYMENT.md](DEPLOYMENT.md) for the verified layout and pending authorization/device steps. The generic instructions below also cover a fresh installation. No real trade or IPA build is implied by these instructions.
 
+MEXC USDT perpetuals run through a separate gateway on its own host (`mexcStart.mjs`, `mexcBroker.ts`). It reuses this gateway's device authentication, one-use review and write lock, and has its own vault. Its API key stays in that server's config and never reaches a phone or this repository. See [DEPLOYMENT.md](DEPLOYMENT.md) for its releases and rollback.
+
 ## Initial setup
 
 Use Node **24.11 or newer**. Copy both `server/` and `mobile/src/` from this repository; the server reuses the existing broker and stream parser. Keep a single running server process per vault. Do not use a process manager cluster or multiple replicas.

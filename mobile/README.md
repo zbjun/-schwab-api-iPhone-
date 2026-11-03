@@ -1,10 +1,8 @@
 # THS Expo / React Native
 
-> 2026-09-22：下单核对并行优化已部署服务器；客户端提交后改为后台同步账户和订单，源码已更新，尚未重新构建 IPA。
+当前开发客户端使用 **Expo SDK 57 / React Native 0.86 / React 19.2**，应用配置为 **1.0.0（iOS build 15）**。项目入口、功能概览见[仓库首页](../README.md)，详细证据见[验证记录](VERIFICATION.md)。
 
-当前开发客户端使用 **Expo SDK 57 / React Native 0.86 / React 19.2**，应用配置为 **0.6.4（iOS build 11）**。项目入口、功能概览见[仓库首页](../README.md)，详细证据见[验证记录](VERIFICATION.md)。
-
-截至 2026-09-28，最近交付的 **0.6.4（11）IPA** 来自 Expo 构建 `c6c99824-d602-4eba-beba-0389322f15d1`，包含授权恢复、账户事件同步、极速单次核对和增量行情订阅等更新。配套服务器已部署。仅交付 device1 / device2 两个自用包；通用未签名归档仅作为本地注入配置的中间产物。安装包已通过结构及配置校验，仍需自行签名安装，尚未实测物理 iPhone。
+截至 2026-11-03，最近交付的 **1.0.0（15）IPA** 来自 Expo 构建 `6fd8a3a9-8c95-4ac1-8929-1542e5efb29a`，包含 MEXC 永续合约交易、止盈止损、合约图上的 B/S 点和价位线、后台小窗。配套服务器已部署。仅交付 device1 / device2 两个自用包；通用未签名归档仅作为本地注入配置的中间产物。安装包已通过结构及配置校验，仍需自行签名安装；这个版本尚未实测物理 iPhone。
 
 ## 本地预览与 Expo Go
 
@@ -19,11 +17,13 @@ npm run web
 
 在 iPhone 调试：
 
-1. 安装支持 Expo SDK 57 的 Expo Go。
+1. 安装支持 Expo SDK 57 的 Expo Go。App Store 的 Expo Go 只支持最新 SDK，版本不一致时用手机 Safari 打开同一个 Metro 地址预览界面。
 2. 手机与电脑连接同一局域网，从仓库根目录运行 `./tools/Start-ExpoGo.ps1`；也可在本目录运行 `npm start`。
 3. 扫描终端二维码，允许本地网络访问，并保持电脑和 Metro 运行。连接地址以当次终端输出为准，不使用旧截图中的地址。
 
 JavaScript、TypeScript 和界面修改通过 Fast Refresh 更新，不触发 EAS 构建；原生配置或模块变化不等同于普通热更新。独立 IPA 与 Expo Go 不共享设备存储或连接配置。
+
+小窗是本地原生模块（`modules/ths-chart-pip`），Expo Go 和网页里没有这个功能，只能在独立 IPA 里运行。`.easignore` 是允许清单，新增目录要同时加进去，否则 EAS 构建不会包含它。
 
 ## 连接 Schwab
 
@@ -102,7 +102,7 @@ JavaScript、TypeScript 和界面修改通过 Fast Refresh 更新，不触发 EA
 
 ## 独立 IPA
 
-在 `mobile/` 内使用 `eas.json` 的 `unsigned` 配置构建。云端 macOS/Xcode 生成 Release 真机包并嵌入 Hermes bundle，当前脚本输出 `THS-0.6.4-unsigned.ipa`。需用自己的证书签名安装，之后不依赖 Metro、Expo Go 或电脑。推送源码不会触发 IPA 构建。
+在 `mobile/` 内使用 `eas.json` 的 `unsigned` 配置构建。云端 macOS/Xcode 生成 Release 真机包并嵌入 Hermes bundle，当前脚本输出 `THS-1.0.0-unsigned.ipa`。需用自己的证书签名安装，之后不依赖 Metro、Expo Go 或电脑。推送源码不会触发 IPA 构建。
 
 明确需要新 IPA 并核对 EAS 账户额度后，在本目录执行：
 

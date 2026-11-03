@@ -31,11 +31,11 @@ export const light: Palette = {
   postmarket: "#3475C7",
 };
 export const dark: Palette = {
-  background: "#0E1013",
-  surface: "#171A1F",
-  text: "#ECEEF1",
-  secondary: "#8B929C",
-  separator: "#262A31",
+  background: "#000000",
+  surface: "#151515",
+  text: "#ECECEC",
+  secondary: "#8E8E8E",
+  separator: "#2A2A2A",
   up: "#FF4A40",
   down: "#29BA59",
   accent: "#3D8BFD",
@@ -88,9 +88,9 @@ export function Glass({
     <View
       style={[
         {
-          backgroundColor: scheme === "light" ? "#FDFEFFE8" : "#26282DE8",
+          backgroundColor: scheme === "light" ? "#FDFEFFE8" : "#262626E8",
           borderWidth: StyleSheet.hairlineWidth,
-          borderColor: scheme === "light" ? "#FFFFFF" : "#3A3D44",
+          borderColor: scheme === "light" ? "#FFFFFF" : "#3A3A3A",
           shadowColor: "#000",
           shadowOpacity: scheme === "light" ? 0.08 : 0.3,
           shadowRadius: 18,
@@ -226,12 +226,14 @@ export function Stepper({
   label,
   onStep,
   disabled = false,
+  compact = false,
   ...input
 }: Omit<TextInputProps, "style"> & {
   palette: Palette;
   label: string;
   onStep: (direction: 1 | -1) => void;
   disabled?: boolean;
+  compact?: boolean;
 }) {
   const tick = (direction: 1 | -1) => (
     <Pressable
@@ -240,7 +242,7 @@ export function Stepper({
       disabled={disabled}
       onPress={() => onStep(direction)}
       style={({ pressed }) => ({
-        width: 46,
+        width: compact ? 40 : 46,
         alignSelf: "stretch",
         alignItems: "center",
         justifyContent: "center",
@@ -254,7 +256,7 @@ export function Stepper({
   );
   return (
     <View style={styles.row}>
-      <Text numberOfLines={1} style={{ color: p.secondary, fontSize: 13, width: 50 }}>
+      <Text numberOfLines={1} style={{ color: p.secondary, fontSize: 13, width: compact ? 34 : 50 }}>
         {label}
       </Text>
       <View
@@ -262,7 +264,7 @@ export function Stepper({
           flex: 1,
           flexDirection: "row",
           alignItems: "center",
-          height: 44,
+          height: compact ? 36 : 44,
           borderRadius: radius.control,
           backgroundColor: elevated(p),
         }}
@@ -280,7 +282,7 @@ export function Stepper({
             alignSelf: "stretch",
             textAlign: "center",
             color: p.text,
-            fontSize: 18,
+            fontSize: compact ? 15 : 18,
             fontWeight: "600",
             fontVariant: ["tabular-nums"],
             paddingVertical: 0,
@@ -366,9 +368,9 @@ export function Meta({
 
 export { Icon } from "./Icon.tsx";
 export const elevated = (p: Palette) =>
-  p.background === light.background ? "#ECEEF1" : "#20242A";
+  p.background === light.background ? "#ECEEF1" : "#1F1F1F";
 export const groupBackground = (p: Palette) =>
-  p.background === light.background ? "#F2F3F5" : "#0E1013";
+  p.background === light.background ? "#F2F3F5" : "#000000";
 export function GroupCaption({
   children,
   palette: p,

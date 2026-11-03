@@ -1,7 +1,7 @@
 import { ServerBroker } from "./ServerBroker.ts";
 import { TradingError } from "./orderRules.ts";
-import { MEXC_ACCOUNT, MEXC_MESSAGES, freezeMexcDraft, isOpening, validateMexcDraft, validMexcOrderID } from "./mexcRules.ts";
-import type { MexcAccount, MexcContract, MexcDraft, MexcLimits, MexcOrder, MexcPrepared, MexcTicker } from "./mexcRules.ts";
+import { MEXC_ACCOUNT, MEXC_MESSAGES, freezeMexcDraft, freezeMexcLeverageDraft, isOpening, validateMexcDraft, validateMexcLeverageDraft, validMexcOrderID } from "./mexcRules.ts";
+import type { MexcAccount, MexcContract, MexcDraft, MexcLeverageDraft, MexcLeveragePrepared, MexcLimits, MexcLive, MexcOrder, MexcPrepared, MexcTicker } from "./mexcRules.ts";
 import type { FetchTransport } from "./broker.ts";
 import type { History, HistoryRange, SessionStatus, Vault } from "./types.ts";
 
@@ -19,11 +19,14 @@ export interface MexcApi {
   limits(): Promise<MexcLimits>;
   tickers(symbols: string[]): Promise<MexcTicker[]>;
   chart(symbol: string, range: HistoryRange): Promise<History>;
+  live(symbol: string, range: HistoryRange): Promise<MexcLive>;
   openOrders(): Promise<MexcOrder[]>;
   closedOrders(symbol: string, from: number, to: number): Promise<MexcOrder[]>;
   review(draft: MexcDraft): Promise<MexcPrepared>;
   place(prepared: MexcPrepared): Promise<{ orderID: string }>;
   cancelOrder(orderID: string): Promise<void>;
+  reviewLeverage(draft: MexcLeverageDraft): Promise<MexcLeveragePrepared>;
+  changeLeverage(prepared: MexcLeveragePrepared): Promise<{ leverage: number }>;
   acknowledgeReconciliation(): Promise<void>;
 }
 
@@ -67,6 +70,8 @@ export class MexcClient extends ServerBroker implements MexcApi {
   limits() { return this.rpc<MexcLimits>("limits"); }
   tickers(symbols: string[]) { return this.rpc<MexcTicker[]>("quotes", [symbols]); }
   chart(symbol: string, range: HistoryRange) { return this.rpc<History>("history", [symbol, range]); }
+  // Short wait: a stuck connection should show as stale quickly, and the next second asks again.
+  live(symbol: string, range: HistoryRange) { return this.rpc<MexcLive>("live", [symbol, range], { path: "/rpc", timeout: 5_000 }); }
   openOrders() { return this.rpc<MexcOrder[]>("orders", [MEXC_ACCOUNT]); }
   closedOrders(symbol: string, from: number, to: number) { return this.rpc<MexcOrder[]>("closedOrders", [symbol, from, to]); }
   async review(draft: MexcDraft): Promise<MexcPrepared> {
@@ -108,4 +113,26 @@ export class MexcClient extends ServerBroker implements MexcApi {
     }));
   }
   cancelOrder(orderID: string) { return this.honest(() => this.write<void>("cancel", [MEXC_ACCOUNT, orderID])); }
+  /** Same one-use review as an order. An older gateway refuses this draft as invalid, and nothing is sent. */
+  async reviewLeverage(draft: MexcLeverageDraft): Promise<MexcLeveragePrepared> {
+    validateMexcLeverageDraft(draft);
+    const sent = freezeMexcLeverageDraft(draft);
+    const startedAt = Date.now();
+    const prepared = await this.rpc<MexcLeveragePrepared>("prepare", [MEXC_ACCOUNT, sent]);
+    const back = prepared?.draft;
+    // The screen must show what the server will send, not what was asked for.
+    if (!prepared || typeof prepared.id !== "string" || !prepared.id || prepared.isDemo !== false || !back || back.kind !== "LEVERAGE" ||
+        back.symbol !== sent.symbol || back.positionId !== sent.positionId || back.leverage !== sent.leverage ||
+        !Number.isFinite(prepared.previousLeverage) || !Number.isFinite(prepared.holdVol) || (prepared.direction !== "LONG" && prepared.direction !== "SHORT"))
+      throw new TradingError("serverUnavailable", "服务器返回的核对信息无效，本次未提交。");
+    return { ...prepared, preparedAt: startedAt };
+  }
+  changeLeverage(prepared: MexcLeveragePrepared) {
+    return this.honest(() => this.write<{ leverage: number }>("submit", [{ id: prepared.id }], result => {
+      // An accepted write that names another value cannot be matched to this change.
+      if (result?.leverage !== prepared.draft.leverage)
+        throw new TradingError("orderOutcomeUnknown", MEXC_MESSAGES.orderOutcomeUnknown);
+      return result;
+    }));
+  }
 }

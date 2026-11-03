@@ -1,10 +1,10 @@
 import { TradingError } from "../orderRules.ts";
 import {
-  MEXC_ACCOUNT, MEXC_MESSAGES, MEXC_REVIEW_TTL, freezeMexcDraft, isBuying, isOpening, mexcError, planMexcOrder,
-  validMexcSymbol, validateMexcDraft,
+  MEXC_ACCOUNT, MEXC_MESSAGES, MEXC_REVIEW_TTL, freezeMexcDraft, freezeMexcLeverageDraft, isBuying, isOpening, mexcError, planMexcLeverage, planMexcOrder,
+  validMexcSymbol, validateMexcDraft, validateMexcLeverageDraft,
 } from "../mexcRules.ts";
 import type {
-  MexcAccount, MexcContract, MexcDraft, MexcLimits, MexcOrder, MexcOrderPlan, MexcPosition, MexcPrepared, MexcTicker,
+  MexcAccount, MexcContract, MexcDraft, MexcLeverageDraft, MexcLeveragePlan, MexcLeveragePrepared, MexcLimits, MexcLive, MexcOrder, MexcOrderPlan, MexcPosition, MexcPrepared, MexcTicker,
 } from "../mexcRules.ts";
 import type { MexcApi, MexcStatus } from "../MexcClient.ts";
 import type { Candle, History, HistoryRange } from "../types.ts";
@@ -57,6 +57,7 @@ export class MexcDemo implements MexcApi {
   private open: MexcOrder[];
   private closed: MexcOrder[];
   private readonly reviews = new Map<string, Reviewed>();
+  private readonly leverageReviews = new Map<string, MexcLeveragePrepared>();
 
   constructor(clock: () => number = Date.now) {
     this.clock = clock;
@@ -139,6 +140,17 @@ export class MexcDemo implements MexcApi {
     }
     return { symbol, candles };
   }
+  async live(symbol: string, range: HistoryRange): Promise<MexcLive> {
+    const { candles } = await this.chart(symbol, range), ticker = this.ticker(symbol);
+    const recent = candles.slice(-2).map(candle => ({ ...candle }));
+    // Moves within the open bar so the demo shows the same motion real trades would.
+    const bar = recent[recent.length - 1], moved = bar.open + (bar.close - bar.open) * (0.5 + 0.5 * Math.sin(this.clock() / 1700));
+    bar.close = moved; bar.high = Math.max(bar.high, moved); bar.low = Math.min(bar.low, moved);
+    return { symbol, candles: recent, ticker: {
+      ...ticker, lastPrice: moved, fairPrice: moved,
+      bid1: moved - this.contract(symbol).priceUnit, ask1: moved + this.contract(symbol).priceUnit,
+    } };
+  }
   async openOrders() { return this.open.map(o => ({ ...o })); }
   async closedOrders(symbol: string, from: number, to: number) {
     this.contract(symbol);
@@ -162,6 +174,7 @@ export class MexcDemo implements MexcApi {
     };
     // A newer review replaces the older one, as the server does for the same account.
     this.reviews.clear();
+    this.leverageReviews.clear();
     this.reviews.set(prepared.id, { prepared, draft: frozen });
     return prepared;
   }
@@ -238,6 +251,46 @@ export class MexcDemo implements MexcApi {
       if (held) held.frozenVol = Math.max(0, held.frozenVol - order.vol);
     }
     this.closed.unshift({ ...order, state: 4, cancelable: false, updatedAt: this.clock() });
+  }
+  private leveragePlan(draft: MexcLeverageDraft): MexcLeveragePlan {
+    return planMexcLeverage({
+      draft, contract: this.contract(draft.symbol), positions: this.positions, availableOpen: this.availableOpen(), positionMode: 1, limits: LIMITS,
+    });
+  }
+  async reviewLeverage(draft: MexcLeverageDraft): Promise<MexcLeveragePrepared> {
+    validateMexcLeverageDraft(draft);
+    const frozen = freezeMexcLeverageDraft(draft), plan = this.leveragePlan(frozen);
+    this.sequence++;
+    const prepared: MexcLeveragePrepared = {
+      ...plan, id: `demo-review-${this.sequence}`, draft: frozen, accountID: MEXC_ACCOUNT, displayName: this.contract(frozen.symbol).displayName,
+      preparedAt: this.clock(), isDemo: true,
+    };
+    this.reviews.clear();
+    this.leverageReviews.clear();
+    this.leverageReviews.set(prepared.id, prepared);
+    return prepared;
+  }
+  /** A position of exactly DEMO_UNKNOWN_VOL contracts simulates a change whose outcome is unknown. */
+  async changeLeverage(prepared: MexcLeveragePrepared): Promise<{ leverage: number }> {
+    const entry = this.leverageReviews.get(prepared.id);
+    this.leverageReviews.delete(prepared.id); // One use, whatever happens next.
+    if (this.unresolved) throw mexcError("orderOutcomeUnknown");
+    if (!entry || this.clock() - entry.preparedAt > MEXC_REVIEW_TTL) throw mexcError("reviewExpired");
+    const { draft } = entry, plan = this.leveragePlan(draft);
+    if (plan.previousLeverage !== entry.previousLeverage || plan.holdVol !== entry.holdVol) throw mexcError("reviewExpired");
+    const held = this.positions.find(p => p.id === draft.positionId)!;
+    if (String(held.holdVol) === DEMO_UNKNOWN_VOL) {
+      this.unresolved = true;
+      throw new TradingError("orderOutcomeUnknown", MEXC_MESSAGES.orderOutcomeUnknown);
+    }
+    // The same refusals MEXC documents for this request.
+    if (this.open.some(o => o.symbol === draft.symbol)) throw mexcError("leverageOrdersOpen");
+    const margin = (held.holdVol * this.contract(draft.symbol).contractSize * held.averagePrice) / draft.leverage;
+    if (margin - (held.margin ?? 0) > plan.available) throw mexcError("leverageMargin");
+    held.leverage = draft.leverage;
+    held.margin = margin;
+    held.liquidatePrice = held.averagePrice * (1 - (held.direction === "LONG" ? 1 : -1) / draft.leverage);
+    return { leverage: draft.leverage };
   }
   async acknowledgeReconciliation(): Promise<void> { this.unresolved = false; }
 }

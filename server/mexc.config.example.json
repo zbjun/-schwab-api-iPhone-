@@ -4,6 +4,7 @@
   "encryptionKeyFile": "./mexc-vault.key",
   "apiKey": "REPLACE_ON_SERVER",
   "apiSecret": "REPLACE_ON_SERVER",
+  "keyCheck": true,
   "limits": {
     "maxLeverage": 5,
     "maxOrderNotional": 1000,

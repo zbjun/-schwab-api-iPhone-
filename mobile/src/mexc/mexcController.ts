@@ -1,5 +1,5 @@
 import type { MexcApi, MexcStatus } from "../MexcClient.ts";
-import type { MexcAccount, MexcContract, MexcLimits, MexcOrder, MexcPrepared } from "../mexcRules.ts";
+import type { MexcAccount, MexcContract, MexcLeveragePrepared, MexcLimits, MexcOrder, MexcPrepared } from "../mexcRules.ts";
 import { orderEntryBlocked, tradingLocked } from "./mexcView.ts";
 
 export const errorText = (error: unknown) => (error instanceof Error && error.message ? error.message : "操作失败，请稍后重试。");
@@ -126,7 +126,7 @@ export class MexcController {
   }
 
   /** Sends one reviewed order. Spent whatever happens; never retried. */
-  async place(prepared: MexcPrepared): Promise<{ orderID?: string; error?: string }> {
+  async place(prepared: MexcPrepared): Promise<{ orderID?: string; error?: string; unknown?: boolean }> {
     if (this.snapshot.sending) return { error: "上一笔操作还在发送中。" };
     if (this.locked) return { error: "交易已锁定，不能下单。" };
     if (orderEntryBlocked(this.snapshot.status?.tradingBlocked, prepared.draft.action)) return { error: "服务器已关闭下单。" };
@@ -139,7 +139,29 @@ export class MexcController {
     } catch (error) {
       this.noteError(error); // No retry; an unknown outcome also locks trading.
       void this.refreshAfter();
-      return { error: errorText(error) };
+      return { error: errorText(error), ...(isUnknown(error) ? { unknown: true } : {}) };
+    } finally {
+      this.set({ sending: false });
+    }
+  }
+
+  /** Changes one position's leverage after its own review, under the same rules as an order. */
+  async changeLeverage(prepared: MexcLeveragePrepared): Promise<{ leverage?: number; error?: string; unknown?: boolean }> {
+    if (this.snapshot.sending) return { error: "上一笔操作还在发送中。" };
+    if (this.locked) return { error: "交易已锁定，不能修改杠杆。" };
+    // More leverage is more exposure, so any closure of order entry stops it, as it stops an opening order.
+    if (orderEntryBlocked(this.snapshot.status?.tradingBlocked, "OPEN_LONG")) return { error: "服务器已关闭下单。" };
+    this.set({ sending: true });
+    try {
+      const result = await this.api.changeLeverage(prepared);
+      // MEXC's answer only says it accepted; the position shown after this refresh is the proof.
+      this.set({ message: `${this.api.isDemo ? "演示持仓" : "MEXC 已接受，"}杠杆改为 ${result.leverage}x，请以持仓显示为准。` });
+      void this.refreshAfter();
+      return { leverage: result.leverage };
+    } catch (error) {
+      this.noteError(error);
+      void this.refreshAfter();
+      return { error: errorText(error), ...(isUnknown(error) ? { unknown: true } : {}) };
     } finally {
       this.set({ sending: false });
     }

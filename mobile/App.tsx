@@ -44,6 +44,7 @@ import HistorySnapshotPreview from "./src/HistorySnapshotPreview.tsx";
 import MexcApp from "./src/mexc/MexcApp.tsx";
 import { readVenue, writeVenue } from "./src/mexc/venue.ts";
 import type { Venue } from "./src/mexc/mexcView.ts";
+import VenueSwitcher from "./src/mexc/VenueSwitcher.tsx";
 
 type Tab = "accounts" | "watchlist" | "trade" | "orders" | "settings";
 const tabs: [Tab, string, string][] = [
@@ -77,11 +78,11 @@ export default function App() {
   if (!venue) return <SafeAreaProvider><View style={{ flex: 1 }} /></SafeAreaProvider>;
   return (
     <SafeAreaProvider>
-      {venue === "mexc" ? <MexcApp onExit={() => chooseVenue("schwab")} /> : <TradingApp onMexc={() => chooseVenue("mexc")} />}
+      {venue === "mexc" ? <MexcApp onVenueChange={chooseVenue} /> : <TradingApp onVenueChange={chooseVenue} />}
     </SafeAreaProvider>
   );
 }
-function TradingApp({ onMexc }: { onMexc: () => void }) {
+function TradingApp({ onVenueChange }: { onVenueChange: (venue: Venue) => void }) {
   const s = useTrading(),
     systemScheme = useColorScheme();
   // Web-only development previews can compare both native appearances without changing the phone setting.
@@ -168,7 +169,7 @@ function TradingApp({ onMexc }: { onMexc: () => void }) {
         style={{ flex: 1, width: "100%", maxWidth: 760, alignSelf: "center" }}
       >
         {stock ? (
-          <View style={[styles.pageHeader, { minHeight: 52 }]}>
+          <View style={[styles.pageHeader, { minHeight: 44, paddingVertical: 0 }]}>
             <RoundButton label="返回" icon="back" palette={p} disabled={s.busy}
               onPress={() => setStock(undefined)} />
             <View style={{ flex: 1, alignItems: "center", minWidth: 0 }}>
@@ -196,6 +197,7 @@ function TradingApp({ onMexc }: { onMexc: () => void }) {
               <Text accessibilityRole="header" testID="page.title" style={[styles.pageTitle, { color: p.text }]}>
                 {tabs.find(t => t[0] === tab)?.[1]}
               </Text>
+              <VenueSwitcher venue="schwab" palette={p} disabled={s.busy} onChange={onVenueChange} />
               {s.isDemo && (
                 <Text style={{ color: "#ff8a19", fontSize: 11, fontWeight: "600", borderWidth: 1,
                   borderColor: "#ff8a1966", borderRadius: radius.control, paddingHorizontal: 6, paddingVertical: 2 }}>
@@ -378,7 +380,7 @@ function TradingApp({ onMexc }: { onMexc: () => void }) {
                   />
                 </ScrollView>
               )}
-              {tab === "settings" && <Settings state={s} palette={p} onMexc={onMexc} />}
+              {tab === "settings" && <Settings state={s} palette={p} />}
             </View>
             <Glass
               palette={p}

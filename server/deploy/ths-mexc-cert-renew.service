@@ -1,0 +1,13 @@
+[Unit]
+Description=Issue or renew the MEXC gateway's IP certificate
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# LEGO_DOMAINS holds the server's address, which stays out of the repository.
+EnvironmentFile=/etc/ths-mexc-tls/lego.env
+# IP certificates last about six days. lego renews once half of that has passed and skips otherwise.
+ExecStart=/opt/ths-mexc/lego/lego run --accept-tos --server letsencrypt --path /var/lib/ths-mexc-acme --http --http.webroot /var/www/ths-mexc-acme --profile shortlived --log.format text
+# No stricter UMask: Nginx has to read the challenge files lego writes. Keys sit in 0700 directories with 0600 modes.
+ExecStartPost=/opt/ths-mexc/lego/ths-mexc-cert-deploy.sh

@@ -13,6 +13,9 @@
 !/src
 !/src/*.ts
 !/src/*.tsx
+!/src/mexc
+!/src/mexc/*.ts
+!/src/mexc/*.tsx
 !/.eas
 !/.eas/build
 !/.eas/build/unsigned-ios.yml

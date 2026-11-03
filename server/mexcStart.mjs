@@ -15,11 +15,12 @@ try {
   const base = dirname(configPath), directory = resolve(base, config.dataDirectory);
   const key = await readFile(resolve(base, config.encryptionKeyFile));
   release = await acquireProcessLock(directory);
-  const broker = new MexcBroker(new EncryptedVault(directory, key), { apiKey: config.apiKey, apiSecret: config.apiSecret, limits: config.limits });
+  const broker = new MexcBroker(new EncryptedVault(directory, key), { apiKey: config.apiKey, apiSecret: config.apiSecret, limits: config.limits, keyCheck: config.keyCheck });
   server = createGateway({ broker, devices: config.devices, extraReads: {
     contracts: () => broker.contracts(),
     limits: () => broker.limits,
     closedOrders: (...args) => broker.closedOrders(...args),
+    live: (...args) => broker.live(...args),
   } });
   await new Promise((done, reject) => { server.once('error', reject); server.listen(config.port, '127.0.0.1', done); });
   console.log(`MEXC gateway listening on 127.0.0.1:${config.port}; HTTPS reverse proxy required.`);

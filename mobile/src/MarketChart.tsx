@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useMemo, useRef, useState } from "react";
+import React, { useEffect, useId, useImperativeHandle, useMemo, useRef, useState } from "react";
 import {
   PanResponder,
   Platform,
@@ -23,8 +23,8 @@ import Svg, {
   Stop,
   Text as SvgText,
 } from "react-native-svg";
+import { barMilliseconds, candleCountdown, priceAxisWidth } from "./chartCountdown.ts";
 import { createChartPress } from "./chartPress.ts";
-import { latestSessionLocation, sessionViewport } from "./chartSessions.ts";
 import { chartDragIntent, chartInteractionActive, type ChartDragIntent } from "./chartGesture.ts";
 import FormingCandle from "./FormingCandle.tsx";
 import type {
@@ -64,6 +64,7 @@ interface Props {
   onSelectionChange?: (candle: Candle | undefined) => void;
   executions?: TradeExecution[];
   averageCost?: number;
+  controlsRef?: React.Ref<ChartControlHandle>;
 }
 interface GestureBaseline {
   mode: "pan" | "pinch";
@@ -81,7 +82,6 @@ interface SessionSegment {
 }
 const periods = [5, 10, 20, 30];
 const noExecutions: TradeExecution[] = [];
-const sessions: TradingSession[] = ["overnight", "premarket", "regular", "postmarket"];
 const clamp = (value: number, lower: number, upper: number): number =>
   Math.min(upper, Math.max(lower, value));
 const finite = (value: number | undefined): value is number =>
@@ -93,6 +93,10 @@ const price = (value: number | undefined): string =>
         minimumFractionDigits: 2,
       })
     : "—";
+const axisPrice = (value: number): string =>
+  Math.abs(value) >= 1_000_000
+    ? `${(value / 1_000_000).toFixed(2)}M`
+    : price(value);
 const volumeText = (value: number | undefined): string =>
   !finite(value) || value < 0
     ? "—"
@@ -158,6 +162,145 @@ function linePath(
   return parts.join(" ");
 }
 
+/**
+ * Price-axis tag with the latest price and the time left in the current candle.
+ * The once-per-second tick lives only here, so the chart and its SVG never
+ * repaint for it; the state holds the formatted text and bails out when equal.
+ */
+function LastPriceTag({
+  candleTime,
+  range,
+  text,
+  color,
+  y,
+  minY,
+  maxY,
+  left,
+  width,
+}: {
+  candleTime: number;
+  range: HistoryRange;
+  text: string;
+  color: string;
+  y: number;
+  minY: number;
+  maxY: number;
+  left: number;
+  width: number;
+}) {
+  const [countdown, setCountdown] = useState(() =>
+    candleCountdown(candleTime, range, Date.now()),
+  );
+  useEffect(() => {
+    const tick = () => setCountdown(candleCountdown(candleTime, range, Date.now()));
+    tick();
+    if (barMilliseconds(range) === undefined) return;
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [candleTime, range]);
+  const tagHeight = countdown ? 25 : 14;
+  return (
+    <View
+      pointerEvents="none"
+      testID="chart.lastPrice"
+      style={{
+        position: "absolute",
+        left,
+        width,
+        top: clamp(y - tagHeight / 2, minY, Math.max(minY, maxY - tagHeight)),
+        height: tagHeight,
+        borderRadius: 3,
+        backgroundColor: color,
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <Text
+        numberOfLines={1}
+        adjustsFontSizeToFit
+        minimumFontScale={0.7}
+        style={{ color: "#fff", fontSize: 9, fontWeight: "600", fontVariant: ["tabular-nums"] }}
+      >
+        {text}
+      </Text>
+      {countdown && (
+        <Text
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.7}
+          style={{ color: "#fff", fontSize: 9, fontVariant: ["tabular-nums"] }}
+        >
+          {countdown}
+        </Text>
+      )}
+    </View>
+  );
+}
+
+export interface ChartControlHandle {
+  zoomIn(): void;
+  zoomOut(): void;
+  latest(): void;
+}
+
+/**
+ * Timezone and zoom buttons for the period row above the chart, driving the chart through
+ * its controlsRef. Fixed width, so the period tabs stay put between line and candle ranges.
+ */
+export function ChartControls({ controls, palette, zoomable = true }: {
+  controls: React.RefObject<ChartControlHandle | null>;
+  palette: Props["palette"];
+  zoomable?: boolean;
+}) {
+  return (
+    <View style={styles.controls}>
+      <Text numberOfLines={1} style={[styles.small, { color: palette.secondary, marginLeft: "auto" }]}>
+        美东
+      </Text>
+      {zoomable && (
+        <>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="缩小K线"
+            testID="chart.zoomOut"
+            hitSlop={4}
+            onPress={() => controls.current?.zoomOut()}
+            style={styles.chartButton}
+          >
+            <Text style={[styles.controlText, { color: palette.accent }]}>
+              −
+            </Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="放大K线"
+            testID="chart.zoomIn"
+            hitSlop={4}
+            onPress={() => controls.current?.zoomIn()}
+            style={styles.chartButton}
+          >
+            <Text style={[styles.controlText, { color: palette.accent }]}>
+              ＋
+            </Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="回到最新K线"
+            testID="chart.latest"
+            hitSlop={4}
+            onPress={() => controls.current?.latest()}
+            style={styles.chartButton}
+          >
+            <Text numberOfLines={1} style={[styles.small, { color: palette.accent }]}>
+              ⇥最新
+            </Text>
+          </Pressable>
+        </>
+      )}
+    </View>
+  );
+}
+
 function MarketChart({
   history,
   range,
@@ -168,6 +311,7 @@ function MarketChart({
   onSelectionChange,
   executions = noExecutions,
   averageCost,
+  controlsRef,
 }: Props) {
   const [width, setWidth] = useState(0);
   const candles = useMemo(() => {
@@ -190,8 +334,6 @@ function MarketChart({
     viewport: createViewport(candles.length),
   }));
   const [selectedIndex, setSelectedIndex] = useState<number>();
-  const [locatedSession, setLocatedSession] = useState<{ identity: string; session: TradingSession }>();
-  const sessionChoice = locatedSession?.identity === identity ? locatedSession.session : undefined;
   const line = isLineRange(range) || compact;
   const viewport =
     windowState.identity === identity
@@ -233,11 +375,6 @@ function MarketChart({
   // Price ticks do not change timestamps. Avoid repeating IANA timezone/session
   // conversion across the entire history on every streaming paint.
   const candleTimes = candles.map((candle) => candle.time).join(",");
-  const sessionLocations = useMemo(() => {
-    const times = candles.map((candle) => candle.time);
-    return sessions.map((session) => extended && !compact ? latestSessionLocation(times, session) : undefined);
-  }, [candleTimes, extended, compact]);
-  const located = sessionChoice ? sessionLocations[sessions.indexOf(sessionChoice)] : undefined;
   const metadata = useMemo(
     () =>
       candles.map((candle) => ({
@@ -259,19 +396,29 @@ function MarketChart({
       : compact
         ? 48
         : 320;
-  const showToolbar = !compact && !line && height >= 130;
-  const showSessionLegend = !compact && extended && height >= 220;
-  const showSessionInfo = showSessionLegend && sessionChoice !== undefined;
   const showVolume = !compact && height >= 180;
   const wrapAverages = !compact && !line && width < 300;
   const headerHeight = compact
     ? 0
-    : (wrapAverages ? 44 : 24) + (showToolbar ? 28 : 0) + (showSessionLegend ? 28 : 0) + (showSessionInfo ? 34 : 0);
+    : wrapAverages ? 36 : 18;
   const svgHeight = Math.max(16, height - headerHeight);
   const left = compact ? 1 : 0;
-  const plotWidth = Math.max(1, width - left - (compact ? 1 : 42));
+  // Sized for every loaded candle, not the visible ones, so the plot does not resize
+  // while panning. The margin covers the padding the price domain adds above the high.
+  const axisWidth = useMemo(() => {
+    let low = Infinity;
+    let high = -Infinity;
+    for (const candle of candles) {
+      low = Math.min(low, candle.low);
+      high = Math.max(high, candle.high);
+    }
+    return priceAxisWidth(
+      high < low ? [] : [axisPrice(low), axisPrice(high * 1.1)],
+    );
+  }, [candles]);
+  const plotWidth = Math.max(1, width - left - (compact ? 1 : axisWidth));
   const plotRight = left + plotWidth;
-  const plotTop = compact ? 2 : extended ? 19 : 6;
+  const plotTop = compact ? 2 : extended ? 15 : 6;
   const volumeHeight = showVolume
     ? Math.min(68, Math.max(34, svgHeight * 0.22))
     : 0;
@@ -607,6 +754,14 @@ function MarketChart({
     onSelectionChange?.(selected ? active : undefined);
   }, [selected, active, onSelectionChange]);
   useEffect(() => () => onSelectionChange?.(undefined), [onSelectionChange]);
+  // Last-price label: hidden while the crosshair is active so it never covers
+  // the crosshair readout.
+  const lastCandle = candles.at(-1);
+  const tagCandle = !compact && !selected && width > 0 ? lastCandle : undefined;
+  const tagY = tagCandle
+    ? clamp(y(tagCandle.close), plotTop, Math.max(plotTop, priceBottom))
+    : 0;
+  const tagColor = tagCandle && tagCandle.close < tagCandle.open ? palette.down : palette.up;
   const candleWidth = Math.max(0.65, Math.min(12, (plotWidth / span) * 0.65));
   const formingIndex =
     !line && !compact && candles.at(-1)?.provisional ? candles.length - 1 : -1;
@@ -680,19 +835,12 @@ function MarketChart({
   ticks = [...new Set(ticks)];
   if (plotWidth < 220 && ticks.length > 2)
     ticks = [ticks[0], ticks[ticks.length - 1]];
-  const windowDescription =
-    bounds.end === candles.length
-      ? `最近 ${bounds.end - bounds.first} 根`
-      : `第 ${bounds.first + 1}–${bounds.end} 根`;
-  const latest = () => {
-    setLocatedSession(undefined);
-    commit(createViewport(candles.length));
-  };
-  const locateSession = (session: TradingSession) => {
-    setLocatedSession({ identity, session });
-    const location = sessionLocations[sessions.indexOf(session)];
-    if (location && !line) commit(sessionViewport(candles.length, location));
-  };
+  const latest = () => commit(createViewport(candles.length));
+  useImperativeHandle(controlsRef, () => ({
+    zoomIn: () => commit(zoomViewport(viewport, 1.4, 0.5)),
+    zoomOut: () => commit(zoomViewport(viewport, 0.75, 0.5)),
+    latest,
+  }));
 
   return (
     <View
@@ -711,7 +859,7 @@ function MarketChart({
     >
       {!compact && (
         <View
-          style={[styles.legend, wrapAverages && { height: 44, flexWrap: "wrap", columnGap: 0, rowGap: 0 }]}
+          style={[styles.legend, wrapAverages && { height: 36, flexWrap: "wrap", columnGap: 0, rowGap: 0 }]}
           testID={line ? "chart.average" : "chart.movingAverages"}
         >
           {line ? (
@@ -737,106 +885,12 @@ function MarketChart({
                 adjustsFontSizeToFit
                 minimumFontScale={0.8}
                 testID={`chart.ma${period}`}
-                style={[styles.legendText, { color: maColors[index] }, wrapAverages ? { width: "50%", lineHeight: 22 } : { flex: 1 }]}
+                style={[styles.legendText, { color: maColors[index] }, wrapAverages ? { width: "50%", lineHeight: 18 } : { flex: 1 }]}
               >
                 MA{period} {price(averages[index]?.[activeIndex])}
               </Text>
             ))
           )}
-        </View>
-      )}
-      {showSessionLegend && (
-        <View testID="chart.sessionLegend" style={styles.sessionLegend}>
-          {sessions.map((session) => (
-            <Pressable key={session} style={[styles.sessionKey, { minHeight: 28 }]}
-              testID={`chart.session.${session}`}
-              accessibilityRole="button"
-              accessibilityLabel={`查看最近有数据的${sessionTitles[session]}`}
-              accessibilityState={{ selected: sessionChoice === session }}
-              onPress={() => locateSession(session)}>
-              <View
-                style={{
-                  width: 6,
-                  height: 6,
-                  borderRadius: 3,
-                  backgroundColor: sessionColor(session),
-                }}
-              />
-              <Text style={[styles.small, { color: sessionChoice === session ? palette.accent : palette.secondary }]}>
-                {sessionTitles[session]}
-              </Text>
-            </Pressable>
-          ))}
-          <Text
-            style={[
-              styles.small,
-              { color: palette.secondary, marginLeft: "auto" },
-            ]}
-          >
-            点时段定位 · 美东
-          </Text>
-        </View>
-      )}
-      {showSessionInfo && (
-        <View style={{ height: 34, flexDirection: "row", alignItems: "center", gap: 6 }}>
-          <Text testID="chart.sessionInfo" numberOfLines={2}
-            style={[styles.small, { color: palette.secondary, flex: 1, lineHeight: 15 }]}>
-            {located
-              ? `${sessionTitles[sessionChoice!]}最近有数据：${dateTime(located.firstTime)}–${dateTime(located.lastTime)} 美东 · ${located.count}根${line ? "（图中已包含）" : ""}`
-              : `${candles.length ? `已加载 ${dateTime(candles[0].time)}–${dateTime(candles.at(-1)!.time)} 美东；` : ""}未包含${sessionTitles[sessionChoice!]}K线，可刷新重试。`}
-          </Text>
-          <Pressable accessibilityRole="button" accessibilityLabel="关闭时段说明" hitSlop={6}
-            onPress={() => setLocatedSession(undefined)} style={styles.chartButton}>
-            <Text style={{ color: palette.secondary }}>×</Text>
-          </Pressable>
-        </View>
-      )}
-      {showToolbar && (
-        <View style={styles.controls}>
-          <Text
-            testID="chart.window"
-            accessibilityLabel={`第${bounds.first + 1}至${bounds.end}根，共${candles.length}根`}
-            numberOfLines={1}
-            style={[styles.small, { color: palette.secondary, flex: 1 }]}
-          >
-            {windowDescription} · 美东时间
-          </Text>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="缩小K线"
-            testID="chart.zoomOut"
-            hitSlop={4}
-            onPress={() => commit(zoomViewport(viewport, 0.75, 0.5))}
-            style={styles.chartButton}
-          >
-            <Text style={[styles.controlText, { color: palette.accent }]}>
-              −
-            </Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="放大K线"
-            testID="chart.zoomIn"
-            hitSlop={4}
-            onPress={() => commit(zoomViewport(viewport, 1.4, 0.5))}
-            style={styles.chartButton}
-          >
-            <Text style={[styles.controlText, { color: palette.accent }]}>
-              ＋
-            </Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="回到最新K线"
-            testID="chart.latest"
-            hitSlop={4}
-            onPress={latest}
-            style={styles.chartButton}
-          >
-            <Text style={[styles.small, { color: palette.accent }]}>
-              ⇥ 最新
-            </Text>
-          </Pressable>
         </View>
       )}
       <View style={{ height: svgHeight, position: "relative" }}>
@@ -927,17 +981,15 @@ function MarketChart({
                       strokeWidth={0.7}
                     />
                     <SvgText
-                      x={plotRight + 5}
+                      x={plotRight + 2}
                       y={
                         position +
                         (fraction === 0 ? 9 : fraction === 1 ? -2 : 3)
                       }
                       fill={palette.secondary}
-                      fontSize={10}
+                      fontSize={9}
                     >
-                      {Math.abs(value) >= 1_000_000
-                        ? `${(value / 1_000_000).toFixed(2)}M`
-                        : price(value)}
+                      {axisPrice(value)}
                     </SvgText>
                   </G>
                 );
@@ -965,6 +1017,18 @@ function MarketChart({
                 strokeDasharray="4 4"
                 strokeWidth={0.7}
                 opacity={0.7}
+              />
+            )}
+            {tagCandle && (
+              <Line
+                testID="chart.lastPriceLine"
+                x1={left}
+                x2={plotRight}
+                y1={tagY}
+                y2={tagY}
+                stroke={tagColor}
+                strokeWidth={0.8}
+                strokeDasharray="3 3"
               />
             )}
             <G clipPath={`url(#${priceClip})`}>
@@ -1249,6 +1313,19 @@ function MarketChart({
             </Text>
           </View>
         )}
+        {tagCandle && (
+          <LastPriceTag
+            candleTime={tagCandle.time}
+            range={range}
+            text={price(tagCandle.close)}
+            color={tagColor}
+            y={tagY}
+            minY={plotTop}
+            maxY={priceBottom}
+            left={plotRight}
+            width={Math.max(1, width - plotRight)}
+          />
+        )}
         {!compact && candles.length > 0 && width > 0 && (
           <View
             {...responder.panHandlers}
@@ -1350,35 +1427,27 @@ function MarketChart({
 
 const styles = StyleSheet.create({
   legend: {
-    height: 24,
+    height: 18,
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 0,
     gap: 5,
   },
   legendText: { fontSize: 11, fontVariant: ["tabular-nums"] },
-  sessionLegend: {
-    height: 28,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 11,
-    paddingHorizontal: 0,
-  },
-  sessionKey: { flexDirection: "row", alignItems: "center", gap: 4 },
   small: { fontSize: 10, fontVariant: ["tabular-nums"] },
   controls: {
+    width: 118,
     height: 28,
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 0,
-    gap: 3,
+    paddingRight: 4,
   },
   chartButton: {
-    minWidth: 30,
+    minWidth: 26,
     height: 28,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 5,
+    paddingHorizontal: 3,
   },
   controlText: { fontSize: 17, lineHeight: 21 },
   empty: { flex: 1, alignItems: "center", justifyContent: "center" },

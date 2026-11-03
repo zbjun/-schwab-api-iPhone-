@@ -14,7 +14,8 @@ import {
 } from "react-native";
 import type { Candle, HistoryRange, Palette, Side } from "./types.ts";
 import type { TradingState } from "./useTrading.ts";
-import MarketChart from "./MarketChart.tsx";
+import MarketChart, { ChartControls, type ChartControlHandle } from "./MarketChart.tsx";
+import { chartHeightFor } from "./chartCountdown.ts";
 import { primaryRanges, minuteRanges, rangeTitle, hasMissingOvernightData } from "./chartData.ts";
 import { compactNumber, elevated, money, signed } from "./ui.tsx";
 import { selectedActivity, selectedChangePercent, selectedReferencePrice } from "./marketStatistics.ts";
@@ -54,6 +55,7 @@ export default function StockDetail({
   const [inspecting, setInspecting] = useState(false);
   const [selectedCandle, setSelectedCandle] = useState<Candle>();
   const scroll = useRef<ScrollView>(null);
+  const chartControls = useRef<ChartControlHandle>(null);
   useEffect(() => {
     setMetricNotes(false);
     setDiagnostic("");
@@ -88,17 +90,16 @@ export default function StockDetail({
         ? p.up
         : p.down;
   const compact = panel !== undefined;
+  const line = range === "intraday" || range === "fiveDay";
+  const chartChrome = 28 + (line && !keyboard ? 18 : 0) + (!keyboard ? 18 : 0);
+  // The page scrolls, so the full-page chart sizes to the window; the order
+  // panel layout keeps fitting the space left above the panel.
   const chartSectionHeight = compact
     ? keyboard
       ? 172
       : Math.max(220, Math.min(460, availableHeight - 64 - tradePanelHeight))
-    : Math.max(420, Math.min(650, availableHeight * 0.65)) + (wideQuote ? 0 : 36);
-  const line = range === "intraday" || range === "fiveDay";
-  const chartHeight =
-    chartSectionHeight -
-    44 -
-    (line && !keyboard ? 18 : 0) -
-    (!keyboard ? 18 : 0);
+    : chartHeightFor(height) + chartChrome;
+  const chartHeight = chartSectionHeight - chartChrome;
   const priceColor = (value?: number) =>
     value === undefined || summaryReference === undefined
       ? p.secondary
@@ -167,8 +168,8 @@ export default function StockDetail({
           style={{
             backgroundColor: p.surface,
             paddingHorizontal: !compact && !wideQuote ? 10 : 16,
-            paddingVertical: compact ? 7 : 10,
-            gap: compact ? 5 : 6,
+            paddingVertical: compact ? 7 : 6,
+            gap: compact ? 5 : 4,
             ...(compact ? { height: 64 } : {}),
           }}
         >
@@ -182,7 +183,7 @@ export default function StockDetail({
                 style={{
                   color,
                   fontSize: compact ? 24 : wideQuote ? 32 : 28,
-                  lineHeight: compact ? 28 : 38,
+                  lineHeight: compact ? 28 : 34,
                   fontWeight: "600",
                   fontVariant: ["tabular-nums"],
                   letterSpacing: -0.6,
@@ -199,7 +200,7 @@ export default function StockDetail({
                   color,
                   fontSize: !compact && !wideQuote ? 11 : 13,
                   fontWeight: "600",
-                  marginTop: 4,
+                  marginTop: compact ? 4 : 0,
                   fontVariant: ["tabular-nums"],
                 }}
               >
@@ -208,7 +209,7 @@ export default function StockDetail({
                   : `${signed(quote?.netChange)} ${signed(quote?.netPercentChange, "%")}`}
               </Text>
             </View>
-            <View style={compact ? { width: 86, gap: 6 } : { flex: 0.8, gap: 8 }}>
+            <View style={compact ? { width: 86, gap: 6 } : { flex: 0.8, gap: 3 }}>
               {statistic(
                 "高",
                 money(summaryHigh),
@@ -229,7 +230,7 @@ export default function StockDetail({
                   !wideQuote,
                 )}
             </View>
-            <View style={compact ? { width: 86, gap: 6 } : { flex: 1, gap: 8 }}>
+            <View style={compact ? { width: 86, gap: 6 } : { flex: 1, gap: 3 }}>
                 {compact && statistic(
                   "开",
                   money(summaryOpen),
@@ -243,7 +244,7 @@ export default function StockDetail({
                 </>}
             </View>
             {!compact && (
-              <View style={{ flex: 1, gap: 8 }}>
+              <View style={{ flex: 1, gap: 3 }}>
                 {selectedCandle
                   ? statistic(wideQuote ? "成交额估" : "额估", compactNumber(activity.amountEstimate), p.text, !wideQuote)
                   : statistic(wideQuote ? "量比估" : "量比", money(ratio), p.text, !wideQuote)}
@@ -342,7 +343,7 @@ export default function StockDetail({
                 <Text
                   style={{
                     color: range === value ? p.text : p.secondary,
-                    fontSize: 15,
+                    fontSize: 14,
                     fontWeight: range === value ? "600" : "400",
                   }}
                 >
@@ -353,7 +354,7 @@ export default function StockDetail({
                     height: 3,
                     width: 18,
                     borderRadius: 2,
-                    marginTop: 7,
+                    marginTop: 2,
                     backgroundColor: range === value ? p.up : "transparent",
                   }}
                 />
@@ -370,13 +371,13 @@ export default function StockDetail({
               }}
               disabled={s.busy}
               onPress={() => setMore(!more)}
-              style={local.period}
+              style={[local.period, { flex: 1.3 }]}
             >
               <Text
                 numberOfLines={1}
                 style={{
                   color: minuteRanges.includes(range) ? p.text : p.secondary,
-                  fontSize: 15,
+                  fontSize: 14,
                   fontWeight: minuteRanges.includes(range) ? "600" : "400",
                 }}
               >
@@ -390,15 +391,16 @@ export default function StockDetail({
                   height: 3,
                   width: 18,
                   borderRadius: 2,
-                  marginTop: 7,
+                  marginTop: 2,
                   backgroundColor: minuteRanges.includes(range)
                     ? p.up
                     : "transparent",
                 }}
               />
             </Pressable>
+            <ChartControls controls={chartControls} palette={p} zoomable={!line} />
           </View>
-          <View style={{ paddingHorizontal: 12 }}>
+          <View style={{ paddingLeft: 12, paddingRight: 4 }}>
             {loading ? (
               <View style={{ height: chartHeight, justifyContent: "center" }}>
                 <ActivityIndicator color={p.secondary} />
@@ -423,6 +425,7 @@ export default function StockDetail({
                 onSelectionChange={setSelectedCandle}
                 executions={executions}
                 averageCost={averageCost}
+                controlsRef={chartControls}
               />
             ) : (
               <View style={{ height: chartHeight, justifyContent: "center" }}>
@@ -461,7 +464,7 @@ export default function StockDetail({
             <>
               <Pressable
                 accessibilityLabel="关闭周期菜单"
-                style={[StyleSheet.absoluteFill, { top: 44 }]}
+                style={[StyleSheet.absoluteFill, { top: 28 }]}
                 onPress={() => setMore(false)}
               />
               <View
@@ -640,11 +643,10 @@ const local = StyleSheet.create({
     gap: 5,
   },
   statisticRow: { flexDirection: "row", alignItems: "center", gap: 14 },
-  periods: { height: 44, flexDirection: "row", alignItems: "center" },
+  periods: { height: 28, flexDirection: "row", alignItems: "center" },
   period: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    paddingTop: 8,
   },
 });

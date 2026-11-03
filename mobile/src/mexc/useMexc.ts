@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { MexcApi, MexcStatus } from "../MexcClient.ts";
-import type { MexcAccount, MexcContract, MexcLimits, MexcOrder, MexcPrepared, MexcTicker } from "../mexcRules.ts";
+import type { MexcAccount, MexcContract, MexcLeveragePrepared, MexcLimits, MexcOrder, MexcPrepared, MexcTicker } from "../mexcRules.ts";
 import { batches, blockMessage, lockUnconfirmed, tradingLocked, writeInProgress } from "./mexcView.ts";
 import { MexcController } from "./mexcController.ts";
 
@@ -38,8 +38,9 @@ export interface MexcState {
   clear: () => void;
   /** A place or cancel is on the wire. Leaving the screen is not allowed meanwhile. */
   sending: boolean;
-  place: (prepared: MexcPrepared) => Promise<{ orderID?: string; error?: string }>;
+  place: (prepared: MexcPrepared) => Promise<{ orderID?: string; error?: string; unknown?: boolean }>;
   cancel: (orderID: string) => Promise<boolean>;
+  changeLeverage: (prepared: MexcLeveragePrepared) => Promise<{ leverage?: number; error?: string; unknown?: boolean }>;
 }
 
 /** Thin React wrapper; every rule lives in MexcController. */
@@ -61,6 +62,7 @@ export function useMexc(api: MexcApi): MexcState {
     refresh: controller.refresh, run: controller.run, noteError: controller.noteError, pollError: controller.pollError,
     pollOk: controller.pollOk, acknowledge: () => controller.acknowledge(), clear: () => controller.reset(),
     sending: snap.sending, place: p => controller.place(p), cancel: id => controller.cancel(id),
+    changeLeverage: p => controller.changeLeverage(p),
   }), [api, controller, snap]);
 }
 
@@ -69,14 +71,18 @@ export function useTickers(m: Pick<MexcState, "api" | "pollError" | "pollOk">, s
   const [tickers, setTickers] = useState<Record<string, MexcTicker>>({});
   const key = symbols.join(",");
   useEffect(() => {
-    let active = true;
+    let active = true, loading = false;
     const load = async () => {
-      if (!key) return;
+      // One at a time, so a slow answer can never land after a newer one and show an older price.
+      if (!key || loading) return;
+      loading = true;
       try {
         const rows = (await Promise.all(batches(key.split(",")).map(group => m.api.tickers(group)))).flat();
         if (active) { setTickers(previous => ({ ...previous, ...Object.fromEntries(rows.map(t => [t.symbol, t])) })); m.pollOk("tickers"); }
       } catch (error) {
         if (active) m.pollError("tickers", error);
+      } finally {
+        loading = false;
       }
     };
     void load();

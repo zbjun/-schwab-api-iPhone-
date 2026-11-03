@@ -13,7 +13,7 @@ export function serverOrigin(value: string): string {
   let url: URL;
   try { url = new URL(value.trim()); } catch { throw failure("serverAddress", "请输入完整的 HTTPS 服务器地址。"); }
   if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || url.pathname !== "/")
-    throw failure("serverAddress", "服务器地址必须是 HTTPS 域名，可含端口，不能包含路径、账号或查询参数。");
+    throw failure("serverAddress", "服务器地址必须是 HTTPS 地址（域名或 IP），可含端口，不能包含路径、账号或查询参数。");
   return url.origin;
 }
 

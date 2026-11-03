@@ -1,15 +1,14 @@
 import React, { useEffect, useState } from "react";
-import { Platform, ScrollView, Text, View } from "react-native";
+import { Platform, Pressable, ScrollView, Text, View } from "react-native";
 import type { Palette } from "../types.ts";
 import type { MexcClient } from "../MexcClient.ts";
-import { Button, Input, styles } from "../ui.tsx";
+import { Button, Icon, Input, radius, styles } from "../ui.tsx";
 import type { MexcState } from "./useMexc.ts";
 import { Notice } from "./parts.tsx";
 
-/** Server address and device key for the MEXC gateway, plus the way back to Schwab. */
-export default function MexcConnection({ m, palette: p, onExit, onClose }: {
-  m: MexcState; palette: Palette; onExit?: () => void; onClose: () => void;
-}) {
+/** Server address and device key for the MEXC gateway. */
+export default function MexcConnection({ m, palette: p }: { m: MexcState; palette: Palette }) {
+  const [open, setOpen] = useState(false);
   const client = m.api.isDemo ? undefined : (m.api as MexcClient);
   const [origin, setOrigin] = useState("");
   const [deviceKey, setDeviceKey] = useState("");
@@ -23,16 +22,33 @@ export default function MexcConnection({ m, palette: p, onExit, onClose }: {
     return () => { active = false; };
   }, [client]);
   const disabled = Platform.OS === "web" || !client;
+  // The settings tab: one row per setting group, like the Schwab settings page.
+  if (!open)
+    return (
+      <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.pageContent}>
+        <Pressable accessibilityRole="button" accessibilityLabel="MEXC 连接" disabled={m.sending} onPress={() => setOpen(true)}
+          style={[styles.card, styles.spread, { backgroundColor: p.surface }]}>
+          <View style={styles.row}>
+            <Icon name="link" color={p.accent} size={22} />
+            <View style={{ gap: 5 }}>
+              <Text style={{ color: p.text, fontSize: 17 }}>MEXC 连接</Text>
+              <Text style={{ color: p.secondary, fontSize: 12 }}>{m.isDemo ? "演示模式" : m.offline ? "连接中断" : m.account ? "已连接" : "服务器地址与设备访问密钥"}</Text>
+            </View>
+          </View>
+          <Text style={{ color: p.secondary, fontSize: 22 }}>›</Text>
+        </Pressable>
+      </ScrollView>
+    );
   return (
+    <View style={{ flex: 1 }}>
+    <View style={{ alignItems: "flex-start", paddingHorizontal: 12 }}>
+      <Button label="返回设置" palette={p} disabled={m.sending} onPress={() => setOpen(false)} />
+    </View>
     <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.pageContent, { gap: 12 }]}>
-      <View style={styles.row}>
-        <Button label="返回" palette={p} onPress={onClose} />
-        {onExit && <Button label="返回 Schwab" palette={p} variant="tinted" onPress={onExit} />}
-      </View>
       {m.isDemo
         ? <Notice palette={p} tone="info" text="演示模式：数据只在本机内存里，不会连接 MEXC，也不会产生真实委托。真实连接请在 iPhone 上使用。" />
         : <View style={[styles.card, { backgroundColor: p.surface, gap: 10 }]}>
-          <Text style={[styles.heading, { color: p.text }]}>MEXC 网关连接</Text>
+          <Text style={{ color: p.text, fontSize: 17, fontWeight: "600" }}>MEXC 网关连接</Text>
           {!!issue && <Text accessibilityRole="alert" style={{ color: p.up }}>{issue}</Text>}
           {!configured && !issue && <Text style={{ color: p.secondary, fontSize: 12, lineHeight: 19 }}>
             此手机尚未保存 MEXC 网关的设备连接。它与 Schwab 的连接分开保存。
@@ -60,5 +76,6 @@ export default function MexcConnection({ m, palette: p, onExit, onClose }: {
             })} />
         </View>}
     </ScrollView>
+    </View>
   );
 }

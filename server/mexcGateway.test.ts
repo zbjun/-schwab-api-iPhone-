@@ -19,23 +19,26 @@ const memory = (): Vault & { data: Map<string, string> } => {
 };
 const contractRow = { symbol: SYMBOL, displayNameEn: "QQQ_USDT PERPETUAL", baseCoin: "QQQSTOCK", settleCoin: "USDT", futureType: 1, state: 0, apiAllowed: true, contractSize: 0.01, priceUnit: 0.01, volUnit: 1, minVol: 1, maxVol: 28000, minLeverage: 1, maxLeverage: 100, positionOpenType: 3, takerFeeRate: 0.0002, makerFeeRate: 0 };
 
-async function setup(t: { after: (work: () => void) => void }, create: () => Response | Promise<Response> = () => ok({ orderId: ORDER_ID, ts: 1 })) {
+async function setup(t: { after: (work: () => void) => void }, create: () => Response | Promise<Response> = () => ok({ orderId: ORDER_ID, ts: 1 }),
+  positions: unknown[] = [], changeLeverage: () => Response | Promise<Response> = () => new Response(JSON.stringify({ success: true, code: 0 }))) {
   const exchange: string[] = [];
   const exchangeFetch = async (url: string, init: RequestInit) => {
     if (init.method === "POST") exchange.push(url);
     if (url.includes("apiKeyInfo")) return new Response(JSON.stringify({ status: "VALID", ipWhiteList: "<gateway-host>", permissions: "SPOT_ACCOUNT_READ,CONTRACT_ACCOUNT_READ,CONTRACT_DEAL_READ,CONTRACT_DEAL_WRITE" }));
     if (url.includes("/contract/detail?symbol=")) return ok(contractRow);
     if (url.endsWith("/contract/detail")) return ok([contractRow, { ...contractRow, symbol: "HIDDEN_USDT", apiAllowed: false }, { broken: true }]);
+    if (url.includes("/contract/kline/")) return ok({ time: [1, 2, 3], open: [1, 2, 3], high: [1, 2, 3], low: [1, 2, 3], close: [1, 2, 3], vol: [1, 2, 3] });
     if (url.includes("/contract/ticker")) return ok({ symbol: SYMBOL, lastPrice: 700, bid1: 699.9, ask1: 700.1, timestamp: Date.now() });
     if (url.includes("position_mode")) return ok(1);
-    if (url.includes("open_positions")) return ok([]);
+    if (url.includes("open_positions")) return ok(positions);
+    if (url.includes("change_leverage")) return changeLeverage();
     if (url.includes("account/asset/USDT")) return ok({ currency: "USDT", equity: 1000, availableBalance: 900, availableOpen: 900, positionMargin: 0, frozenBalance: 0, unrealized: 0 });
     if (url.includes("order/create")) return create();
     throw new Error("Unexpected exchange request " + url);
   };
   const broker = new MexcBroker(memory(), { apiKey: "fictional", apiSecret: "fictional", limits: { maxLeverage: 5, maxOrderNotional: 1000, marketProtection: 0.01 }, fetch: exchangeFetch });
   const server = createGateway({ broker, devices: [{ id: "phone-a", token: TOKEN }, { id: "phone-b", token: OTHER }], extraReads: {
-    contracts: () => broker.contracts(), limits: () => broker.limits, closedOrders: (...args: unknown[]) => (broker.closedOrders as (...a: unknown[]) => unknown)(...args),
+    contracts: () => broker.contracts(), limits: () => broker.limits, live: (...args: unknown[]) => (broker.live as (...a: unknown[]) => unknown)(...args), closedOrders: (...args: unknown[]) => (broker.closedOrders as (...a: unknown[]) => unknown)(...args),
   } });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -66,6 +69,26 @@ test("an order goes from the app through the gateway to the exchange exactly onc
   await code(app.place(review), "reviewExpired");
   assert.equal(exchange.length, 1);
   assert.equal(await vault.get("mexc.ths.server.operation.v1"), null);
+});
+
+test("the app reads live candles through the gateway without any write", async t => {
+  const { client, exchange } = await setup(t);
+  const { app, vault } = await client(TOKEN);
+  const live = await app.live(SYMBOL, "minute1");
+  assert.equal(live.candles.length, 2);
+  assert.equal(live.ticker.symbol, SYMBOL);
+  assert.equal(exchange.length, 0);
+  assert.equal(await vault.get("mexc.ths.server.operation.v1"), null);
+  await code(app.live("bad" as never, "minute1"), "invalidSymbol");
+});
+
+test("a review survives a stream of live reads, and the order goes out once", async t => {
+  const { client, exchange } = await setup(t);
+  const { app } = await client(TOKEN);
+  const review = await app.review(draft);
+  for (let index = 0; index < 20; index++) await app.live(SYMBOL, index % 2 ? "minute1" : "minute5");
+  assert.deepEqual(await app.place(review), { orderID: ORDER_ID });
+  assert.equal(exchange.length, 1);
 });
 
 test("device storage is namespaced so it cannot touch the Schwab connection", async t => {
@@ -228,4 +251,43 @@ test("a place answer without an order id stays locked on the device", async () =
   await app.configureServer(ORIGIN, TOKEN);
   await code(app.place({ id: "x" } as never), "orderOutcomeUnknown");
   assert.ok(await vault.get("mexc.ths.server.operation.v1"));
+});
+
+const heldPosition = { positionId: 1109973831, symbol: SYMBOL, positionType: 2, openType: 1, holdVol: 10, frozenVol: 0, holdAvgPrice: 690, leverage: 5 };
+const leverage = { kind: "LEVERAGE" as const, symbol: SYMBOL, positionId: "1109973831", leverage: 3 };
+
+test("a leverage change goes from the app through the gateway to the exchange exactly once", async t => {
+  const { client, exchange } = await setup(t, undefined, [heldPosition]);
+  const { app, vault } = await client(TOKEN);
+  const review = await app.reviewLeverage(leverage);
+  assert.equal(review.previousLeverage, 5);
+  assert.equal(review.direction, "SHORT");
+  assert.equal(exchange.length, 0);
+  assert.deepEqual(await app.changeLeverage(review), { leverage: 3 });
+  assert.equal(exchange.length, 1);
+  assert.ok(exchange[0].endsWith("/api/v1/private/position/change_leverage"));
+  await code(app.changeLeverage(review), "reviewExpired");
+  assert.equal(exchange.length, 1);
+  assert.equal(await vault.get("mexc.ths.server.operation.v1"), null);
+});
+
+test("another device cannot use a leverage review, and only its id ever crosses the gateway", async t => {
+  const { client, exchange } = await setup(t, undefined, [heldPosition]);
+  const { app } = await client(TOKEN);
+  const { app: other } = await client(OTHER);
+  const review = await app.reviewLeverage(leverage);
+  await code(other.changeLeverage(review), "reviewExpired");
+  assert.equal(exchange.length, 0);
+});
+
+test("a lost reply to a leverage change locks both the device and the server", async t => {
+  const { client, exchange, broker } = await setup(t, undefined, [heldPosition], () => { throw new Error("connection lost"); });
+  const { app } = await client(TOKEN);
+  const review = await app.reviewLeverage(leverage);
+  await code(app.changeLeverage(review), "orderOutcomeUnknown");
+  assert.equal(exchange.length, 1);
+  assert.equal((await broker.status()).unresolvedOperation, true);
+  await code(app.reviewLeverage(leverage), "orderOutcomeUnknown");
+  await code(app.review(draft), "orderOutcomeUnknown");
+  assert.equal(exchange.length, 1);
 });

@@ -1,15 +1,15 @@
 import { createHmac, randomBytes } from "node:crypto";
 import { TradingError } from "../mobile/src/orderRules.ts";
 import {
-  MEXC_ACCOUNT, MEXC_REVIEW_TTL, cancelOutcome, classifyMexcResponse, createdOrderID,
+  DEFINITE_REJECTIONS, LEVERAGE_REJECTIONS, MEXC_ACCOUNT, MEXC_REVIEW_TTL, cancelOutcome, classifyMexcResponse, createdOrderID,
   decodeMexcAsset, decodeMexcContract, decodeMexcHistory, decodeMexcOrder, decodeMexcOrderPage,
-  decodeMexcPositions, decodeMexcTicker, encodeMexcCancel, encodeMexcOrder, freezeMexcDraft,
-  invalidMexcResponse, isOpening, mexcError, mexcHistoryRequest, mexcKeyProblem, parseLossless, planMexcOrder,
-  validMexcOrderID, validMexcSymbol, validateMexcDraft, validateMexcLimits,
+  decodeMexcPositions, decodeMexcTicker, encodeMexcCancel, encodeMexcLeverage, encodeMexcOrder, freezeMexcDraft, freezeMexcLeverageDraft,
+  invalidMexcResponse, isLeverageDraft, isOpening, mexcError, mexcHistoryRequest, mexcLiveRequest, mexcKeyProblem, parseLossless, planMexcLeverage, planMexcOrder,
+  validMexcOrderID, validMexcSymbol, validateMexcDraft, validateMexcLeverageDraft, validateMexcLimits,
 } from "../mobile/src/mexcRules.ts";
 import type {
-  MexcAccount, MexcContract, MexcDraft, MexcLimits, MexcOrder, MexcOrderContext, MexcOrderPlan,
-  MexcPrepared, MexcTicker,
+  MexcAccount, MexcContract, MexcDraft, MexcLeverageContext, MexcLeverageDraft, MexcLeveragePrepared, MexcLimits, MexcLive, MexcOrder, MexcOrderContext, MexcOrderPlan,
+  MexcPosition, MexcPrepared, MexcTicker,
 } from "../mobile/src/mexcRules.ts";
 import type { HistoryRange, History, SessionStatus, Vault } from "../mobile/src/types.ts";
 
@@ -23,15 +23,26 @@ const MAX_BODY = 8 * 1024 * 1024;
 const KEY_CHECK_TTL = 10 * 60_000;
 const CONTRACTS_TTL = 60_000;
 const TICKERS_TTL = 2_000;
+// Shared by devices watching the same chart, so two phones cost one pair of reads.
+const LIVE_TTL = 800;
+const LIVE_READ_TIMEOUT = 3_000;
+const MAX_LIVE_ENTRIES = 32;
+const LIVE_PAUSE_MIN = 10_000;
+const LIVE_PAUSE_MAX = 120_000;
 const MAX_SYMBOLS = 100;
 const HISTORY_WINDOW_DAYS = 90;
 
 type Transport = (url: string, init: RequestInit) => Promise<Response>;
-interface Marker { operation: "create" | "cancel"; symbol?: string; externalOid?: string; orderID?: string }
+interface Marker { operation: "create" | "cancel" | "leverage"; symbol?: string; externalOid?: string; orderID?: string; positionId?: string; leverage?: number; previousLeverage?: number }
 export interface MexcBrokerOptions {
   apiKey: string;
   apiSecret: string;
   limits: MexcLimits;
+  /**
+   * Reading the key's own settings needs spot account read access. An owner who leaves that off
+   * sets this to false and takes over the check by hand: IP binding and no transfer permission.
+   */
+  keyCheck?: boolean;
   fetch?: Transport;
   now?: () => number;
   timeoutMilliseconds?: number;
@@ -50,19 +61,26 @@ export class MexcBroker {
   private readonly transport: Transport;
   private readonly now: () => number;
   private readonly timeout: number;
-  private readonly reviews = new Map<string, MexcPrepared>();
+  private readonly keyCheckEnabled: boolean;
+  private readonly reviews = new Map<string, MexcPrepared | MexcLeveragePrepared>();
   private prepareSequence = 0;
   private writeBusy = false;
   private unresolved = false;
   private keyCheck?: { at: number; problem?: string };
   private contractList?: { at: number; value: MexcContract[] };
   private tickerList?: { at: number; value: MexcTicker[] };
+  private readonly liveCache = new Map<string, { at: number; value: Promise<MexcLive> }>();
+  private livePause = 0;
+  private livePausedUntil = 0;
 
   constructor(vault: Vault, options: MexcBrokerOptions) {
     if (typeof options.apiKey !== "string" || !options.apiKey || typeof options.apiSecret !== "string" || !options.apiSecret ||
         options.apiKey === "REPLACE_ON_SERVER" || options.apiSecret === "REPLACE_ON_SERVER")
       throw new Error("MEXC API key is not configured");
     validateMexcLimits(options.limits);
+    // Only a real false turns it off, so a typo such as "false" in the config cannot.
+    if (options.keyCheck !== undefined && typeof options.keyCheck !== "boolean") throw new Error("Invalid MEXC key check setting");
+    this.keyCheckEnabled = options.keyCheck !== false;
     this.vault = vault;
     this.apiKey = options.apiKey;
     this.secret = options.apiSecret;
@@ -121,6 +139,7 @@ export class MexcBroker {
   }
   /** Fails closed: without a passing check the order path stays shut, reads keep working. */
   private async keyProblem(timeout?: number): Promise<string | undefined> {
+    if (!this.keyCheckEnabled) return undefined;
     const now = this.now();
     if (this.keyCheck && now >= this.keyCheck.at && now - this.keyCheck.at < KEY_CHECK_TTL) return this.keyCheck.problem;
     let problem: string | undefined;
@@ -136,11 +155,11 @@ export class MexcBroker {
     this.keyCheck = { at: now, problem };
     return problem;
   }
-  private async requireUsableKey(draft: MexcDraft, timeout?: number): Promise<void> {
+  private async requireUsableKey(reducesExposure: boolean, timeout?: number): Promise<void> {
     const problem = await this.keyProblem(timeout);
     if (!problem) return;
     // A failed lookup says nothing bad about the key, and closing only reduces exposure.
-    if (problem === "keyCheckFailed" && !isOpening(draft.action)) return;
+    if (problem === "keyCheckFailed" && reducesExposure) return;
     throw mexcError(problem);
   }
 
@@ -160,7 +179,8 @@ export class MexcBroker {
    * The marker is durable before the request leaves. It is removed only when the
    * answer proves what happened, and the request is never sent a second time.
    */
-  private async write(path: string, body: string, marker: Marker, expired?: () => boolean, rejected: (code: string) => string = code => code): Promise<unknown> {
+  private async write(path: string, body: string, marker: Marker, expired?: () => boolean, rejected: (code: string) => string = code => code,
+    rejections: Record<number, string> = DEFINITE_REJECTIONS): Promise<unknown> {
     try {
       if ((await this.vault.get(OPERATION_KEY)) !== null) {
         this.unresolved = true;
@@ -180,7 +200,7 @@ export class MexcBroker {
     let result: { status: number; body: string };
     try { result = await this.send("POST", path, { body, signed: true }); }
     catch { throw unknownOutcome(); }
-    const outcome = classifyMexcResponse(result.status, result.body);
+    const outcome = classifyMexcResponse(result.status, result.body, rejections);
     if (outcome.kind === "unknown") throw unknownOutcome();
     if (outcome.kind === "rejected") {
       await this.clearMarker();
@@ -202,6 +222,17 @@ export class MexcBroker {
     ]);
     if (typeof positionMode !== "number") throw invalidMexcResponse();
     return { draft, contract, ticker, positions, availableOpen: asset.availableOpen, positionMode, limits: this.limits, now: this.now() };
+  }
+
+  private async leverageContext(draft: MexcLeverageDraft, timeout?: number): Promise<MexcLeverageContext> {
+    const [contract, positionMode, positions, asset] = await Promise.all([
+      this.read("/api/v1/contract/detail", { symbol: draft.symbol }, false, timeout).then(decodeMexcContract),
+      this.read("/api/v1/private/position/position_mode", undefined, true, timeout),
+      this.read("/api/v1/private/position/open_positions", { symbol: draft.symbol }, true, timeout).then(decodeMexcPositions),
+      this.read("/api/v1/private/account/asset/USDT", undefined, true, timeout).then(decodeMexcAsset),
+    ]);
+    if (typeof positionMode !== "number") throw invalidMexcResponse();
+    return { draft, contract, positions, availableOpen: asset.availableOpen, positionMode, limits: this.limits };
   }
 
   async status(): Promise<SessionStatus & { tradingBlocked?: string; writeInProgress?: boolean }> {
@@ -265,6 +296,46 @@ export class MexcBroker {
     const request = mexcHistoryRequest(range, this.now());
     return decodeMexcHistory(await this.read(`/api/v1/contract/kline/${symbol}`, request), symbol);
   }
+  private async liveRead(path: string, query: Record<string, string | number>): Promise<unknown> {
+    let result: { status: number; body: string };
+    try { result = await this.send("GET", path, { query, timeout: LIVE_READ_TIMEOUT }); }
+    catch { throw mexcError("exchangeUnavailable"); }
+    // A firewall refusal counts as a rate limit here: this optional path should be the first to step back.
+    if (result.status === 403) throw mexcError("rateLimited");
+    const outcome = classifyMexcResponse(result.status, result.body);
+    if (outcome.kind === "accepted") return outcome.data;
+    throw mexcError(outcome.kind === "rejected" && outcome.code === "rateLimited" ? "rateLimited" : "exchangeUnavailable");
+  }
+  /**
+   * Public market data only: this never uses the key and never touches the write path. Orders and
+   * cancels share this IP, so when MEXC pushes back this stops first. Only this path pauses, never them.
+   */
+  async live(symbol: unknown, range: HistoryRange): Promise<MexcLive> {
+    if (!validMexcSymbol(symbol)) throw mexcError("invalidSymbol");
+    const request = mexcLiveRequest(range, this.now());
+    const key = `${symbol}:${request.interval}`, now = this.now();
+    // The bound keeps a clock that jumped backwards from pausing this for longer than intended.
+    if (now < this.livePausedUntil && this.livePausedUntil - now <= LIVE_PAUSE_MAX) throw mexcError("rateLimited");
+    const cached = this.liveCache.get(key);
+    if (cached && now >= cached.at && now - cached.at < LIVE_TTL) return cached.value;
+    if (this.liveCache.size >= MAX_LIVE_ENTRIES) this.liveCache.clear();
+    const value = Promise.all([
+      this.liveRead(`/api/v1/contract/kline/${symbol}`, request),
+      this.liveRead("/api/v1/contract/ticker", { symbol }),
+    ]).then(([candles, ticker]): MexcLive => ({
+      symbol, candles: decodeMexcHistory(candles, symbol).candles.slice(-2), ticker: decodeMexcTicker(ticker),
+    }));
+    this.liveCache.set(key, { at: now, value });
+    value.then(() => { this.livePause = 0; }, error => {
+      // Any other failure is not worth remembering: the next second simply asks again.
+      if (this.liveCache.get(key)?.value === value) this.liveCache.delete(key);
+      if (error instanceof TradingError && error.code === "rateLimited") {
+        this.livePause = Math.min(LIVE_PAUSE_MAX, Math.max(LIVE_PAUSE_MIN, this.livePause * 2));
+        this.livePausedUntil = this.now() + this.livePause;
+      }
+    });
+    return value;
+  }
   async orders(accountID: unknown): Promise<MexcOrder[]> {
     this.assertAccount(accountID);
     return decodeMexcOrderPage(await this.read("/api/v1/private/order/list/open_orders", { page_num: 1, page_size: 100 }, true));
@@ -287,16 +358,17 @@ export class MexcBroker {
     return decodeMexcOrder(await this.read(`/api/v1/private/order/get/${id}`, undefined, true, SUBMIT_READ_TIMEOUT));
   }
 
-  async prepare(accountID: unknown, draft: MexcDraft, extra?: unknown): Promise<MexcPrepared> {
+  async prepare(accountID: unknown, draft: MexcDraft | MexcLeverageDraft, extra?: unknown): Promise<MexcPrepared | MexcLeveragePrepared> {
     if (this.writeBusy) throw busy();
     if (extra !== undefined) throw mexcError("invalidDraft");
     this.assertAccount(accountID);
+    if (isLeverageDraft(draft)) return this.prepareLeverage(draft);
     validateMexcDraft(draft);
     const copy = freezeMexcDraft(draft);
     this.reviews.clear();
     const sequence = ++this.prepareSequence;
     if (await this.readMarker()) throw unknownOutcome();
-    await this.requireUsableKey(copy);
+    await this.requireUsableKey(!isOpening(copy.action));
     const context = await this.orderContext(copy);
     if (sequence !== this.prepareSequence || this.writeBusy) throw reviewExpired();
     const plan = planMexcOrder(context);
@@ -325,7 +397,30 @@ export class MexcBroker {
     this.reviews.set(snapshot.id, snapshot);
     return snapshot;
   }
-  async submit(prepared: MexcPrepared): Promise<{ orderID: string }> {
+  /** A higher leverage is more exposure, so a failed key lookup stops this as it stops an opening order. */
+  private async prepareLeverage(draft: MexcLeverageDraft): Promise<MexcLeveragePrepared> {
+    validateMexcLeverageDraft(draft);
+    const copy = freezeMexcLeverageDraft(draft);
+    this.reviews.clear();
+    const sequence = ++this.prepareSequence;
+    if (await this.readMarker()) throw unknownOutcome();
+    await this.requireUsableKey(false);
+    const context = await this.leverageContext(copy);
+    if (sequence !== this.prepareSequence || this.writeBusy) throw reviewExpired();
+    const plan = planMexcLeverage(context);
+    const snapshot: MexcLeveragePrepared = Object.freeze({
+      ...plan,
+      id: randomBytes(32).toString("base64url"),
+      draft: copy,
+      accountID: MEXC_ACCOUNT,
+      displayName: context.contract.displayName,
+      preparedAt: this.now(),
+      isDemo: false,
+    });
+    this.reviews.set(snapshot.id, snapshot);
+    return snapshot;
+  }
+  async submit(prepared: MexcPrepared | MexcLeveragePrepared): Promise<{ orderID: string } | { leverage: number }> {
     if (this.writeBusy) throw busy();
     const review = this.reviews.get(prepared?.id);
     // Identity rejects constructed, altered and replayed reviews, and each review is used once.
@@ -342,21 +437,40 @@ export class MexcBroker {
     this.writeBusy = true;
     try {
       if (await this.readMarker()) throw unknownOutcome();
-      await this.requireUsableKey(prepared.draft, SUBMIT_READ_TIMEOUT);
-      const context = await this.orderContext(prepared.draft, SUBMIT_READ_TIMEOUT);
-      const plan: MexcOrderPlan = planMexcOrder({ ...context, reviewedPrice: prepared.orderPrice });
+      if (isLeverageDraft(prepared.draft)) return await this.sendLeverage(prepared as MexcLeveragePrepared, outOfTime);
+      const order = prepared as MexcPrepared;
+      await this.requireUsableKey(!isOpening(order.draft.action), SUBMIT_READ_TIMEOUT);
+      const context = await this.orderContext(order.draft, SUBMIT_READ_TIMEOUT);
+      const plan: MexcOrderPlan = planMexcOrder({ ...context, reviewedPrice: order.orderPrice });
       // The approved exposure must still hold, or the user approved something else. A position
       // closed and reopened in between has a new id, and a close must not land on it unseen.
-      if (plan.openType !== prepared.openType || plan.leverage !== prepared.leverage || plan.positionId !== prepared.positionId)
+      if (plan.openType !== order.openType || plan.leverage !== order.leverage || plan.positionId !== order.positionId)
         throw reviewExpired();
-      const data = await this.write("/api/v1/private/order/create", encodeMexcOrder(prepared.draft, plan, prepared.externalOid),
-        { operation: "create", symbol: prepared.draft.symbol, externalOid: prepared.externalOid }, outOfTime);
+      const data = await this.write("/api/v1/private/order/create", encodeMexcOrder(order.draft, plan, order.externalOid),
+        { operation: "create", symbol: order.draft.symbol, externalOid: order.externalOid }, outOfTime);
       const orderID = createdOrderID(data);
       // A success without a usable id cannot be matched to an order, so it stays locked.
       if (orderID === undefined) throw unknownOutcome();
       await this.clearMarker();
       return { orderID };
     } finally { this.writeBusy = false; }
+  }
+  /** Runs inside submit, so the write lock, the marker check and the time budget all apply. */
+  private async sendLeverage(prepared: MexcLeveragePrepared, outOfTime: () => boolean): Promise<{ leverage: number }> {
+    const { draft } = prepared;
+    await this.requireUsableKey(false, SUBMIT_READ_TIMEOUT);
+    const plan = planMexcLeverage(await this.leverageContext(draft, SUBMIT_READ_TIMEOUT));
+    // The reviewed position must still be what it was, or the user approved something else.
+    if (plan.previousLeverage !== prepared.previousLeverage || plan.direction !== prepared.direction || plan.holdVol !== prepared.holdVol)
+      throw reviewExpired();
+    await this.write("/api/v1/private/position/change_leverage", encodeMexcLeverage(draft),
+      { operation: "leverage", symbol: draft.symbol, positionId: draft.positionId, leverage: draft.leverage, previousLeverage: prepared.previousLeverage }, outOfTime,
+      // A refusal of this request must not read like a refused order.
+      code => (["apiKeyRejected", "ipRejected", "permissionRejected", "rateLimited", "regionRejected", "contractUnavailable", "positionMode", "marketClosed", "leverageLimit",
+        "leverageCross", "leverageMargin", "leverageOrdersOpen", "leverageSizeLimit", "positionChanged"].includes(code) ? code : "leverageRejected"),
+      LEVERAGE_REJECTIONS);
+    await this.clearMarker();
+    return { leverage: draft.leverage };
   }
   async cancel(accountID: unknown, orderID: unknown): Promise<void> {
     if (this.writeBusy) throw busy();
@@ -381,10 +495,18 @@ export class MexcBroker {
   }
 
   /** For the offline recovery script: what is locked, and what MEXC says about it, if it answered. */
-  async pendingOperation(): Promise<{ marker: Marker & { createdAt: number }; lookup: "found" | "notFound" | "failed"; order?: MexcOrder } | null> {
+  async pendingOperation(): Promise<{ marker: Marker & { createdAt: number }; lookup: "found" | "notFound" | "failed"; order?: MexcOrder; position?: MexcPosition } | null> {
     const stored = await this.vault.get(OPERATION_KEY);
     if (stored === null) return null;
     const marker = JSON.parse(stored);
+    if (marker.operation === "leverage") {
+      if (!validMexcSymbol(marker.symbol) || !validMexcOrderID(marker.positionId)) return { marker, lookup: "failed" };
+      try {
+        const positions = decodeMexcPositions(await this.read("/api/v1/private/position/open_positions", { symbol: marker.symbol }, true));
+        const position = positions.find(row => row.id === marker.positionId);
+        return position ? { marker, lookup: "found", position } : { marker, lookup: "notFound" };
+      } catch { return { marker, lookup: "failed" }; }
+    }
     let path: string | undefined;
     if (marker.operation === "create" && validMexcSymbol(marker.symbol) && /^[A-Za-z0-9]{8,32}$/.test(marker.externalOid))
       path = `/api/v1/private/order/external/${marker.symbol}/${marker.externalOid}`;

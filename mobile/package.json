@@ -1,6 +1,6 @@
 {
   "name": "ths-expo-personal",
-  "version": "0.6.5",
+  "version": "1.0.0",
   "main": "index.ts",
   "dependencies": {
     "@expo/metro-runtime": "~57.0.15",
@@ -10,6 +10,7 @@
     "expo-document-picker": "~57.0.1",
     "expo-file-system": "~57.0.6",
     "expo-glass-effect": "~57.0.4",
+    "expo-haptics": "~57.0.3",
     "expo-secure-store": "~57.0.3",
     "expo-status-bar": "~57.0.1",
     "react": "19.2.3",

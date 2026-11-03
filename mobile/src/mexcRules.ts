@@ -153,6 +153,34 @@ export interface MexcOrderPlan {
   closable?: number;
   positionId?: string;
 }
+/**
+ * Changing the leverage of an open position. A draft of its own that carries no side, size or price,
+ * so it can never be read as an order.
+ */
+export interface MexcLeverageDraft {
+  kind: "LEVERAGE";
+  symbol: string;
+  positionId: string;
+  leverage: number;
+}
+/** The position as the server found it, so the review shows what is really being changed. */
+export interface MexcLeveragePlan {
+  direction: "LONG" | "SHORT";
+  previousLeverage: number;
+  holdVol: number;
+  averagePrice: number;
+  margin?: number;
+  liquidatePrice?: number;
+  available: number;
+}
+export interface MexcLeveragePrepared extends MexcLeveragePlan {
+  id: string;
+  draft: MexcLeverageDraft;
+  accountID: string;
+  displayName: string;
+  preparedAt: number;
+  isDemo: boolean;
+}
 
 /** The only text an exchange problem can show. Exchange messages are never forwarded. */
 export const MEXC_MESSAGES: Record<string, string> = {
@@ -181,7 +209,7 @@ export const MEXC_MESSAGES: Record<string, string> = {
   insufficientPosition: "可平张数不足，请刷新持仓和委托。",
   orderChanged: "这笔委托已结束，无法撤销，请刷新。",
   cancelRejected: "撤单被拒绝，请刷新委托状态。",
-  orderOutcomeUnknown: "这笔委托的结果未确认，交易已锁定，请先在 MEXC 核实，勿重复提交。",
+  orderOutcomeUnknown: "这笔操作的结果未确认，交易已锁定，请先在 MEXC 核实，勿重复提交。",
   reviewExpired: "核对已过期、已使用或被另一台设备更新，请重新核对。",
   operationBusy: "另一笔委托正在处理中，请稍候。",
   secureStorage: "无法写入交易标记，本次未提交。",
@@ -192,6 +220,14 @@ export const MEXC_MESSAGES: Record<string, string> = {
   rateLimited: "请求过于频繁，请稍后再试。",
   regionRejected: "MEXC 不向服务器所在地区提供此服务。",
   exchangeRejected: "MEXC 拒绝了这笔委托，未成交。",
+  marketClosed: "美股类合约休市中，现在不能交易。",
+  positionChanged: "持仓已变化，请刷新后重新核对。",
+  leverageUnchanged: "新杠杆和当前杠杆相同。",
+  leverageCross: "全仓持仓不能在这里改杠杆。",
+  leverageOrdersOpen: "该合约还有未成交的委托，MEXC 不允许改杠杆，请先撤单。杠杆没有变化。",
+  leverageMargin: "可用保证金不够，MEXC 没有修改杠杆。",
+  leverageSizeLimit: "当前持仓超过目标杠杆允许的上限，MEXC 没有修改杠杆。",
+  leverageRejected: "MEXC 拒绝了这次杠杆修改，杠杆没有变化。",
   keyInvalid: "API Key 已失效，下单已关闭。",
   keyNotBound: "API Key 没有绑定具体 IP，下单已关闭。",
   keyMovesMoney: "API Key 带转账或提现权限，下单已关闭，请换一个只有合约权限的 Key。",
@@ -351,6 +387,20 @@ export function freezeMexcDraft(draft: MexcDraft): MexcDraft {
   });
 }
 
+export const isLeverageDraft = (draft: unknown): draft is MexcLeverageDraft =>
+  !!draft && typeof draft === "object" && (draft as { kind?: unknown }).kind === "LEVERAGE";
+export function validateMexcLeverageDraft(draft: MexcLeverageDraft): void {
+  const row = draft as unknown as Record<string, unknown>;
+  if (!isLeverageDraft(row) || Array.isArray(row) || Object.keys(row).some(key => !["kind", "symbol", "positionId", "leverage"].includes(key)))
+    throw mexcError("invalidDraft");
+  if (!validMexcSymbol(draft.symbol)) throw mexcError("invalidSymbol");
+  if (!validMexcOrderID(draft.positionId)) throw mexcError("positionChanged");
+  if (!Number.isInteger(draft.leverage) || draft.leverage < 1) throw mexcError("leverageLimit");
+}
+export function freezeMexcLeverageDraft(draft: MexcLeverageDraft): MexcLeverageDraft {
+  return Object.freeze({ kind: "LEVERAGE", symbol: draft.symbol, positionId: draft.positionId, leverage: draft.leverage });
+}
+
 export function validateMexcLimits(limits: MexcLimits): void {
   if (!limits || !Number.isInteger(limits.maxLeverage) || limits.maxLeverage < 1 || limits.maxLeverage > 500 ||
       !Number.isFinite(limits.maxOrderNotional) || limits.maxOrderNotional <= 0 ||
@@ -443,6 +493,38 @@ export function planMexcOrder(context: MexcOrderContext): MexcOrderPlan {
   return { orderPrice, referencePrice, notional, openType: position.openType, closable: Number(closable), positionId: position.id };
 }
 
+export interface MexcLeverageContext {
+  draft: MexcLeverageDraft;
+  contract: MexcContract;
+  positions: MexcPosition[];
+  availableOpen: number;
+  /** 1 hedge, 2 one-way. */
+  positionMode: number;
+  limits: MexcLimits;
+}
+/**
+ * The single place that decides whether a leverage change may leave the server, at review and again
+ * immediately before the write. Going down is also held to the limits: a position opened elsewhere
+ * above them can come down to them, not stop halfway. MEXC decides whether the margin is enough.
+ */
+export function planMexcLeverage(context: MexcLeverageContext): MexcLeveragePlan {
+  const { draft, contract, positions, availableOpen, positionMode, limits } = context;
+  if (positionMode !== 1) throw mexcError("positionMode");
+  if (contract.symbol !== draft.symbol) throw invalidMexcResponse();
+  if (contract.state !== 0 || contract.apiAllowed !== true || contract.futureType !== 1 || contract.settleCoin !== "USDT")
+    throw mexcError("contractUnavailable");
+  const position = positions.find(row => row.id === draft.positionId && row.symbol === draft.symbol && row.holdVol > 0);
+  if (!position) throw mexcError("positionChanged");
+  if (position.openType !== 1) throw mexcError("leverageCross");
+  if (draft.leverage < contract.minLeverage || draft.leverage > contract.maxLeverage || draft.leverage > limits.maxLeverage)
+    throw mexcError("leverageLimit");
+  if (draft.leverage === position.leverage) throw mexcError("leverageUnchanged");
+  return {
+    direction: position.direction, previousLeverage: position.leverage, holdVol: position.holdVol, averagePrice: position.averagePrice,
+    margin: position.margin, liquidatePrice: position.liquidatePrice, available: availableOpen,
+  };
+}
+
 /**
  * Built by hand so the signed text carries exact decimals and full-length ids.
  * Every interpolated value has already passed a strict format check.
@@ -478,6 +560,12 @@ export function encodeMexcCancel(orderID: string): string {
   return `[${orderID}]`;
 }
 
+/** Bare digits, never Number: a position id may not fit in a double. */
+export function encodeMexcLeverage(draft: MexcLeverageDraft): string {
+  if (!validMexcOrderID(draft.positionId) || !Number.isInteger(draft.leverage)) throw invalidMexcResponse();
+  return `{"positionId":${draft.positionId},"leverage":${draft.leverage}}`;
+}
+
 /**
  * Only codes that say the request was refused may unlock trading. Anything else
  * (500, 501, 603 repeated request, 604, 801, 6008 "placed successfully", or a code
@@ -495,13 +583,23 @@ export const DEFINITE_REJECTIONS: Record<number, string> = {
   2005: "insufficientFunds", 2008: "insufficientPosition", 2009: "insufficientPosition",
   2040: "orderChanged", 2041: "orderChanged",
   2006: "leverageLimit", 2021: "leverageMismatch", 2027: "positionCross", 7002: "positionMode",
-  9070: "isolatedUnavailable", 9071: "isolatedUnavailable", 300002: "regionRejected",
+  9070: "isolatedUnavailable", 9071: "isolatedUnavailable", 9073: "marketClosed", 300002: "regionRejected",
+};
+/**
+ * The same rule for a leverage change, plus refusals only that request can get. Kept apart
+ * so that none of them could ever unlock an order.
+ */
+export const LEVERAGE_REJECTIONS: Record<number, string> = {
+  ...DEFINITE_REJECTIONS,
+  2005: "leverageMargin", 2044: "leverageMargin", 2009: "positionChanged", 2019: "leverageOrdersOpen", 2021: "leverageRejected", 2026: "leverageCross",
+  2038: "leverageSizeLimit", 8815: "leverageSizeLimit", 8816: "leverageSizeLimit", 8818: "leverageSizeLimit", 8819: "leverageSizeLimit", 8821: "leverageSizeLimit",
+  8931: "leverageLimit",
 };
 export type MexcOutcome =
   | { kind: "accepted"; data: unknown }
   | { kind: "rejected"; code: string; exchangeCode?: number }
   | { kind: "unknown" };
-export function classifyMexcResponse(status: number, body: string): MexcOutcome {
+export function classifyMexcResponse(status: number, body: string, rejections: Record<number, string> = DEFINITE_REJECTIONS): MexcOutcome {
   let envelope: Record<string, unknown> | undefined;
   try {
     const parsed = parseLossless(body);
@@ -511,8 +609,8 @@ export function classifyMexcResponse(status: number, body: string): MexcOutcome 
   // A named code decides whatever the status: a listed refusal, or unknown for anything else.
   const code = envelope?.code;
   if (envelope?.success === false || (status >= 400 && code !== undefined)) {
-    if (typeof code === "number" && Object.hasOwn(DEFINITE_REJECTIONS, code))
-      return { kind: "rejected", code: DEFINITE_REJECTIONS[code], exchangeCode: code };
+    if (typeof code === "number" && Object.hasOwn(rejections, code))
+      return { kind: "rejected", code: rejections[code], exchangeCode: code };
     return { kind: "unknown" };
   }
   // Only these say the request never reached matching: signature, firewall, rate limit.
@@ -664,6 +762,20 @@ export function mexcHistoryRequest(range: HistoryRange, nowMilliseconds: number)
   if (!entry) throw mexcError("invalidRange");
   const end = Math.floor(nowMilliseconds / 1000);
   return { interval: entry.interval, start: end - entry.span, end };
+}
+/** The latest candles and quote, for refreshing an open chart once a second. */
+export interface MexcLive {
+  symbol: string;
+  /** The last two candles, so a candle that just closed still gets its final values. */
+  candles: Candle[];
+  ticker: MexcTicker;
+}
+const BAR_SECONDS: Record<string, number> = {
+  Min1: 60, Min5: 300, Min15: 900, Min30: 1800, Min60: 3600, Day1: 86_400, Week1: 604_800, Month1: 2_678_400,
+};
+export function mexcLiveRequest(range: HistoryRange, nowMilliseconds: number) {
+  const { interval, end } = mexcHistoryRequest(range, nowMilliseconds);
+  return { interval, start: end - Math.ceil(BAR_SECONDS[interval] * 2.5), end };
 }
 export function decodeMexcHistory(value: unknown, symbol: string): History {
   const row = object(value), time = array(row.time), open = array(row.open), high = array(row.high),

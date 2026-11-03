@@ -25,9 +25,14 @@ if (process.argv.length < 3 || process.argv.length > 4 || (flag !== undefined &&
       const pending = await broker.pendingOperation();
       if (!pending) console.log('Nothing is locked.');
       else {
-        const { marker, order, lookup } = pending;
-        console.log(`Locked ${marker.operation} on ${marker.symbol ?? 'unknown contract'} at ${new Date(marker.createdAt).toISOString()}, id ${marker.externalOid ?? marker.orderID}.`);
-        if (lookup === 'found') console.log(`MEXC reports order ${order.id}: state ${order.state} (1 pending, 2 unfilled, 3 filled, 4 canceled, 5 invalid), filled ${order.dealVol} of ${order.vol}.`);
+        const { marker, order, position, lookup } = pending;
+        console.log(`Locked ${marker.operation} on ${marker.symbol ?? 'unknown contract'} at ${new Date(marker.createdAt).toISOString()}, id ${marker.externalOid ?? marker.orderID ?? marker.positionId}.`);
+        if (marker.operation === 'leverage') {
+          if (lookup === 'found') console.log(`MEXC reports position ${position.id} at ${position.leverage}x. The change was from ${marker.previousLeverage}x to ${marker.leverage}x.`);
+          else if (lookup === 'notFound') console.log('MEXC lists no such open position. Check the MEXC position history before clearing.');
+          else console.log('The lookup failed, so this tells you nothing about the position. Check MEXC directly.');
+          console.log('A position still at the old leverage does not prove the change never landed. Check the position at MEXC before clearing.');
+        } else if (lookup === 'found') console.log(`MEXC reports order ${order.id}: state ${order.state} (1 pending, 2 unfilled, 3 filled, 4 canceled, 5 invalid), filled ${order.dealVol} of ${order.vol}.`);
         // Not finding it does not prove it never landed: an order can appear after the lookup.
         else if (lookup === 'notFound') console.log('MEXC says this order does not exist. That does not prove it was never placed; wait and check the MEXC order history before clearing.');
         else console.log('The lookup failed, so this tells you nothing about the order. Check the MEXC order history directly.');

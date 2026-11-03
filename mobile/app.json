@@ -2,14 +2,14 @@
   "expo": {
     "name": "THS",
     "slug": "ths-expo-personal",
-    "version": "0.6.5",
+    "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "app.personal.ths.expo",
-      "buildNumber": "13"
+      "buildNumber": "14"
     },
     "android": {
       "adaptiveIcon": {

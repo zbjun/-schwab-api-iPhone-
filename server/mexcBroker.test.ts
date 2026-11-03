@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { MexcBroker } from "./mexcBroker.ts";
-import type { MexcDraft, MexcPrepared } from "../mobile/src/mexcRules.ts";
+import type { MexcDraft, MexcLeverageDraft, MexcLeveragePrepared, MexcPrepared } from "../mobile/src/mexcRules.ts";
 import type { Vault } from "../mobile/src/types.ts";
 
 // Fictional credentials and data only. This suite never reaches a network.
@@ -14,6 +14,7 @@ const ORDER_ID = "739113577038255616";
 const KEY_CHECK_EXPIRED = 10 * 60_000 + 1;
 const openDraft: MexcDraft = { symbol: SYMBOL, action: "OPEN_LONG", kind: "LIMIT", vol: "10", price: "700", leverage: 5 };
 const closeDraft: MexcDraft = { symbol: SYMBOL, action: "CLOSE_LONG", kind: "MARKET", vol: "4" };
+const leverageDraft: MexcLeverageDraft = { kind: "LEVERAGE", symbol: SYMBOL, positionId: "1109973831", leverage: 3 };
 const ok = (data: unknown) => JSON.stringify({ success: true, code: 0, data });
 
 class MemoryVault implements Vault {
@@ -26,19 +27,21 @@ class MemoryVault implements Vault {
   async remove(key: string) { if (this.failRemove) throw new Error("vault"); this.events.push("marker:remove"); this.values.delete(key); }
 }
 interface Call { url: string; init: RequestInit }
-function fixture(overrides: { keyInfo?: unknown; positions?: unknown[]; positionMode?: number; create?: () => Promise<Response> | Response; cancel?: () => Promise<Response> | Response; detail?: unknown; state?: number } = {}) {
+function fixture(overrides: { keyCheck?: boolean; keyInfo?: unknown; keyStatus?: number; positions?: unknown[]; positionMode?: number; create?: () => Promise<Response> | Response; cancel?: () => Promise<Response> | Response; changeLeverage?: () => Promise<Response> | Response; detail?: unknown; state?: number } = {}) {
   const events: string[] = [], calls: Call[] = [];
   const vault = new MemoryVault(events);
   let now = NOW;
   const keyInfo = overrides.keyInfo ?? { status: "VALID", ipWhiteList: "<gateway-host>", permissions: "SPOT_ACCOUNT_READ,CONTRACT_ACCOUNT_READ,CONTRACT_DEAL_READ,CONTRACT_DEAL_WRITE", remainingValidity: -999 };
   const routes: [RegExp, () => Response | Promise<Response>][] = [
-    [/\/api\/v3\/apiKeyInfo/, () => new Response(JSON.stringify(keyInfo))],
+    [/\/api\/v3\/apiKeyInfo/, () => new Response(JSON.stringify(keyInfo), { status: overrides.keyStatus ?? 200 })],
     [/\/api\/v1\/contract\/detail\?symbol=/, () => new Response(ok(overrides.detail ?? { symbol: SYMBOL, displayNameEn: "QQQ_USDT PERPETUAL", baseCoin: "QQQSTOCK", settleCoin: "USDT", futureType: 1, state: 0, apiAllowed: true, contractSize: 0.01, priceUnit: 0.01, volUnit: 1, minVol: 1, maxVol: 28000, minLeverage: 1, maxLeverage: 100, positionOpenType: 3, takerFeeRate: 0.0002, makerFeeRate: 0 }))],
+    [/\/api\/v1\/contract\/kline\//, () => new Response(ok({ time: [1, 2], open: [1, 2], high: [1, 2], low: [1, 2], close: [1, 2], vol: [1, 2] }))],
     [/\/api\/v1\/contract\/ticker\?symbol=/, () => new Response(ok({ symbol: SYMBOL, lastPrice: 700, bid1: 699.9, ask1: 700.1, fairPrice: 700, maxBidPrice: 840, minAskPrice: 560, fundingRate: 0.0005, timestamp: now }))],
     [/position_mode/, () => new Response(ok(overrides.positionMode ?? 1))],
     [/open_positions/, () => new Response(ok(overrides.positions ?? [{ positionId: 1109973831, symbol: SYMBOL, positionType: 1, openType: 1, holdVol: 10, frozenVol: 0, holdAvgPrice: 690, leverage: 5 }]))],
     [/account\/asset\/USDT/, () => new Response(ok({ currency: "USDT", equity: 1000, availableBalance: 900, availableOpen: 900, positionMargin: 100, frozenBalance: 0, unrealized: 0 }))],
     [/open_orders/, () => new Response(ok({ resultList: [] }))],
+    [/position\/change_leverage/, overrides.changeLeverage ?? (() => new Response(JSON.stringify({ success: true, code: 0 })))],
     [/order\/create/, overrides.create ?? (() => new Response(ok({ orderId: ORDER_ID, ts: NOW })))],
     [/order\/cancel/, overrides.cancel ?? (() => new Response(`{"success":true,"code":0,"data":[{"orderId":${ORDER_ID},"errorCode":0,"errorMsg":"success"}]}`))],
     [/order\/get\//, () => new Response(`{"success":true,"code":0,"data":{"orderId":${ORDER_ID},"symbol":"${SYMBOL}","side":1,"price":700,"vol":10,"state":${overrides.state ?? 2}}}`)],
@@ -47,11 +50,12 @@ function fixture(overrides: { keyInfo?: unknown; positions?: unknown[]; position
   const transport = async (url: string, init: RequestInit) => {
     calls.push({ url, init });
     if (/order\/(create|cancel)/.test(url)) events.push("send:" + (url.includes("create") ? "create" : "cancel"));
+    if (url.includes("change_leverage")) events.push("send:leverage");
     const route = routes.find(([pattern]) => pattern.test(url));
     if (!route) throw new Error("Unexpected request " + url);
     return route[1]();
   };
-  const broker = new MexcBroker(vault, { apiKey: API_KEY, apiSecret: SECRET, limits: { maxLeverage: 5, maxOrderNotional: 1000, marketProtection: 0.01 }, fetch: transport, now: () => now });
+  const broker = new MexcBroker(vault, { apiKey: API_KEY, apiSecret: SECRET, limits: { maxLeverage: 5, maxOrderNotional: 1000, marketProtection: 0.01 }, keyCheck: overrides.keyCheck, fetch: transport, now: () => now });
   const writes = () => calls.filter(call => call.init.method === "POST");
   return { broker, vault, calls, events, writes, advance: (ms: number) => { now += ms; } };
 }
@@ -312,6 +316,47 @@ for (const [problem, keyInfo] of [
   });
 }
 
+test("with the key check off, no lookup is made and orders go through the same path", async () => {
+  // This key would be refused if it were looked at, which proves the lookup is really skipped.
+  const context = fixture({ keyCheck: false, positions: [], keyInfo: { status: "VALID", ipWhiteList: "", permissions: "SPOT_TRANSFER_WRITE" } });
+  const status = await context.broker.status();
+  assert.equal(status.authenticated, true);
+  assert.equal(status.tradingBlocked, undefined);
+  assert.deepEqual(await context.broker.submit(await prepared(context)), { orderID: ORDER_ID });
+  assert.equal(context.calls.filter(call => call.url.includes("apiKeyInfo")).length, 0);
+  assert.deepEqual(context.events, ["marker:set", "send:create", "marker:remove"]);
+});
+
+test("with the key check off, every other protection still holds", async () => {
+  const context = fixture({ keyCheck: false, positions: [], create: () => Promise.reject(new Error("timeout")) });
+  await code(context.broker.prepare("USDT", { ...openDraft, leverage: 6 }), "leverageLimit");
+  await code(context.broker.prepare("USDT", { ...openDraft, vol: "200" }), "notionalLimit");
+  await code(fixture({ keyCheck: false, positionMode: 2 }).broker.prepare("USDT", openDraft), "positionMode");
+  await code(context.broker.submit(await prepared(context)), "orderOutcomeUnknown");
+  assert.equal(context.writes().length, 1);
+  assert.equal(context.vault.values.has(MARKER), true);
+  await code(context.broker.prepare("USDT", openDraft), "orderOutcomeUnknown");
+  assert.equal((await context.broker.status()).unresolvedOperation, true);
+});
+
+test("a rejected key still shows up when the check is off", async () => {
+  const broker = new MexcBroker(new MemoryVault([]), { apiKey: API_KEY, apiSecret: SECRET, limits: { maxLeverage: 5, maxOrderNotional: 1000, marketProtection: 0.01 }, keyCheck: false, now: () => NOW,
+    fetch: async () => new Response(JSON.stringify({ success: false, code: 402, message: "API Key expired" }), { status: 401 }) });
+  await code(broker.prepare("USDT", openDraft), "apiKeyRejected");
+  await code(broker.accounts(), "apiKeyRejected");
+});
+
+test("the key check is on unless the setting is exactly false", async () => {
+  const limits = { maxLeverage: 5, maxOrderNotional: 1000, marketProtection: 0.01 };
+  for (const value of ["false", 0, null, "off"])
+    assert.throws(() => new MexcBroker(new MemoryVault([]), { apiKey: "x", apiSecret: "y", limits, keyCheck: value as never }), String(value));
+  for (const keyCheck of [undefined, true]) {
+    const context = fixture({ keyCheck, keyInfo: { status: "VALID", ipWhiteList: "", permissions: "" } });
+    assert.equal((await context.broker.status()).tradingBlocked, "keyNotBound");
+    await code(context.broker.prepare("USDT", openDraft), "keyNotBound");
+  }
+});
+
 test("a failed key lookup closes trading and is asked again", async () => {
   let attempts = 0;
   const vault = new MemoryVault([]);
@@ -542,6 +587,111 @@ test("cancel still works when the key check would block new orders", async () =>
   assert.equal(context.writes().length, 1);
 });
 
+test("live candles use only public reads, stay small and are shared between devices", async () => {
+  const seen: { url: string; headers: Record<string, string> }[] = [];
+  let now = NOW, fail = false;
+  const broker = new MexcBroker(new MemoryVault([]), { apiKey: API_KEY, apiSecret: SECRET, limits: { maxLeverage: 5, maxOrderNotional: 1000, marketProtection: 0.01 }, now: () => now,
+    fetch: async (url, init) => {
+      seen.push({ url, headers: init.headers as Record<string, string> });
+      if (fail) throw new Error("offline");
+      if (url.includes("/contract/kline/")) return new Response(ok({ time: [1, 2, 3], open: [1, 2, 3], high: [1, 2, 3], low: [1, 2, 3], close: [1, 2, 3], vol: [1, 2, 3] }));
+      return new Response(ok({ symbol: SYMBOL, lastPrice: 700, timestamp: now }));
+    } });
+  const [a, b] = await Promise.all([broker.live(SYMBOL, "minute1"), broker.live(SYMBOL, "minute1")]);
+  assert.equal(a.candles.length, 2);
+  assert.deepEqual(a.candles.map(c => c.time), [2000, 3000]);
+  assert.equal(a.ticker.lastPrice, 700);
+  assert.equal(b, a);
+  assert.equal(seen.length, 2, "two devices at once cost one pair of reads");
+  assert.ok(seen.every(call => !call.headers.ApiKey && !call.headers.Signature), "no key on public reads");
+  await broker.live(SYMBOL, "minute5");
+  assert.equal(seen.length, 4, "another interval is its own entry");
+  now += 801;
+  await broker.live(SYMBOL, "minute1");
+  assert.equal(seen.length, 6, "refreshed after the short cache");
+  // A failure is not remembered.
+  now += 801; fail = true;
+  await code(broker.live(SYMBOL, "minute1"), "exchangeUnavailable");
+  fail = false;
+  assert.equal((await broker.live(SYMBOL, "minute1")).candles.length, 2);
+  await code(broker.live("bad", "minute1"), "invalidSymbol");
+  await code(broker.live(SYMBOL, "constructor" as never), "invalidRange");
+  // The cache cannot grow without limit.
+  for (let i = 0; i < 100; i++) await broker.live(`S${i}_USDT`, "minute1").catch(() => undefined);
+  assert.ok((broker as unknown as { liveCache: Map<string, unknown> }).liveCache.size <= 32);
+});
+
+test("live candles do not disturb a locked broker", async () => {
+  const context = fixture({ positions: [], create: () => Promise.reject(new Error("timeout")) });
+  await code(context.broker.submit(await prepared(context)), "orderOutcomeUnknown");
+  assert.equal((await context.broker.live(SYMBOL, "minute1")).candles.length, 2);
+  assert.equal((await context.broker.status()).unresolvedOperation, true);
+  assert.equal(context.writes().length, 1);
+});
+
+for (const [name, answer] of [
+  ["HTTP 429", () => new Response("slow down", { status: 429 })],
+  ["code 510", () => new Response(JSON.stringify({ success: false, code: 510 }))],
+  ["HTTP 403", () => new Response("waf", { status: 403 })],
+] as [string, () => Response][]) {
+  test(`after ${name} live candles stop calling MEXC, while orders keep working`, async () => {
+    let now = NOW, limited = true, liveCalls = 0, writes = 0;
+    const vault = new MemoryVault([]);
+    const broker = new MexcBroker(vault, { apiKey: API_KEY, apiSecret: SECRET, limits: { maxLeverage: 5, maxOrderNotional: 1000, marketProtection: 0.01 }, keyCheck: false, now: () => now,
+      fetch: async (url, init) => {
+        if (init.method === "POST") { writes++; return new Response(ok({ orderId: ORDER_ID })); }
+        const signed = !!(init.headers as Record<string, string>).Signature;
+        if (!signed && url.includes("/contract/kline/")) { liveCalls++; return limited ? answer() : new Response(ok({ time: [1, 2], open: [1, 2], high: [1, 2], low: [1, 2], close: [1, 2], vol: [1, 2] })); }
+        if (url.includes("/contract/detail")) return new Response(ok({ symbol: SYMBOL, baseCoin: "QQQSTOCK", settleCoin: "USDT", futureType: 1, state: 0, apiAllowed: true, contractSize: 0.01, priceUnit: 0.01, volUnit: 1, minVol: 1, maxVol: 28000, minLeverage: 1, maxLeverage: 100, positionOpenType: 3, takerFeeRate: 0.0002, makerFeeRate: 0 }));
+        if (url.includes("/contract/ticker")) return new Response(ok({ symbol: SYMBOL, lastPrice: 700, bid1: 699.9, ask1: 700.1, fairPrice: 700, timestamp: now }));
+        if (url.includes("position_mode")) return new Response(ok(1));
+        if (url.includes("open_positions")) return new Response(ok([]));
+        return new Response(ok({ currency: "USDT", equity: 1000, availableBalance: 900, availableOpen: 900, positionMargin: 0, frozenBalance: 0, unrealized: 0 }));
+      } });
+    await code(broker.live(SYMBOL, "minute1"), "rateLimited");
+    assert.equal(liveCalls, 1);
+    await new Promise(done => setImmediate(done));
+    for (let second = 0; second < 9; second++) {
+      now += 1000;
+      await code(broker.live(SYMBOL, "minute1"), "rateLimited");
+    }
+    assert.equal(liveCalls, 1, "no call inside the first ten seconds");
+    // The pause applies only to this path: a review and an order go straight through.
+    assert.deepEqual(await broker.submit(await broker.prepare("USDT", openDraft)), { orderID: ORDER_ID });
+    assert.equal(writes, 1);
+    // Still limited after the pause: it asks once more, then waits twice as long.
+    now += 1001;
+    await code(broker.live(SYMBOL, "minute1"), "rateLimited");
+    assert.equal(liveCalls, 2);
+    await new Promise(done => setImmediate(done));
+    now += 19_000;
+    await code(broker.live(SYMBOL, "minute1"), "rateLimited");
+    assert.equal(liveCalls, 2, "the second pause is twenty seconds");
+    // Recovered: it works again and the next pause starts from the beginning.
+    limited = false; now += 1_001;
+    assert.equal((await broker.live(SYMBOL, "minute1")).candles.length, 2);
+    await new Promise(done => setImmediate(done));
+    assert.equal((broker as unknown as { livePause: number }).livePause, 0);
+    // A clock that jumped backwards cannot stretch a pause past its limit.
+    limited = true; now += 801;
+    await code(broker.live(SYMBOL, "minute1"), "rateLimited");
+    await new Promise(done => setImmediate(done));
+    now -= 3_600_000; limited = false;
+    assert.equal((await broker.live(SYMBOL, "minute1")).candles.length, 2);
+  });
+}
+
+test("ordinary live failures do not pause anything", async () => {
+  let calls = 0, now = NOW;
+  const broker = new MexcBroker(new MemoryVault([]), { apiKey: API_KEY, apiSecret: SECRET, limits: { maxLeverage: 5, maxOrderNotional: 1000, marketProtection: 0.01 }, now: () => now,
+    fetch: async url => { if (url.includes("kline")) calls++; return new Response("bad gateway", { status: 502 }); } });
+  await code(broker.live(SYMBOL, "minute1"), "exchangeUnavailable");
+  await new Promise(done => setImmediate(done));
+  now += 1000;
+  await code(broker.live(SYMBOL, "minute1"), "exchangeUnavailable");
+  assert.equal(calls, 2);
+});
+
 test("closed-order queries validate their range", async () => {
   const context = fixture();
   await code(context.broker.closedOrders("bad", 0, 1), "invalidSymbol");
@@ -549,4 +699,168 @@ test("closed-order queries validate their range", async () => {
   await code(context.broker.closedOrders(SYMBOL, 0, 91 * 86_400_000), "invalidRange");
   await code(context.broker.quotes(["bad"]), "invalidSymbol");
   await code(context.broker.authorizationURL(), "methodNotAllowed");
+});
+
+const leverageReview = (context: ReturnType<typeof fixture>, draft = leverageDraft) => context.broker.prepare("USDT", draft) as Promise<MexcLeveragePrepared>;
+const held = { positionId: 1109973831, symbol: SYMBOL, positionType: 1, openType: 1, holdVol: 10, frozenVol: 0, holdAvgPrice: 690, leverage: 5, im: 13.8, liquidatePrice: 560 };
+
+test("a leverage change writes the marker first, sends once and clears it", async () => {
+  const context = fixture({ positions: [held] });
+  const review = await leverageReview(context);
+  assert.equal(review.previousLeverage, 5);
+  assert.equal(review.direction, "LONG");
+  assert.equal(review.holdVol, 10);
+  assert.equal(review.margin, 13.8);
+  assert.equal(review.liquidatePrice, 560);
+  assert.equal(review.available, 900);
+  assert.equal(context.writes().length, 0, "a review sends nothing");
+  assert.deepEqual(await context.broker.submit(review), { leverage: 3 });
+  assert.deepEqual(context.events, ["marker:set", "send:leverage", "marker:remove"]);
+  assert.equal(context.writes().length, 1);
+  const call = context.writes()[0], body = call.init.body as string, headers = call.init.headers as Record<string, string>;
+  assert.match(call.url, /\/api\/v1\/private\/position\/change_leverage$/);
+  assert.equal(body, '{"positionId":1109973831,"leverage":3}');
+  assert.equal(headers.Signature, createHmac("sha256", SECRET).update(API_KEY + NOW + body).digest("hex"));
+  assert.equal((await context.broker.status()).unresolvedOperation, false);
+});
+
+test("a leverage review works once, only as the original object, and only for 60 seconds", async () => {
+  const context = fixture();
+  const review = await leverageReview(context);
+  await code(context.broker.submit({ ...review }), "reviewExpired");
+  await code(context.broker.submit(review), "reviewExpired");
+  const again = await leverageReview(context);
+  await context.broker.submit(again);
+  await code(context.broker.submit(again), "reviewExpired");
+  assert.equal(context.writes().length, 1);
+  const late = await leverageReview(fixture());
+  const stale = fixture();
+  const old = await leverageReview(stale);
+  stale.advance(60_001);
+  await code(stale.broker.submit(old), "reviewExpired");
+  assert.equal(stale.writes().length, 0);
+  assert.equal(late.isDemo, false);
+});
+
+test("a newer review of either kind replaces a leverage review, and the other way round", async () => {
+  const context = fixture();
+  const first = await leverageReview(context);
+  const order = await prepared(context);
+  await code(context.broker.submit(first), "reviewExpired");
+  assert.equal(context.writes().length, 0);
+  const newer = await prepared(context);
+  await leverageReview(context);
+  await code(context.broker.submit(order), "reviewExpired");
+  await code(context.broker.submit(newer), "reviewExpired");
+  assert.equal(context.writes().length, 0);
+});
+
+test("a leverage change stops on the server's rules before anything is written", async () => {
+  await code(leverageReview(fixture(), { ...leverageDraft, leverage: 6 }), "leverageLimit");
+  await code(leverageReview(fixture(), { ...leverageDraft, leverage: 5 }), "leverageUnchanged");
+  await code(leverageReview(fixture({ positions: [] })), "positionChanged");
+  await code(leverageReview(fixture({ positions: [{ ...held, openType: 2 }] })), "leverageCross");
+  await code(leverageReview(fixture({ positionMode: 2 })), "positionMode");
+  await code(leverageReview(fixture(), { ...leverageDraft, positionId: "1" }), "positionChanged");
+  await code(leverageReview(fixture(), { ...leverageDraft, vol: "1" } as unknown as MexcLeverageDraft), "invalidDraft");
+  await code(fixture().broker.prepare("OTHER", leverageDraft), "invalidAccount");
+  await code(fixture().broker.prepare("USDT", leverageDraft, "extra"), "invalidDraft");
+});
+
+test("submit re-checks the position instead of trusting the leverage review", async () => {
+  for (const change of [{ leverage: 4 }, { holdVol: 12 }, { positionType: 2 }]) {
+    const positions = [{ ...held }];
+    const context = fixture({ positions });
+    const review = await leverageReview(context);
+    Object.assign(positions[0], change);
+    await code(context.broker.submit(review), "reviewExpired");
+    assert.equal(context.writes().length, 0, JSON.stringify(change));
+    assert.equal(context.vault.values.has(MARKER), false);
+  }
+  const positions = [{ ...held }];
+  const closed = fixture({ positions });
+  const review = await leverageReview(closed);
+  positions.length = 0;
+  await code(closed.broker.submit(review), "positionChanged");
+  assert.equal(closed.writes().length, 0);
+});
+
+test("a proven refusal of a leverage change unlocks and says what happened", async () => {
+  for (const [exchange, expected] of [[2019, "leverageOrdersOpen"], [2044, "leverageMargin"], [2005, "leverageMargin"], [2009, "positionChanged"], [2026, "leverageCross"],
+    [8821, "leverageSizeLimit"], [2006, "leverageLimit"], [9073, "marketClosed"], [1000, "leverageRejected"], [2001, "leverageRejected"]] as const) {
+    const context = fixture({ changeLeverage: () => new Response(JSON.stringify({ success: false, code: exchange, message: "internal text" })) });
+    await code(context.broker.submit(await leverageReview(context)), expected);
+    assert.equal(context.vault.values.has(MARKER), false, String(exchange));
+    assert.equal((await context.broker.status()).unresolvedOperation, false);
+    assert.equal(context.writes().length, 1);
+  }
+});
+
+test("anything short of proof leaves a leverage change locked, and orders with it", async () => {
+  const answers: (() => Response | Promise<Response>)[] = [
+    () => new Response(JSON.stringify({ success: false, code: 9999 })),
+    () => new Response(JSON.stringify({ success: false, code: 603 })),
+    () => new Response("bad gateway", { status: 502 }),
+    () => new Response("<html>"),
+    () => new Response(JSON.stringify({ success: true, code: 1 })),
+    () => { throw new Error("connection lost"); },
+  ];
+  for (const answer of answers) {
+    const context = fixture({ changeLeverage: answer });
+    await code(context.broker.submit(await leverageReview(context)), "orderOutcomeUnknown");
+    assert.equal(context.writes().length, 1, "never sent twice");
+    assert.ok(context.vault.values.has(MARKER));
+    assert.equal(JSON.parse(context.vault.values.get(MARKER)!).operation, "leverage");
+    assert.equal((await context.broker.status()).unresolvedOperation, true);
+    await code(prepared(context), "orderOutcomeUnknown");
+    await code(leverageReview(context), "orderOutcomeUnknown");
+    assert.equal(context.writes().length, 1);
+  }
+});
+
+test("a leverage change waits behind an unresolved order, and no request leaves without the marker", async () => {
+  const locked = fixture({ create: () => { throw new Error("connection lost"); }, positions: [] });
+  await code(locked.broker.submit(await prepared(locked)), "orderOutcomeUnknown");
+  await code(leverageReview(locked), "orderOutcomeUnknown");
+  const unstorable = fixture();
+  const review = await leverageReview(unstorable);
+  unstorable.vault.failSet = true;
+  await code(unstorable.broker.submit(review), "secureStorage");
+  assert.equal(unstorable.writes().length, 0);
+});
+
+test("a failed key lookup stops a leverage change, as it stops an opening order", async () => {
+  const context = fixture({ keyStatus: 500 });
+  await code(leverageReview(context), "keyCheckFailed");
+  assert.equal(context.writes().length, 0);
+  const off = fixture({ keyCheck: false, keyStatus: 500 });
+  assert.deepEqual(await off.broker.submit(await leverageReview(off)), { leverage: 3 });
+  assert.equal(off.calls.filter(call => call.url.includes("apiKeyInfo")).length, 0);
+});
+
+test("the recovery lookup reports the locked position's leverage", async () => {
+  const positions = [{ ...held }];
+  const context = fixture({ positions, changeLeverage: () => { throw new Error("connection lost"); } });
+  await code(context.broker.submit(await leverageReview(context)), "orderOutcomeUnknown");
+  const found = await context.broker.pendingOperation();
+  assert.equal(found?.lookup, "found");
+  assert.equal(found?.position?.leverage, 5);
+  assert.equal(found?.marker.leverage, 3);
+  assert.equal(found?.marker.positionId, "1109973831");
+  assert.equal(found?.marker.previousLeverage, 5);
+  positions.length = 0;
+  assert.equal((await context.broker.pendingOperation())?.lookup, "notFound");
+  assert.ok(context.vault.values.has(MARKER), "looking up never clears the lock");
+});
+
+test("a closed stock market refuses orders and cancels, and neither stays locked", async () => {
+  const closed = () => new Response(JSON.stringify({ success: false, code: 9073 }));
+  const order = fixture({ positions: [], create: closed });
+  await code(order.broker.submit(await prepared(order)), "marketClosed");
+  assert.deepEqual(order.events, ["marker:set", "send:create", "marker:remove"]);
+  assert.equal((await order.broker.status()).unresolvedOperation, false);
+  const cancel = fixture({ cancel: closed });
+  await code(cancel.broker.cancel("USDT", ORDER_ID), "cancelRejected");
+  assert.deepEqual(cancel.events, ["marker:set", "send:cancel", "marker:remove"]);
+  assert.equal((await cancel.broker.status()).unresolvedOperation, false);
 });

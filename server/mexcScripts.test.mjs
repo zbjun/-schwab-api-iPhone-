@@ -62,6 +62,17 @@ test('a marker that names no order is reported as a failed lookup without any re
   assert.notEqual(await new EncryptedVault(data, key).get(markerKey), null);
 });
 
+test('a locked leverage change is described without claiming it failed, and stays locked', async t => {
+  const { key, data, config } = await workspace(t);
+  // An id that cannot be looked up stops before any request, so this stays offline.
+  await new EncryptedVault(data, key).set(markerKey, JSON.stringify({ pending: true, version: 1, createdAt: 1, operation: 'leverage', symbol: 'QQQSTOCK_USDT', positionId: 'not-digits', leverage: 3, previousLeverage: 5 }));
+  const result = await execute(process.execPath, [script('mexcReconcile.mjs'), config]);
+  assert.match(result.stdout, /Locked leverage on QQQSTOCK_USDT/);
+  assert.match(result.stdout, /tells you nothing about the position/);
+  assert.match(result.stdout, /does not prove the change never landed/);
+  assert.notEqual(await new EncryptedVault(data, key).get(markerKey), null);
+});
+
 test('init creates private files, unique device tokens and never overwrites', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'ths-mexc-init-test-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -75,6 +86,21 @@ test('init creates private files, unique device tokens and never overwrites', as
   assert.equal((await stat(join(directory, 'mexc-vault.key'))).size, 32);
   await assert.rejects(execute(process.execPath, [script('mexcInit.mjs'), directory]));
   assert.equal(await readFile(join(directory, 'mexc.config.json'), 'utf8'), first);
+});
+
+test('the gateway will not start with a mistyped key check setting', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ths-mexc-keycheck-test-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await execute(process.execPath, [script('mexcInit.mjs'), directory]);
+  const path = join(directory, 'mexc.config.json');
+  const config = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal(config.keyCheck, true);
+  await writeFile(path, JSON.stringify({ ...config, apiKey: 'fictional', apiSecret: 'fictional', keyCheck: 'false', dataDirectory: './d', port: 18789 }));
+  // The timeout turns a gateway that wrongly starts into a failure instead of a hung test.
+  await assert.rejects(execute(process.execPath, [script('mexcStart.mjs'), path], { timeout: 15_000 }), error => {
+    assert.match(error.stderr, /did not start/);
+    return true;
+  });
 });
 
 test('the gateway will not start with the placeholder key', async t => {

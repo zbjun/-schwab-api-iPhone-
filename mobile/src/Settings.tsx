@@ -6,7 +6,7 @@ import { Button, Icon, Input, styles } from "./ui.tsx";
 import Connection from "./Connection.tsx";
 import { readLocalMarketSettings } from "./localMarketPreferences.ts";
 
-export default function Settings({ state: s, palette: p, onMexc }: { state: TradingState; palette: Palette; onMexc?: () => void }) {
+export default function Settings({ state: s, palette: p }: { state: TradingState; palette: Palette }) {
   const [connection, setConnection] = useState(false);
   let localSettingsIssue = "";
   try { readLocalMarketSettings(s.localMarketPreferences); }
@@ -105,16 +105,5 @@ export default function Settings({ state: s, palette: p, onMexc }: { state: Trad
       </View>
       <Text style={{ color: p.secondary, fontSize: 22 }}>›</Text>
     </Pressable>
-    {onMexc && <Pressable accessibilityRole="button" accessibilityLabel="MEXC 合约" disabled={s.busy}
-      onPress={onMexc} style={[styles.card, styles.spread, { backgroundColor: p.surface }]}>
-      <View style={styles.row}>
-        <Icon name="chart" color={p.accent} size={22} />
-        <View style={{ gap: 5 }}>
-          <Text style={{ color: p.text, fontSize: 17 }}>MEXC 合约</Text>
-          <Text style={{ color: p.secondary, fontSize: 12 }}>切换到 MEXC 永续合约</Text>
-        </View>
-      </View>
-      <Text style={{ color: p.secondary, fontSize: 22 }}>›</Text>
-    </Pressable>}
   </ScrollView>;
 }

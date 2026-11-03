@@ -222,3 +222,95 @@ test("a partly filled resting order is labelled as such", () => {
   assert.equal(orderStateLabel({ state: 2, dealVol: 0 }), "未成交");
   assert.equal(orderStateLabel({ state: 3, dealVol: 3 }), "已成交");
 });
+
+const leverageReviewOf = (demo: MexcDemo, leverage = 3) =>
+  demo.reviewLeverage({ kind: "LEVERAGE", symbol: "QQQSTOCK_USDT", positionId: "9000000000001", leverage });
+
+test("a leverage change is sent once, refreshes, and a second press does nothing", async () => {
+  const demo = new MexcDemo(() => T0);
+  const gate = later<{ leverage: number }>();
+  const { api, calls } = wrap(demo, { changeLeverage: () => gate.promise });
+  const c = new MexcController(api);
+  const prepared = await leverageReviewOf(demo);
+  const first = c.changeLeverage(prepared), second = c.changeLeverage(prepared);
+  assert.ok((await second).error);
+  assert.equal(c.getSnapshot().sending, true);
+  gate.resolve({ leverage: 3 });
+  assert.deepEqual(await first, { leverage: 3 });
+  assert.equal(calls.changeLeverage, 1);
+  assert.equal(c.getSnapshot().sending, false);
+  assert.match(c.getSnapshot().message, /3x/);
+});
+
+test("an unknown leverage change locks like an order, and nothing retries it", async () => {
+  const demo = new MexcDemo(() => T0);
+  const { api, calls } = wrap(demo, { changeLeverage: () => Promise.reject(unknown()) });
+  const c = new MexcController(api);
+  const result = await c.changeLeverage(await leverageReviewOf(demo));
+  assert.ok(result.error);
+  assert.equal(result.leverage, undefined);
+  assert.equal(result.unknown, true);
+  assert.equal(c.locked, true);
+  assert.ok((await c.changeLeverage(await leverageReviewOf(demo))).error);
+  assert.ok((await c.place(await reviewOf(demo))).error);
+  await new Promise(r => setTimeout(r, 5));
+  assert.equal(calls.changeLeverage, 1);
+  assert.equal(calls.place ?? 0, 0);
+});
+
+test("any closure of order entry stops a leverage change, even one that would let a close through", async () => {
+  const demo = new MexcDemo(() => T0);
+  const { api, calls } = wrap(demo, { status: async () => ok({ tradingBlocked: "keyCheckFailed" }) });
+  const c = new MexcController(api);
+  await c.refresh();
+  assert.ok((await c.changeLeverage(await leverageReviewOf(demo))).error);
+  assert.equal(calls.changeLeverage ?? 0, 0);
+});
+
+test("the demo changes leverage through the same one-use review", async () => {
+  const demo = new MexcDemo(() => T0);
+  const prepared = await leverageReviewOf(demo);
+  assert.equal(prepared.previousLeverage, 5);
+  assert.equal(prepared.direction, "LONG");
+  assert.deepEqual(await demo.changeLeverage(prepared), { leverage: 3 });
+  assert.equal((await demo.account()).positions[0].leverage, 3);
+  await assert.rejects(demo.changeLeverage(prepared), (error: { code?: string }) => error.code === "reviewExpired");
+  await assert.rejects(leverageReviewOf(demo, 3), (error: { code?: string }) => error.code === "leverageUnchanged");
+  await assert.rejects(leverageReviewOf(demo, 11), (error: { code?: string }) => error.code === "leverageLimit");
+  // A newer review of either kind replaces the older one.
+  const older = await leverageReviewOf(demo, 4);
+  await demo.review({ symbol: "QQQSTOCK_USDT", action: "OPEN_SHORT", kind: "LIMIT", vol: "1", price: "900.00", leverage: 5 });
+  await assert.rejects(demo.changeLeverage(older), (error: { code?: string }) => error.code === "reviewExpired");
+});
+
+test("the demo refuses a leverage change the way MEXC documents", async () => {
+  const demo = new MexcDemo(() => T0);
+  // Lowering costs margin: 20 x 0.01 x 690 at 1x is 138, more than the account can add once a resting order holds it.
+  const open = await demo.review({ symbol: "QQQSTOCK_USDT", action: "OPEN_SHORT", kind: "LIMIT", vol: "10", price: "900.00", leverage: 5 });
+  await demo.place(open);
+  await assert.rejects(demo.changeLeverage(await leverageReviewOf(demo)), (error: { code?: string }) => error.code === "leverageOrdersOpen");
+  assert.equal((await demo.account()).positions[0].leverage, 5);
+});
+
+test("a position of the marked size simulates an unknown leverage change", async () => {
+  const demo = new MexcDemo(() => T0);
+  await demo.place(await demo.review({ symbol: "QQQSTOCK_USDT", action: "OPEN_LONG", kind: "MARKET", vol: "57", leverage: 5 }));
+  const c = new MexcController(demo);
+  assert.equal((await demo.account()).positions[0].holdVol, 77);
+  const result = await c.changeLeverage(await leverageReviewOf(demo));
+  assert.ok(result.error);
+  assert.equal(c.locked, true);
+  assert.equal((await demo.status()).unresolvedOperation, true);
+  assert.equal((await demo.account()).positions[0].leverage, 5);
+});
+
+test("only a write whose outcome is unknown says so", async () => {
+  const demo = new MexcDemo(() => T0);
+  const refused = wrap(demo, { place: () => Promise.reject(new TradingError("insufficientFunds", "可用保证金不足。")), changeLeverage: () => Promise.reject(new TradingError("leverageMargin", "可用保证金不够。")) });
+  const c = new MexcController(refused.api);
+  assert.equal((await c.place(await reviewOf(demo))).unknown, undefined);
+  assert.equal((await c.changeLeverage(await leverageReviewOf(demo))).unknown, undefined);
+  assert.equal(c.locked, false);
+  const lost = wrap(demo, { place: () => Promise.reject(unknown()) });
+  assert.equal((await new MexcController(lost.api).place(await reviewOf(demo))).unknown, true);
+});

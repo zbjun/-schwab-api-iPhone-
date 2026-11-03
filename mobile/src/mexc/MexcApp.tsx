@@ -1,46 +1,65 @@
 import React, { useEffect, useState } from "react";
-import { KeyboardAvoidingView, Platform, Pressable, Text, useColorScheme, View } from "react-native";
+import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, Text, useColorScheme, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { createMexcClient } from "../device.ts";
 import type { MexcApi } from "../MexcClient.ts";
 import type { MexcAction, MexcPosition } from "../mexcRules.ts";
-import { Glass, Icon, dark, light, radius, styles, tabBar, Button } from "../ui.tsx";
+import { Glass, Icon, dark, elevated, light, radius, styles, tabBar, Button } from "../ui.tsx";
 import { MexcDemo } from "./mexcDemo.ts";
-import { LOCK_BANNER, closeActionFor } from "./mexcView.ts";
+import { LOCK_BANNER, MAX_FAVORITES, closeActionFor, toggleFavorite } from "./mexcView.ts";
+import type { Venue } from "./mexcView.ts";
+import VenueSwitcher from "./VenueSwitcher.tsx";
+import { readFavorites, writeFavorites } from "./favorites.ts";
 import { useMexc } from "./useMexc.ts";
 import MexcPositions from "./MexcPositions.tsx";
-import MexcMarkets from "./MexcMarkets.tsx";
+import MexcMarkets, { FAVORITE_COLOR } from "./MexcMarkets.tsx";
 import MexcTrade, { type TradeSeed } from "./MexcTrade.tsx";
 import MexcOrders from "./MexcOrders.tsx";
 import MexcConnection from "./MexcConnection.tsx";
-import { DemoBadge, RoundButton } from "./parts.tsx";
+import { DemoBadge, Notice, RoundButton } from "./parts.tsx";
 
-type Tab = "positions" | "markets" | "trade" | "orders";
+// Same five tabs, order and icons as the Schwab side; "markets" takes the watchlist slot.
+type Tab = "accounts" | "markets" | "trade" | "orders" | "settings";
 const tabs: [Tab, string, string][] = [
-  ["positions", "持仓", "pie"],
+  ["accounts", "账户", "pie"],
   ["markets", "行情", "chart"],
   ["trade", "交易", "trade"],
-  ["orders", "委托", "orders"],
+  ["orders", "订单", "orders"],
+  ["settings", "设置", "settings"],
 ];
 
-/** Real client on a phone; in-memory demo on the web, where the device vault does not exist. */
+/**
+ * In-memory demo on the web and in development bundles such as Expo Go, so a normal dev session does not
+ * reach the real account. Release builds have __DEV__ false and always get the real client.
+ */
 function createApi(): MexcApi {
-  if (Platform.OS === "web") return new MexcDemo();
+  if (Platform.OS === "web" || __DEV__) return new MexcDemo();
   return createMexcClient();
 }
 
-export default function MexcApp({ onExit }: { onExit?: () => void }) {
+export default function MexcApp({ onVenueChange }: { onVenueChange?: (venue: Venue) => void }) {
   const system = useColorScheme();
   const preview = Platform.OS === "web" && __DEV__ ? new URLSearchParams(window.location.search).get("appearance") : null;
   const p = preview === "dark" || (preview !== "light" && system === "dark") ? dark : light;
   const [api] = useState(createApi);
   const m = useMexc(api);
-  const [tab, setTab] = useState<Tab>("positions");
+  const [tab, setTab] = useState<Tab>("accounts");
   const [detail, setDetail] = useState<string>();
-  const [settings, setSettings] = useState(false);
   const [confirmAck, setConfirmAck] = useState(false);
   const [seed, setSeed] = useState<TradeSeed>({ nonce: 0 });
+  const [favorites, setFavorites] = useState<string[]>([]);
+  useEffect(() => {
+    let active = true;
+    void readFavorites().then(saved => { if (active) setFavorites(saved); });
+    return () => { active = false; };
+  }, []);
+  const flipFavorite = (symbol: string) => {
+    if (!favorites.includes(symbol) && favorites.length >= MAX_FAVORITES) { m.setMessage(`收藏最多 ${MAX_FAVORITES} 个。`); return; }
+    const next = toggleFavorite(favorites, symbol);
+    setFavorites(next);
+    void writeFavorites(next);
+  };
   // The second tap must follow within 5 seconds, and only while the lock still exists.
   useEffect(() => { if (!m.unconfirmed) setConfirmAck(false); }, [m.unconfirmed]);
   useEffect(() => {
@@ -55,19 +74,44 @@ export default function MexcApp({ onExit }: { onExit?: () => void }) {
     setTab("trade");
   };
   const closePosition = (position: MexcPosition) => trade(position.symbol, closeActionFor(position));
-  const title = settings ? "MEXC 设置" : tabs.find(t => t[0] === tab)?.[1];
+  const go = (value: Tab) => {
+    if (m.sending) return;
+    setDetail(undefined);
+    setTab(value);
+  };
+  // Like the Schwab quote page: its own header, no tab bar.
+  const selected = tab === "markets" && detail ? m.contracts.find(c => c.symbol === detail) : undefined;
   return (
     <SafeAreaView edges={["top", "bottom"]} style={{ flex: 1, backgroundColor: p.background, paddingTop: Platform.OS === "web" ? 8 : 0 }}>
       <StatusBar style={p === dark ? "light" : "dark"} />
       <View style={{ flex: 1, width: "100%", maxWidth: 760, alignSelf: "center" }}>
-        <View style={styles.pageHeader}>
-          <View style={[styles.row, { gap: 10, flexShrink: 1 }]}>
-            <Text accessibilityRole="header" style={[styles.pageTitle, { color: p.text }]}>{title}</Text>
-            <Text style={{ color: p.secondary, fontSize: 11, borderWidth: 1, borderColor: p.separator, borderRadius: radius.control, paddingHorizontal: 6, paddingVertical: 2 }}>MEXC</Text>
-            {m.isDemo && <DemoBadge palette={p} />}
+        {selected ? (
+          <View style={[styles.pageHeader, { minHeight: 44, paddingVertical: 0 }]}>
+            <RoundButton label="返回" icon="back" palette={p} disabled={m.sending} onPress={() => setDetail(undefined)} />
+            <View style={{ flex: 1, alignItems: "center", minWidth: 0 }}>
+              <Text numberOfLines={1} style={{ color: p.text, fontSize: 16, fontWeight: "700" }}>{selected.displayName}</Text>
+              <View style={[styles.row, { gap: 6, marginTop: 2 }]}>
+                <Text style={{ color: p.secondary, fontSize: 11 }}>{selected.symbol} · USDT</Text>
+                {m.isDemo && <DemoBadge palette={p} />}
+              </View>
+            </View>
+            <RoundButton label={favorites.includes(selected.symbol) ? "取消收藏" : "收藏"} icon={favorites.includes(selected.symbol) ? "star" : "star-outline"}
+              color={favorites.includes(selected.symbol) ? FAVORITE_COLOR : undefined} palette={p} onPress={() => flipFavorite(selected.symbol)} />
           </View>
-          {!settings && <RoundButton label="MEXC 设置" icon="settings" palette={p} disabled={m.sending} onPress={() => setSettings(true)} />}
-        </View>
+        ) : (
+          <View testID="page.header" style={styles.pageHeader}>
+            <View style={[styles.row, { gap: 10, flexShrink: 1 }]}>
+              <Text accessibilityRole="header" testID="page.title" style={[styles.pageTitle, { color: p.text }]}>
+                {tabs.find(t => t[0] === tab)?.[1]}
+              </Text>
+              {onVenueChange
+                ? <VenueSwitcher venue="mexc" palette={p} disabled={m.sending} onChange={onVenueChange} />
+                : <Text style={{ color: p.secondary, fontSize: 11, borderWidth: 1, borderColor: p.separator, borderRadius: radius.control, paddingHorizontal: 6, paddingVertical: 2 }}>MEXC</Text>}
+              {m.isDemo && <DemoBadge palette={p} />}
+              {m.sending && <ActivityIndicator color={p.accent} size="small" />}
+            </View>
+          </View>
+        )}
         {m.unconfirmed && (
           <View accessibilityRole="alert" style={{ marginHorizontal: 12, marginBottom: 6, padding: 10, gap: 8,
             borderRadius: radius.control, backgroundColor: p.up + "22", borderWidth: 1, borderColor: p.up }}>
@@ -81,56 +125,59 @@ export default function MexcApp({ onExit }: { onExit?: () => void }) {
           </View>
         )}
         {!!m.blockedText && !m.locked && m.blockedCode !== "keyCheckFailed" && (
-          <Text style={{ color: p.up, backgroundColor: p.up + "14", fontSize: 13, lineHeight: 19, padding: 10, marginHorizontal: 12,
-            marginBottom: 6, borderRadius: radius.control, overflow: "hidden" }}>{m.blockedText}</Text>
+          <Notice palette={p} text={m.blockedText} style={{ marginHorizontal: 12, marginBottom: 6 }} />
         )}
         {m.offline && (
-          <Text accessibilityRole="alert" style={{ color: p.up, backgroundColor: p.up + "14", fontSize: 13, lineHeight: 19, padding: 10,
-            marginHorizontal: 12, marginBottom: 6, borderRadius: radius.control, overflow: "hidden" }}>
-            连接中断，以下是上次的数据。
-          </Text>
+          <View accessibilityRole="alert">
+            <Notice palette={p} text="连接中断，以下是上次的数据。" style={{ marginHorizontal: 12, marginBottom: 6 }} />
+          </View>
         )}
         {m.writeInProgress && !m.unconfirmed && (
           <Text style={{ color: p.secondary, fontSize: 13, paddingHorizontal: 12, marginBottom: 6 }}>服务器正在处理一笔委托，暂时不能下单或撤单。</Text>
         )}
         {!!m.message && (
           <Pressable accessibilityRole="button" accessibilityLabel="关闭提示" onPress={() => m.setMessage("")}
-            style={[styles.spread, { alignItems: "flex-start", backgroundColor: p.surface, paddingHorizontal: 12, paddingVertical: 9,
+            style={[styles.spread, { alignItems: "flex-start", backgroundColor: elevated(p), paddingHorizontal: 12, paddingVertical: 9,
               borderRadius: radius.control, marginHorizontal: 12, marginBottom: 6 }]}>
             <Text style={{ color: p.text, fontSize: 13, lineHeight: 18, flex: 1 }}>{m.message}</Text>
             <Text style={{ color: p.secondary, fontSize: 15, lineHeight: 18 }}>×</Text>
           </Pressable>
         )}
         <View style={{ flex: 1 }}>
-          {settings ? (
-            <MexcConnection m={m} palette={p} onExit={m.sending ? undefined : onExit} onClose={() => setSettings(false)} />
-          ) : tab === "positions" ? (
-            <MexcPositions m={m} palette={p} onClose={closePosition} onSettings={() => { if (!m.sending) setSettings(true); }} />
+          {tab === "accounts" ? (
+            <MexcPositions m={m} palette={p} onClose={closePosition}
+              onSettings={() => go("settings")} onTrade={() => go("trade")} />
           ) : tab === "markets" ? (
-            <MexcMarkets m={m} palette={p} detail={detail} setDetail={setDetail} onTrade={symbol => trade(symbol)} />
+            <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
+              <MexcMarkets m={m} palette={p} detail={detail} setDetail={setDetail} favorites={favorites} onToggleFavorite={flipFavorite} />
+            </KeyboardAvoidingView>
           ) : tab === "trade" ? (
             <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
               <MexcTrade m={m} palette={p} seed={seed} />
             </KeyboardAvoidingView>
-          ) : (
+          ) : tab === "orders" ? (
             <MexcOrders m={m} palette={p} active />
+          ) : (
+            <MexcConnection m={m} palette={p} />
           )}
         </View>
-        <Glass palette={p} interactive style={{ position: "absolute", left: tabBar.inset, right: tabBar.inset, bottom: tabBar.bottom,
-          height: tabBar.height, padding: 4, borderRadius: tabBar.height / 2, flexDirection: "row" }}>
-          {tabs.map(([id, label, icon]) => (
-            <Pressable key={id} accessibilityRole="tab" accessibilityLabel={label} accessibilityState={{ selected: tab === id && !settings, disabled: m.sending }}
-              disabled={m.sending}
-              onPress={() => { if (m.sending) return; setSettings(false); setDetail(undefined); setTab(id); }}
-              style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 2, borderRadius: (tabBar.height - 8) / 2, opacity: m.sending ? 0.5 : 1,
-                backgroundColor: tab === id && !settings ? p.accent + (p === light ? "1A" : "26") : "transparent" }}>
-              <Icon name={icon} color={tab === id && !settings ? p.accent : p.text} size={24} />
-              <Text style={{ color: tab === id && !settings ? p.accent : p.text, fontSize: 10, fontWeight: tab === id && !settings ? "700" : "500" }}>
-                {label}
-              </Text>
-            </Pressable>
-          ))}
-        </Glass>
+        {!selected && (
+          <Glass palette={p} interactive style={{ position: "absolute", left: tabBar.inset, right: tabBar.inset, bottom: tabBar.bottom,
+            height: tabBar.height, padding: 4, borderRadius: tabBar.height / 2, flexDirection: "row" }}>
+            {tabs.map(([id, label, icon]) => (
+              <Pressable key={id} accessibilityRole="tab" accessibilityLabel={label} accessibilityState={{ selected: tab === id, disabled: m.sending }}
+                disabled={m.sending}
+                onPress={() => go(id)}
+                style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 2, borderRadius: (tabBar.height - 8) / 2, opacity: m.sending ? 0.5 : 1,
+                  backgroundColor: tab === id ? p.accent + (p === light ? "1A" : "26") : "transparent" }}>
+                <Icon name={icon} color={tab === id ? p.accent : p.text} size={24} />
+                <Text style={{ color: tab === id ? p.accent : p.text, fontSize: 10, fontWeight: tab === id ? "700" : "500" }}>
+                  {label}
+                </Text>
+              </Pressable>
+            ))}
+          </Glass>
+        )}
       </View>
     </SafeAreaView>
   );

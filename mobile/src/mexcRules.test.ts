@@ -2,10 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   DEFINITE_REJECTIONS, cancelOutcome, canonicalDecimal, classifyMexcResponse, createdOrderID, decodeMexcHistory, decodeMexcOrder,
-  decodeMexcPositions, encodeMexcCancel, encodeMexcOrder, freezeMexcDraft, isMultipleOf, mexcClosable, mexcHistoryRequest, mexcKeyProblem,
+  decodeMexcPositions, encodeMexcCancel, encodeMexcOrder, freezeMexcDraft, isMultipleOf, mexcClosable, mexcHistoryRequest, mexcKeyProblem, mexcLiveRequest,
   parseLossless, planMexcOrder, plainNumber, toTick, validateMexcDraft, validateMexcLimits,
+  LEVERAGE_REJECTIONS, encodeMexcLeverage, freezeMexcLeverageDraft, isLeverageDraft, planMexcLeverage, validateMexcLeverageDraft,
 } from "./mexcRules.ts";
-import type { MexcContract, MexcDraft, MexcOrderContext, MexcPosition, MexcTicker } from "./mexcRules.ts";
+import type { MexcContract, MexcDraft, MexcLeverageContext, MexcLeverageDraft, MexcOrderContext, MexcPosition, MexcTicker } from "./mexcRules.ts";
 
 const NOW = 1_800_000_000_000;
 const contract: MexcContract = {
@@ -213,8 +214,11 @@ test("the list of codes that may unlock trading only changes on purpose", () => 
   assert.deepEqual(Object.keys(DEFINITE_REJECTIONS).map(Number).sort((a, b) => a - b), [
     401, 402, 406, 506, 510, 511, 513, 600, 601, 602, 701, 702, 703, 704, 1000, 1001, 1002, 1003, 1004,
     2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2011, 2015, 2021, 2022, 2027, 2028, 2029, 2032, 2033, 2035, 2036, 2037,
-    2040, 2041, 2043, 2051, 2057, 6001, 6005, 7002, 7008, 8930, 9070, 9071, 300002,
+    2040, 2041, 2043, 2051, 2057, 6001, 6005, 7002, 7008, 8930, 9070, 9071, 9073, 300002,
   ]);
+  // Only a leverage change may be unlocked by these. Each says in MEXC's documentation that it was refused.
+  assert.deepEqual(Object.keys(LEVERAGE_REJECTIONS).map(Number).filter(key => !Object.hasOwn(DEFINITE_REJECTIONS, key)).sort((a, b) => a - b),
+    [2019, 2026, 2038, 2044, 8815, 8816, 8818, 8819, 8821, 8931]);
   for (const ambiguous of [0, 500, 501, 603, 604, 801, 2042, 6008, 9999]) assert.equal(Object.hasOwn(DEFINITE_REJECTIONS, ambiguous), false, String(ambiguous));
 });
 
@@ -271,6 +275,89 @@ test("exchange payloads decode strictly", () => {
   assert.equal(mexcHistoryRequest("minute1", NOW).interval, "Min1");
   assert.equal(mexcHistoryRequest("daily", NOW).interval, "Day1");
   code(() => mexcHistoryRequest("minute120", NOW), "invalidRange");
+  const live = mexcLiveRequest("minute15", NOW);
+  assert.equal(live.interval, "Min15");
+  assert.equal(live.end - live.start, 2250); // Enough for the last two bars, not the whole chart.
+  assert.equal(mexcLiveRequest("daily", NOW).interval, "Day1");
+  // Every range asks for at least two bars of its own length.
+  const bars = { intraday: 60, fiveDay: 300, minute1: 60, minute5: 300, minute15: 900, minute30: 1800, minute60: 3600, daily: 86_400, weekly: 604_800, monthly: 2_678_400 };
+  for (const [range, seconds] of Object.entries(bars)) {
+    const window = mexcLiveRequest(range as never, NOW);
+    assert.ok(window.end - window.start >= 2 * seconds, range);
+    assert.ok(window.end - window.start <= 3 * seconds, range);
+  }
+  code(() => mexcLiveRequest("constructor" as never, NOW), "invalidRange");
   code(() => mexcHistoryRequest("constructor" as never, NOW), "invalidRange");
   code(() => mexcHistoryRequest("__proto__" as never, NOW), "invalidRange");
+});
+
+const leverageDraft: MexcLeverageDraft = { kind: "LEVERAGE", symbol: "QQQSTOCK_USDT", positionId: "1109973831", leverage: 3 };
+const leverageContext = (overrides: Partial<MexcLeverageContext> = {}): MexcLeverageContext => ({
+  draft: leverageDraft, contract, positions: [long], availableOpen: 500, positionMode: 1,
+  limits: { maxLeverage: 5, maxOrderNotional: 1000, marketProtection: 0.01 }, ...overrides,
+});
+
+test("a leverage change names the position as the server found it", () => {
+  assert.deepEqual(planMexcLeverage(leverageContext()), {
+    direction: "LONG", previousLeverage: 5, holdVol: 10, averagePrice: 690, margin: undefined, liquidatePrice: undefined, available: 500,
+  });
+});
+
+test("a leverage change stops on every rule before anything could be sent", () => {
+  const draft = (leverage: number) => ({ ...leverageDraft, leverage });
+  code(() => planMexcLeverage(leverageContext({ positionMode: 2 })), "positionMode");
+  code(() => planMexcLeverage(leverageContext({ contract: { ...contract, state: 1 } })), "contractUnavailable");
+  code(() => planMexcLeverage(leverageContext({ contract: { ...contract, apiAllowed: false } })), "contractUnavailable");
+  // The server cap and the contract's own range.
+  code(() => planMexcLeverage(leverageContext({ draft: draft(6) })), "leverageLimit");
+  code(() => planMexcLeverage(leverageContext({ draft: draft(3), contract: { ...contract, maxLeverage: 2 } })), "leverageLimit");
+  code(() => planMexcLeverage(leverageContext({ draft: draft(1), contract: { ...contract, minLeverage: 2 } })), "leverageLimit");
+  // Nothing to change, or nothing to change it on.
+  code(() => planMexcLeverage(leverageContext({ draft: draft(5) })), "leverageUnchanged");
+  code(() => planMexcLeverage(leverageContext({ positions: [] })), "positionChanged");
+  code(() => planMexcLeverage(leverageContext({ positions: [{ ...long, id: "1" }] })), "positionChanged");
+  code(() => planMexcLeverage(leverageContext({ positions: [{ ...long, holdVol: 0 }] })), "positionChanged");
+  code(() => planMexcLeverage(leverageContext({ positions: [{ ...long, symbol: "OTHER_USDT" }] })), "positionChanged");
+  code(() => planMexcLeverage(leverageContext({ positions: [{ ...long, openType: 2 }] })), "leverageCross");
+});
+
+test("a position above the server cap can come down to it", () => {
+  const plan = planMexcLeverage(leverageContext({ draft: { ...leverageDraft, leverage: 5 }, positions: [{ ...long, leverage: 20 }] }));
+  assert.equal(plan.previousLeverage, 20);
+});
+
+test("a leverage draft is strict and is never an order", () => {
+  validateMexcLeverageDraft(leverageDraft);
+  assert.equal(isLeverageDraft(leverageDraft), true);
+  assert.equal(isLeverageDraft(openDraft), false);
+  assert.equal(isLeverageDraft(null), false);
+  assert.ok(Object.isFrozen(freezeMexcLeverageDraft(leverageDraft)));
+  const row = leverageDraft as unknown as Record<string, unknown>;
+  code(() => validateMexcLeverageDraft({ ...row, vol: "1" } as unknown as MexcLeverageDraft), "invalidDraft");
+  code(() => validateMexcLeverageDraft({ ...row, kind: "LIMIT" } as unknown as MexcLeverageDraft), "invalidDraft");
+  code(() => validateMexcLeverageDraft({ ...leverageDraft, symbol: "a/b" }), "invalidSymbol");
+  code(() => validateMexcLeverageDraft({ ...leverageDraft, positionId: "12x" }), "positionChanged");
+  for (const leverage of [0, -1, 2.5, NaN]) code(() => validateMexcLeverageDraft({ ...leverageDraft, leverage }), "leverageLimit");
+  // The order path refuses it outright.
+  code(() => validateMexcDraft(leverageDraft as unknown as MexcDraft), "invalidDraft");
+});
+
+test("a leverage change is sent with its full-length id and nothing else", () => {
+  assert.equal(encodeMexcLeverage({ ...leverageDraft, positionId: "739113577038255616", leverage: 10 }), '{"positionId":739113577038255616,"leverage":10}');
+  assert.throws(() => encodeMexcLeverage({ ...leverageDraft, positionId: '1,"leverage":100' }));
+  assert.throws(() => encodeMexcLeverage({ ...leverageDraft, leverage: 2.5 }));
+});
+
+test("refusals only a leverage change can get unlock only a leverage change", () => {
+  const refused = (exchange: number, table?: Record<number, string>) => classifyMexcResponse(200, JSON.stringify({ success: false, code: exchange }), table);
+  for (const [exchange, expected] of [[2019, "leverageOrdersOpen"], [2044, "leverageMargin"], [2026, "leverageCross"], [8815, "leverageSizeLimit"], [8821, "leverageSizeLimit"], [8931, "leverageLimit"]] as const) {
+    assert.deepEqual(refused(exchange, LEVERAGE_REJECTIONS), { kind: "rejected", code: expected, exchangeCode: exchange });
+    // The order path stays as strict as before.
+    assert.deepEqual(refused(exchange), { kind: "unknown" });
+  }
+  // Anything not listed could mean it applied, there as well.
+  for (const exchange of [500, 501, 603, 9999]) assert.deepEqual(refused(exchange, LEVERAGE_REJECTIONS), { kind: "unknown" });
+  assert.deepEqual(classifyMexcResponse(502, "bad gateway", LEVERAGE_REJECTIONS), { kind: "unknown" });
+  // A closed stock market is a documented refusal: nothing can open or close.
+  assert.equal(DEFINITE_REJECTIONS[9073], "marketClosed");
 });

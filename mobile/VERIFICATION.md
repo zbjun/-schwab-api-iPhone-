@@ -1,5 +1,12 @@
 > Commit IDs in the notes dated before 2026-10-18 predate that day's history rewrite; see the old → new list at the top of `server/DEPLOYMENT.md`.
 
+# 2026-11-04: 1.0.0 (17) contract page stays still while the chart is dragged
+
+- Expo build `3a9890b2-956c-4863-a861-6d98ab0fce3a` completed for `ths-expo-personal`, version 1.0.0/build 17, from commit `fa5cdf7`. Local checks: 437 mobile tests, TypeScript and web export passed. The server suite failed one test in one run with its name not captured, then passed 167/167 in 16 further runs on the same tree. Nothing in this change touches the server, so the cause is still unknown and it may be an intermittent test.
+- The Schwab page locked its scrolling during a chart drag and the contract page did not. In the demo account a sideways drag and a long press now set the page's overflow to hidden and a release restores it; the chart still pans (candles 121–240 to 67–187) and a plainly vertical drag leaves the page alone. `directionalLockEnabled` and `alwaysBounceVertical` only act on iOS, so the browser cannot show them.
+- Seen on the user's iPhone in a screenshot, on an earlier build: B/S markers, the cost line, the crosshair, the position strip and a MEXC order the user submitted themselves, which came back with an order number. The same screenshot showed the page scrolled with its quote header off screen, which this build is meant to stop.
+- Not verified: the drag fix itself, the floating chart, a leverage change and take-profit/stop-loss on a phone. Both personalized IPAs passed ZIP/path, arm64, version/build, embedded Hermes and server-config checks, and the general package holds no server address. Each package is about 8.4 MB and requires user signing. SHA-256: device 1 `51c7472c1a2bd5b6f94db49321838432334a06bf5a631e09b4e3338d51ba2092`, device 2 `01462ea54d3db3c978adca25911fd2eda87ffd70eb445af5e8fa1e81cb420fe4`.
+
 # 2026-11-04: 1.0.0 (16) profit estimates and crosshair header
 
 - Expo build `a3269f12-fcac-4120-a1f7-44f5e2ca7ca1` completed for `ths-expo-personal`, version 1.0.0/build 16. Local checks: 436 mobile tests, 167 server tests, TypeScript and web export passed.

@@ -1,5 +1,13 @@
 > Commit IDs in the notes dated before 2026-10-18 predate that day's history rewrite; see the old → new list at the top of `server/DEPLOYMENT.md`.
 
+# 2026-11-04: 1.0.0 (16) profit estimates and crosshair header
+
+- Expo build `a3269f12-fcac-4120-a1f7-44f5e2ca7ca1` completed for `ths-expo-personal`, version 1.0.0/build 16. Local checks: 436 mobile tests, 167 server tests, TypeScript and web export passed.
+- Estimated profit shows when closing, while setting a take-profit and stop-loss, on both reviews, on the positions page and on the chart's lines. Figures were worked by hand against the demo account for a long close, a partial close and a short with attached exits. They are for reading only: a review confirmed the draft and what is sent are unchanged, and `valuationPrice` behaves as before.
+- With the crosshair on a candle, the contract page's header reads that candle. Checked in the demo account on 15-minute, daily and intraday ranges, including moving along the chart, a tap clearing it and a range change clearing it.
+- Not verified: none of this has run on a phone or against a real position. The estimates leave out fees and funding, and a stop-loss exits at market, so a real loss can be larger. Nothing on the gateway changed. The floating chart's items in the entry below remain untested.
+- Both personalized IPAs passed ZIP/path, arm64, version/build, embedded Hermes and server-config checks, and the general package holds no server address. Each package is about 8.4 MB and requires user signing. SHA-256: device1 `dece94ccdd321071fe3fd34b170cea5998a2a7bd00e859896a5b8be2fa3c018b`; device2 `838a840c3dc4895f8d939ba268e8071e055420d0cefd0b07df6d2170239b28f7`.
+
 # 2026-11-03: 1.0.0 (15) MEXC chart levels and floating chart
 
 - Expo build `6fd8a3a9-8c95-4ac1-8929-1542e5efb29a` completed for `ths-expo-personal`, version 1.0.0/build 15. It was the first compile of the floating chart's Swift. The archive succeeded, and the build log holds no warning or error for its files and no "nearly matches". That log is condensed, so this does not prove the compiler had nothing else to say.

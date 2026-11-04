@@ -1,5 +1,11 @@
 > Commit IDs in the notes dated before 2026-10-18 predate that day's history rewrite; see the old → new list at the top of `server/DEPLOYMENT.md`.
 
+# 2026-11-04: 1.0.0 (19) floating chart's price tag fits its text
+
+- Expo build `ec704b70-19b4-47c2-8239-3c4c025383e4` completed for `ths-expo-personal`, version 1.0.0/build 19, from commit `edfdfbf`, so the Swift change compiled. Local checks: 482 mobile tests, 167 server tests and TypeScript passed. Both personalized IPAs passed ZIP/path, arm64, version/build, embedded Hermes and server-config checks, and the general package holds no server address. Each package is about 8.4 MB and requires user signing. SHA-256: device 1 `70f87e64642f7758dc8d60b6b6af02f19c4afb7b572af2db1ced5aa25d713c66`, device 2 `c8e0eba05620766116a3dafeb15e8dac43802d853bf94ed626dadaf502b0899f`.
+- A screenshot from the user's iPhone showed the floating chart running, on an earlier build, with a wide empty block in the price tag: the right side was a fixed 150 pixels and the tag filled it. It is now as wide as its longest text, and the chart keeps the rest.
+- Not verified: the narrower tag has not been seen on a phone. Tests only check the Swift source, which they do not run.
+
 # 2026-11-04: 1.0.0 (18) one set of pages and MEXC quick mode
 
 - Expo build `bd92e7f9-0ac1-48be-8677-d52b685379e5` completed for `ths-expo-personal`, version 1.0.0/build 18, from commit `890b293`. Local checks: 481 mobile tests, 167 server tests, TypeScript and web export passed. Both personalized IPAs passed ZIP/path, arm64, version/build, embedded Hermes and server-config checks, and the general package holds no server address. Each package is about 8.4 MB and requires user signing. SHA-256: device 1 `0c5485df05f6d57643bae8fc45e77b9f9ff5eeae9060ef0ac6368fee3d5dbbcd`, device 2 `cbf1042329f7e070689cf672f300d0c7a8aedc0851f67ef233be3f55e7cebc97`.

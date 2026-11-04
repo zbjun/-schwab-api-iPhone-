@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { chartDragIntent, chartInteractionActive } from "./chartGesture.ts";
 
@@ -26,4 +27,13 @@ test("canceling crosshair inspection during a pan or pinch must not unlock the p
   assert.equal(chartInteractionActive(false, true), true);
   assert.equal(chartInteractionActive(true, true), true);
   assert.equal(chartInteractionActive(false, false), false);
+});
+
+test("every page with a draggable chart stops its own scrolling during the drag", () => {
+  for (const file of ["StockDetail.tsx", "mexc/MexcMarkets.tsx"]) {
+    const source = readFileSync(new URL(`./${file}`, import.meta.url), "utf8");
+    assert.match(source, /onInspectChange=\{setInspecting\}/, file);
+    assert.match(source, /scrollEnabled=\{[^}]*!inspecting\}/, file);
+    assert.match(source, /directionalLockEnabled/, file);
+  }
 });

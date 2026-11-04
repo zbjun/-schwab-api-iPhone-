@@ -112,6 +112,7 @@ function Detail({ m, palette: p, contract, ticker: listTicker }: {
   const [range, setRange] = useState<HistoryRange>("minute15");
   const [history, setHistory] = useState<History>();
   const [selectedCandle, setSelectedCandle] = useState<Candle>();
+  const [inspecting, setInspecting] = useState(false);
   const [error, setError] = useState("");
   const [liveTicker, setLiveTicker] = useState<MexcTicker>();
   const [stale, setStale] = useState(false);
@@ -219,8 +220,9 @@ function Detail({ m, palette: p, contract, ticker: listTicker }: {
   );
   return (
     <View style={{ flex: 1 }}>
-      <ScrollView showsVerticalScrollIndicator={false} onLayout={event => setScrollHeight(event.nativeEvent.layout.height)}
-        contentContainerStyle={{ paddingBottom: 12, gap: 4 }}>
+      {/* A chart drag must not move the page; without alwaysBounceVertical a page that already fits would still rubber-band. */}
+      <ScrollView testID="mexc.detail.scroll" scrollEnabled={!inspecting} directionalLockEnabled alwaysBounceVertical={false} showsVerticalScrollIndicator={false}
+        onLayout={event => setScrollHeight(event.nativeEvent.layout.height)} contentContainerStyle={{ paddingBottom: 12, gap: 4 }}>
         {/* Two lines whatever the price length: a long BTC price must not squeeze the numbers into "101,2...". */}
         <View style={{ backgroundColor: p.surface, paddingHorizontal: 12, paddingVertical: 6, gap: 4 }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -279,7 +281,7 @@ function Detail({ m, palette: p, contract, ticker: listTicker }: {
         <View onLayout={event => setChartTop(event.nativeEvent.layout.y)} style={{ paddingLeft: 12, paddingRight: 4 }}>
           {history ? (
             <MarketChart history={history} range={range} palette={p} height={chartHeight} controlsRef={chartControls}
-              continuousMarket executions={executions} priceLines={priceLines} onSelectionChange={setSelectedCandle} />
+              continuousMarket executions={executions} priceLines={priceLines} onInspectChange={setInspecting} onSelectionChange={setSelectedCandle} />
           ) : (
             <View style={{ height: chartHeight, justifyContent: "center" }}>
               {error ? <Text style={{ color: p.secondary, textAlign: "center", padding: 20 }}>{error}</Text> : <ActivityIndicator color={p.secondary} />}

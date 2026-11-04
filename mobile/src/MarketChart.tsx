@@ -35,7 +35,7 @@ import type {
   TradeExecution,
 } from "./types";
 import { tradeMarkers } from "./tradeMarkers.ts";
-import { lineLabelWidth, placeLineLabels, type ChartPriceLine } from "./chartLines.ts";
+import { lineLabelWidth, lineProfitText, placeLineLabels, type ChartPriceLine } from "./chartLines.ts";
 import {
   candlePriceDomain,
   chartSessionWindow,
@@ -122,7 +122,7 @@ const timeFormatter = new Intl.DateTimeFormat("en-GB", {
   minute: "2-digit",
   hourCycle: "h23",
 });
-const dateTime = (time: number): string =>
+export const dateTime = (time: number): string =>
   `${dateFormatter.format(time)} ${timeFormatter.format(time)}`;
 function isDark(background: string): boolean {
   const hex = background.replace("#", "");
@@ -1119,7 +1119,7 @@ function MarketChart({
                 </>
               )}
               {levels.map((level, index) => {
-                const text = `${level.price > domain.high ? "↑ " : level.price < domain.low ? "↓ " : ""}${level.label} ${price(level.price)}`;
+                const text = `${level.price > domain.high ? "↑ " : level.price < domain.low ? "↓ " : ""}${level.label} ${price(level.price)}${lineProfitText(level.profit)}`;
                 return (
                   <G key={level.id} testID={level.id === "cost" ? "chart.costBasis" : `chart.priceLine.${level.id}`}>
                     {level.price >= domain.low && level.price <= domain.high && <Line

@@ -6,7 +6,7 @@ import type { MexcAction, MexcContract, MexcKind, MexcPosition, MexcTicker } fro
 import { Button, Stepper, elevated, money, radius, styles } from "../ui.tsx";
 import type { MexcState } from "./useMexc.ts";
 import { STOCK_NOTE, isStockContract, openTypeLabel, percent } from "./mexcView.ts";
-import { Notice, PositionSlider, Segmented, StopFields } from "./parts.tsx";
+import { Notice, PositionSlider, Segmented, StopFields, profitColor, profitText } from "./parts.tsx";
 import MexcLeverageEditor from "./MexcLeverageEditor.tsx";
 import MexcReview from "./MexcReview.tsx";
 import { useOrderTicket } from "./useOrderTicket.ts";
@@ -87,7 +87,8 @@ export default function MexcOrderPanel({ m, palette: p, contract, ticker, initia
         {t.stopsWereDropped && <Button label="清除价格" palette={p} variant="tinted" color={p.secondary} onPress={t.clearStops} />}
         {t.opening && !t.held && (
           <StopFields compact palette={p} on={t.stopsOn} onToggle={t.setStopsOn} takeProfit={t.takeProfit} stopLoss={t.stopLoss}
-            onTakeProfit={t.setTakeProfit} onStopLoss={t.setStopLoss} onStepTakeProfit={t.stepTakeProfit} onStepStopLoss={t.stepStopLoss} />
+            onTakeProfit={t.setTakeProfit} onStopLoss={t.setStopLoss} onStepTakeProfit={t.stepTakeProfit} onStepStopLoss={t.stepStopLoss}
+            atTakeProfit={t.atTakeProfit} atStopLoss={t.atStopLoss} margin={t.margin} />
         )}
         {t.opening ? (
           <View style={styles.spread}>
@@ -109,6 +110,12 @@ export default function MexcOrderPanel({ m, palette: p, contract, ticker, initia
           <Text numberOfLines={1} style={[small, styles.number]}>折算（估算） {t.notional === undefined ? "—" : `${money(t.notional)} USDT`}</Text>
           {t.opening && <Text numberOfLines={1} style={[small, styles.number]}>保证金（估算） {t.margin === undefined ? "—" : `${money(t.margin)} USDT`}</Text>}
         </View>
+        {!t.opening && !!t.held && (
+          <View style={styles.spread}>
+            <Text numberOfLines={1} style={small}>预计盈亏（未扣手续费）</Text>
+            <Text numberOfLines={1} style={[small, styles.number, { color: profitColor(p, t.closeProfit), fontWeight: "600" }]}>{profitText(t.closeProfit, t.closeMargin)}</Text>
+          </View>
+        )}
         <Text numberOfLines={1} style={{ color: p.secondary, fontSize: 11, lineHeight: 15 }}>
           每张 {contract.contractSize} · 最小 {contract.minVol} 张 · 步长 {contract.volUnit}{t.opening && !tooSmall && t.capacity !== undefined ? ` · 最多可开 ${t.capacity} 张` : ""}
         </Text>

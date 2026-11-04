@@ -3,14 +3,14 @@ import { ActivityIndicator, AppState, Pressable, ScrollView, Text, useWindowDime
 import { chartHeightFor } from "../chartCountdown.ts";
 import { isLineRange } from "../chartData.ts";
 import { DemoNotice } from "../DemoNotice.tsx";
-import type { History, HistoryRange, Palette } from "../types.ts";
+import type { Candle, History, HistoryRange, Palette } from "../types.ts";
 import { mexcActionLabels } from "../mexcRules.ts";
 import type { MexcAction, MexcContract, MexcOrder, MexcPosition, MexcStopOrder, MexcTicker } from "../mexcRules.ts";
-import MarketChart, { ChartControls, type ChartControlHandle } from "../MarketChart.tsx";
-import { Button, Chip, Icon, Input, elevated, radius, styles } from "../ui.tsx";
+import MarketChart, { ChartControls, dateTime, type ChartControlHandle } from "../MarketChart.tsx";
+import { Button, Chip, Icon, Input, compactNumber, elevated, radius, styles } from "../ui.tsx";
 import { useTickers, type MexcState } from "./useMexc.ts";
 import {
-  chartFillWindow, closableOf, closeActionFor, favoriteContracts, hasClosable, isStockContract, mergeLiveCandles, mexcExecutions, percent, positionPriceLines, priceText, signedPercent, sortContracts, STOCK_NOTE,
+  candleMove, chartFillWindow, closableOf, closeActionFor, favoriteContracts, hasClosable, isStockContract, mergeLiveCandles, mexcExecutions, percent, positionPriceLines, priceText, signedPercent, sortContracts, STOCK_NOTE,
 } from "./mexcView.ts";
 import MexcOrderPanel from "./MexcOrderPanel.tsx";
 import MexcStopEditor from "./MexcStopEditor.tsx";
@@ -111,6 +111,7 @@ function Detail({ m, palette: p, contract, ticker: listTicker }: {
   const fullChartHeight = chartHeightFor(windowHeight);
   const [range, setRange] = useState<HistoryRange>("minute15");
   const [history, setHistory] = useState<History>();
+  const [selectedCandle, setSelectedCandle] = useState<Candle>();
   const [error, setError] = useState("");
   const [liveTicker, setLiveTicker] = useState<MexcTicker>();
   const [stale, setStale] = useState(false);
@@ -189,21 +190,26 @@ function Detail({ m, palette: p, contract, ticker: listTicker }: {
   }, [m.api, contract.symbol, fillsKey]);
   const executions = useMemo(() => mexcExecutions([...closedOrders, ...working]), [closedOrders, fillsKey]);
   // Both follow the account and the stops, not the live ticks, so the chart is not asked to redo them every second.
-  const priceLines = useMemo(() => positionPriceLines(held, stops, { cost: p.accent, takeProfit: p.up, stopLoss: p.down }), [m.account, contract.symbol, stops, p]);
+  const priceLines = useMemo(() => positionPriceLines(held, stops, { cost: p.accent, takeProfit: p.up, stopLoss: p.down }, contract.contractSize), [m.account, contract.symbol, contract.contractSize, stops, p]);
   const pip = useChartPip({
     m, contract, history, range, rangeLabel: RANGES.find(([id]) => id === range)?.[1] ?? (range === "intraday" ? "分时" : ""), priceLines, palette: p,
   });
-  const rate = ticker?.riseFallRate, color = (rate ?? 0) > 0 ? p.up : (rate ?? 0) < 0 ? p.down : p.secondary;
+  // With the crosshair on a candle, the header reads that candle instead of the live quote.
+  const line = isLineRange(range);
+  const move = selectedCandle && history ? candleMove(history.candles, selectedCandle, line) : undefined;
+  const rate = selectedCandle ? move?.rate : ticker?.riseFallRate, color = (rate ?? 0) > 0 ? p.up : (rate ?? 0) < 0 ? p.down : p.secondary;
   const unit = contract.priceUnit;
   // Hedge mode can hold both directions in one contract, so each gets its own named button rather than a guess.
   const closable = (m.account?.positions ?? []).filter(position => position.symbol === contract.symbol && hasClosable(closableOf(position)));
   const minor = RANGES.filter(([id]) => id === "minute1" || id === "minute5" || id === "minute15");
   const minorLabel = minor.find(([id]) => id === range)?.[1];
-  const quoteSide: [string, string][] = [["买一", priceText(ticker?.bid1, unit)], ["卖一", priceText(ticker?.ask1, unit)]];
-  const quoteStats: [string, string][] = [
-    ["高", priceText(ticker?.high24Price, unit)], ["低", priceText(ticker?.lower24Price, unit)],
-    ["费率", percent(ticker?.fundingRate, 4)], ["标记", priceText(ticker?.fairPrice, unit)],
-  ];
+  const quoteSide: [string, string][] = selectedCandle
+    ? [["时间", dateTime(selectedCandle.time)], [line ? "起始" : "前收", priceText(move?.reference, unit)]]
+    : [["买一", priceText(ticker?.bid1, unit)], ["卖一", priceText(ticker?.ask1, unit)]];
+  const quoteStats: [string, string][] = selectedCandle
+    ? [["开", priceText(selectedCandle.open, unit)], ["高", priceText(selectedCandle.high, unit)], ["低", priceText(selectedCandle.low, unit)], ["量", compactNumber(selectedCandle.volume)]]
+    : [["高", priceText(ticker?.high24Price, unit)], ["低", priceText(ticker?.lower24Price, unit)],
+      ["费率", percent(ticker?.fundingRate, 4)], ["标记", priceText(ticker?.fairPrice, unit)]];
   const underline = <View style={{ position: "absolute", bottom: 2, width: 18, height: 3, borderRadius: 2, backgroundColor: p.up }} />;
   const action = (label: string, background: string, onPress: () => void, disabled: boolean, flex = 1) => (
     <Pressable accessibilityRole="button" accessibilityLabel={label} disabled={disabled} onPress={onPress}
@@ -219,7 +225,7 @@ function Detail({ m, palette: p, contract, ticker: listTicker }: {
         <View style={{ backgroundColor: p.surface, paddingHorizontal: 12, paddingVertical: 6, gap: 4 }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
             <Text adjustsFontSizeToFit numberOfLines={1} style={[styles.number, { color, fontSize: 26, lineHeight: 30, fontWeight: "600", letterSpacing: -0.6, flexShrink: 1 }]}>
-              {priceText(ticker?.lastPrice, unit)}
+              {priceText(selectedCandle?.close ?? ticker?.lastPrice, unit)}
             </Text>
             <Text numberOfLines={1} style={[styles.number, { color, fontSize: 13, fontWeight: "600" }]}>{signedPercent(rate)}</Text>
             <View style={{ marginLeft: "auto", gap: 1 }}>
@@ -273,7 +279,7 @@ function Detail({ m, palette: p, contract, ticker: listTicker }: {
         <View onLayout={event => setChartTop(event.nativeEvent.layout.y)} style={{ paddingLeft: 12, paddingRight: 4 }}>
           {history ? (
             <MarketChart history={history} range={range} palette={p} height={chartHeight} controlsRef={chartControls}
-              continuousMarket executions={executions} priceLines={priceLines} />
+              continuousMarket executions={executions} priceLines={priceLines} onSelectionChange={setSelectedCandle} />
           ) : (
             <View style={{ height: chartHeight, justifyContent: "center" }}>
               {error ? <Text style={{ color: p.secondary, textAlign: "center", padding: 20 }}>{error}</Text> : <ActivityIndicator color={p.secondary} />}

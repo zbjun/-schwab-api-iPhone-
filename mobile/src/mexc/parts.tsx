@@ -2,7 +2,8 @@ import React, { useEffect, useRef } from "react";
 import { PanResponder, Pressable, Text, View, type StyleProp, type TextStyle } from "react-native";
 import { tick } from "../haptics.ts";
 import type { Palette } from "../types.ts";
-import { Glass, Icon, Stepper, elevated, radius, styles } from "../ui.tsx";
+import { Glass, Icon, Stepper, elevated, radius, signed, styles } from "../ui.tsx";
+import { signedPercent } from "./mexcView.ts";
 
 /** One label and value line, as in the Schwab order review (`SummaryRow`). */
 export function Line({ label, value, palette: p, color, strong }: {
@@ -15,6 +16,26 @@ export function Line({ label, value, palette: p, color, strong }: {
         flexShrink: 1, textAlign: "right" }}>
         {value}
       </Text>
+    </View>
+  );
+}
+
+export const profitColor = (p: Palette, profit: number | undefined) => ((profit ?? 0) > 0 ? p.up : (profit ?? 0) < 0 ? p.down : p.secondary);
+/** "+12.34 USDT（+24.7%）", the share of margin left out when the margin is not known. */
+export const profitText = (profit: number | undefined, margin?: number) =>
+  profit === undefined ? "—" : `${signed(profit)} USDT${margin ? `（${signedPercent(profit / margin, 1)}）` : ""}`;
+
+/** What a take-profit and stop-loss would make. Wraps instead of cutting off when the amounts are long. */
+export function StopEstimates({ palette: p, takeProfit, stopLoss, margin }: {
+  palette: Palette; takeProfit?: number; stopLoss?: number; margin?: number;
+}) {
+  const text = (label: string, profit: number | undefined) => (
+    <Text style={[styles.number, { color: profitColor(p, profit), fontSize: 12, lineHeight: 17 }]}>{label} {profitText(profit, margin)}</Text>
+  );
+  return (
+    <View style={[styles.spread, { flexWrap: "wrap", columnGap: 8 }]}>
+      {text("止盈约", takeProfit)}
+      {text("止损约", stopLoss)}
     </View>
   );
 }
@@ -164,10 +185,11 @@ export function PositionSlider({ value, onChange, onDragStart, onDragEnd, palett
 }
 
 /** Optional take-profit and stop-loss for an opening order. Closed, the order carries neither. */
-export function StopFields({ palette: p, on, onToggle, takeProfit, stopLoss, onTakeProfit, onStopLoss, onStepTakeProfit, onStepStopLoss, compact = false }: {
+export function StopFields({ palette: p, on, onToggle, takeProfit, stopLoss, onTakeProfit, onStopLoss, onStepTakeProfit, onStepStopLoss, atTakeProfit, atStopLoss, margin, compact = false }: {
   palette: Palette; on: boolean; onToggle: (on: boolean) => void; takeProfit: string; stopLoss: string;
   onTakeProfit: (value: string) => void; onStopLoss: (value: string) => void;
-  onStepTakeProfit: (direction: 1 | -1) => void; onStepStopLoss: (direction: 1 | -1) => void; compact?: boolean;
+  onStepTakeProfit: (direction: 1 | -1) => void; onStepStopLoss: (direction: 1 | -1) => void;
+  atTakeProfit?: number; atStopLoss?: number; margin?: number; compact?: boolean;
 }) {
   return (
     <>
@@ -179,7 +201,8 @@ export function StopFields({ palette: p, on, onToggle, takeProfit, stopLoss, onT
       {on && <>
         <Stepper compact={compact} palette={p} label="止盈" value={takeProfit} placeholder="不设置" keyboardType="decimal-pad" onChangeText={onTakeProfit} onStep={onStepTakeProfit} />
         <Stepper compact={compact} palette={p} label="止损" value={stopLoss} placeholder="不设置" keyboardType="decimal-pad" onChangeText={onStopLoss} onStep={onStepStopLoss} />
-        <Text style={{ color: p.secondary, fontSize: 11, lineHeight: 15 }}>按标记价触发，委托成交后才生效，触发后按市价平仓。</Text>
+        <StopEstimates palette={p} takeProfit={atTakeProfit} stopLoss={atStopLoss} margin={margin} />
+        <Text style={{ color: p.secondary, fontSize: 11, lineHeight: 15 }}>按标记价触发，委托成交后才生效，触发后按市价平仓。盈亏从委托价估算，不含手续费。</Text>
       </>}
     </>
   );

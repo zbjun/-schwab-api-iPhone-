@@ -3,7 +3,7 @@ import { MEXC_MESSAGES, isBuying, isOpening, orderStopReferences } from "../mexc
 import type { MexcAction, MexcDraft, MexcKind, MexcPrepared, MexcTicker } from "../mexcRules.ts";
 import type { MexcState } from "./useMexc.ts";
 import {
-  clampLeverage, closableOf, draftIssueOf, findPosition, fractionOfCapacity, hasClosable, leverageChoice, marginOf, notionalOf, openCapacity,
+  clampLeverage, closableOf, closeEstimate, draftIssueOf, expectedFill, findPosition, fractionOfCapacity, hasClosable, leverageChoice, marginFor, marginOf, notionalOf, openCapacity,
   orderEntryBlocked, snapToTick, stepDecimal, stopSideIssue, stopsDropped, ticketBlocked, valuationPrice, volForFraction,
 } from "./mexcView.ts";
 
@@ -74,6 +74,14 @@ export function useOrderTicket(m: MexcState, symbol: string, action: MexcAction,
   const unitPrice = contract ? valuationPrice(kind, buying, price, ticker, m.limits?.marketProtection ?? NaN) : undefined;
   const notional = contract && unitPrice !== undefined ? notionalOf(vol, contract.contractSize, unitPrice) : undefined;
   const margin = marginOf(notional, effectiveLeverage);
+  // What this would make, for showing only: none of it goes into the draft.
+  const fill = expectedFill(kind, buying, price, ticker);
+  // More than can be closed is refused anyway, and has no profit to speak of.
+  const closeProfit = contract && held && !opening && Number(vol) <= Number(closable) ? closeEstimate(held, contract.contractSize, vol, fill) : undefined;
+  const closeMargin = held && !opening ? marginFor(held, Number(vol)) : undefined;
+  const entry = fill === undefined ? undefined : { direction: buying ? "LONG" as const : "SHORT" as const, averagePrice: fill };
+  const atTakeProfit = contract && entry && opening ? closeEstimate(entry, contract.contractSize, vol, takeProfit) : undefined;
+  const atStopLoss = contract && entry && opening ? closeEstimate(entry, contract.contractSize, vol, stopLoss) : undefined;
   // Without the server limits the leverage cap is unknown, so opening waits for them.
   const limitsMissing = opening && !choice;
   const entryBlocked = orderEntryBlocked(m.blockedCode, action);
@@ -105,7 +113,7 @@ export function useOrderTicket(m: MexcState, symbol: string, action: MexcAction,
 
   return {
     contract, kind, setKind, vol, setVol, price, leverage, setLeverage, prepared, setPrepared, reviewing,
-    opening, buying, held, closable, choice, effectiveLeverage, notional, margin, entryBlocked, draftIssue, submitDisabled, capacity, sizeFraction, sliderDisabled, sizeDragging, stopsOn, setStopsOn, takeProfit, setTakeProfit, stopLoss, setStopLoss, stopsWereDropped: dropped,
+    opening, buying, held, closable, choice, effectiveLeverage, notional, margin, closeProfit, closeMargin, atTakeProfit, atStopLoss, entryBlocked, draftIssue, submitDisabled, capacity, sizeFraction, sliderDisabled, sizeDragging, stopsOn, setStopsOn, takeProfit, setTakeProfit, stopLoss, setStopLoss, stopsWereDropped: dropped,
     clearStops: () => { setStopsOn(false); setTakeProfit(""); setStopLoss(""); },
     submit,
     recheck: () => { setPrepared(undefined); void submit(); },

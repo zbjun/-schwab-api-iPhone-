@@ -4,6 +4,15 @@ export interface ChartPriceLine {
   price: number;
   label: string;
   color: string;
+  /** Estimated profit or loss if the position closes here, drawn after the price. */
+  profit?: number;
+}
+
+/** Text for a level's estimate, with room for the space before it. */
+export function lineProfitText(profit: number | undefined): string {
+  if (profit === undefined || !Number.isFinite(profit)) return "";
+  const amount = Math.abs(profit).toFixed(2);
+  return ` ${Number(amount) === 0 ? "" : profit > 0 ? "+" : "-"}${amount}`;
 }
 
 /**

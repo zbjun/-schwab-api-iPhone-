@@ -7,7 +7,7 @@ import type { MexcAction } from "../mexcRules.ts";
 import { Button, Chip, Glass, Input, Stepper, elevated, money, radius, styles, tabBar, tabClearance } from "../ui.tsx";
 import { useTickers, type MexcState } from "./useMexc.ts";
 import { percent, priceText, signedPercent, sortContracts, STOCK_NOTE, isStockContract } from "./mexcView.ts";
-import { Line, Notice, PositionSlider, StopFields } from "./parts.tsx";
+import { Line, Notice, PositionSlider, StopFields, profitColor, profitText } from "./parts.tsx";
 import MexcReview from "./MexcReview.tsx";
 import { useOrderTicket } from "./useOrderTicket.ts";
 
@@ -135,7 +135,8 @@ export default function MexcTrade({ m, palette: p, seed }: { m: MexcState; palet
             {t.stopsWereDropped && <Button label="清除价格" palette={p} variant="tinted" color={p.secondary} onPress={t.clearStops} />}
             {opening && !held && (
               <StopFields palette={p} on={t.stopsOn} onToggle={t.setStopsOn} takeProfit={t.takeProfit} stopLoss={t.stopLoss}
-                onTakeProfit={t.setTakeProfit} onStopLoss={t.setStopLoss} onStepTakeProfit={t.stepTakeProfit} onStepStopLoss={t.stepStopLoss} />
+                onTakeProfit={t.setTakeProfit} onStopLoss={t.setStopLoss} onStepTakeProfit={t.stepTakeProfit} onStepStopLoss={t.stepStopLoss}
+                atTakeProfit={t.atTakeProfit} atStopLoss={t.atStopLoss} margin={margin} />
             )}
             <View style={{ height: 1, backgroundColor: p.separator }} />
             <View>
@@ -143,6 +144,7 @@ export default function MexcTrade({ m, palette: p, seed }: { m: MexcState; palet
               {opening && <Line palette={p} label="所需保证金（估算）" value={margin === undefined ? "—" : `${money(margin)} USDT`} />}
               {opening && m.account && <Line palette={p} label="可用" value={`${money(m.account.asset.availableOpen)} USDT`} />}
               {!opening && <Line palette={p} label="可平张数" value={held ? `${closable}（持仓 ${held.holdVol}，占用 ${held.frozenVol}）` : "0"} />}
+              {!opening && !!held && <Line palette={p} label="预计盈亏（未扣手续费）" value={profitText(t.closeProfit, t.closeMargin)} color={profitColor(p, t.closeProfit)} />}
             </View>
             <Text style={{ color: p.secondary, fontSize: 11, lineHeight: 16 }}>
               每张 {contract.contractSize} · 最小 {contract.minVol} 张 · 步长 {contract.volUnit} · 最小价位 {contract.priceUnit} · 费率 {percent(contract.takerFeeRate, 3)}

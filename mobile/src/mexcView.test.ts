@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import {
   mergeLiveCandles, batches, blockMessage, clampLeverage, closableOf, closedOrderWindow, closeActionFor, confirmArmed, draftIssueOf, leverageChoice, marginOf,
   notionalOf, parseVenue, reviewExpired, reviewRemainingSeconds, snapToTick, sortContracts, stepDecimal, tradingLocked,
-  MAX_FAVORITES, chartFillWindow, pipCandles, priceDecimals, favoriteContracts, fractionOfCapacity, mexcExecutions, openCapacity, positionPriceLines, parseFavorites, stopDraftKey, stopEstimate, stopSideIssue, stopsDropped, ticketBlocked, toggleFavorite, valuationPrice, volForFraction,
+  MAX_FAVORITES, candleMove, chartFillWindow, closeEstimate, expectedFill, marginFor, pipCandles, priceDecimals, favoriteContracts, fractionOfCapacity, mexcExecutions, openCapacity, positionPriceLines, parseFavorites, stopDraftKey, stopEstimate, stopSideIssue, stopsDropped, ticketBlocked, toggleFavorite, valuationPrice, volForFraction,
 } from "./mexc/mexcView.ts";
+import { lineProfitText } from "./chartLines.ts";
 import { planMexcOrder, validateMexcDraft } from "./mexcRules.ts";
 import type { MexcContract, MexcPosition } from "./mexcRules.ts";
 
@@ -283,6 +284,65 @@ test("stop estimates run from the average entry, for either direction", () => {
   for (const bad of ["", " ", "abc", "0", "-5"]) assert.equal(stopEstimate(long, 0.01, bad), undefined);
 });
 
+test("a candle under the crosshair is measured from the bar before it, and a line from where it starts", () => {
+  const bar = (time: number, open: number, close: number) => ({ time, open, high: Math.max(open, close), low: Math.min(open, close), close, volume: 1 });
+  const candles = [bar(1, 100, 110), bar(2, 110, 121), bar(3, 121, 100)];
+  const near = (actual: number | undefined, expected: number) => assert.ok(Math.abs(actual! - expected) < 1e-9, `${actual} vs ${expected}`);
+  // K-lines: the close before it.
+  assert.equal(candleMove(candles, candles[1], false).reference, 110);
+  near(candleMove(candles, candles[1], false).rate, 0.1);
+  assert.equal(candleMove(candles, candles[2], false).reference, 121);
+  near(candleMove(candles, candles[2], false).rate, 100 / 121 - 1);
+  // The first has none before it, so its own open.
+  assert.equal(candleMove(candles, candles[0], false).reference, 100);
+  near(candleMove(candles, candles[0], false).rate, 0.1);
+  // A line: where it starts, whichever point is under the crosshair.
+  assert.equal(candleMove(candles, candles[2], true).reference, 100);
+  near(candleMove(candles, candles[2], true).rate, 0);
+  near(candleMove(candles, candles[1], true).rate, 0.21);
+  // The order of the list does not decide what came before.
+  assert.equal(candleMove([candles[2], candles[0], candles[1]], candles[2], false).reference, 121);
+  // Nothing to measure from says so rather than show a move.
+  assert.deepEqual(candleMove([], bar(1, 0, 10), false), {});
+  assert.deepEqual(candleMove([], bar(1, 100, NaN), false), {});
+});
+
+test("a close is estimated for the size being closed, whichever way the position runs", () => {
+  const long = { direction: "LONG" as const, averagePrice: 100 }, short = { direction: "SHORT" as const, averagePrice: 100 };
+  // 4 contracts of 0.5 each, 10 from entry.
+  assert.equal(closeEstimate(long, 0.5, "4", "110"), 20);
+  assert.equal(closeEstimate(long, 0.5, "4", 90), -20);
+  assert.equal(closeEstimate(short, 0.5, "4", 90), 20);
+  assert.equal(closeEstimate(short, 0.5, "4", 110), -20);
+  // Nothing to estimate rather than a reassuring zero.
+  for (const vol of ["", " ", "abc", "0", "-1"]) assert.equal(closeEstimate(long, 0.5, vol, "110"), undefined);
+  for (const price of [undefined, "", "abc", "0", -5]) assert.equal(closeEstimate(long, 0.5, "4", price), undefined);
+});
+
+test("an order is expected to fill at its limit, or at the best quote on its side", () => {
+  const ticker = { symbol: "A_USDT", lastPrice: 100, bid1: 99, ask1: 101, timestamp: 1 };
+  assert.equal(expectedFill("LIMIT", false, "105", ticker), 105);
+  assert.equal(expectedFill("LIMIT", true, "95", undefined), 95);
+  for (const bad of ["", " ", "abc", "0"]) assert.equal(expectedFill("LIMIT", true, bad, ticker), undefined);
+  // Closing a long sells into the bid and closing a short buys from the ask, never at the protection price.
+  assert.equal(expectedFill("MARKET", false, "", ticker), 99);
+  assert.equal(expectedFill("MARKET", true, "", ticker), 101);
+  assert.equal(expectedFill("MARKET", false, "", { ...ticker, bid1: undefined }), 100);
+  assert.equal(expectedFill("MARKET", true, "", { ...ticker, ask1: 0 }), 100);
+  assert.equal(expectedFill("MARKET", true, "", undefined), undefined);
+});
+
+test("a return is measured on the margin behind the size, not on all of it", () => {
+  assert.equal(marginFor({ margin: 200, holdVol: 20 }, 5), 50);
+  assert.equal(marginFor({ margin: 200, holdVol: 20 }, 20), 200);
+  // A size over what is held cannot have more margin behind it than the position does.
+  assert.equal(marginFor({ margin: 200, holdVol: 20 }, 50), 200);
+  for (const vol of [0, -1, NaN]) assert.equal(marginFor({ margin: 200, holdVol: 20 }, vol), undefined);
+  assert.equal(marginFor({ margin: undefined, holdVol: 20 }, 5), undefined);
+  assert.equal(marginFor({ margin: 0, holdVol: 20 }, 5), undefined);
+  assert.equal(marginFor({ margin: 200, holdVol: 0 }, 5), undefined);
+});
+
 test("a price on the wrong side shows before a review, without judging what cannot be judged", () => {
   const at = { takeProfit: 100, stopLoss: 100 };
   assert.equal(stopSideIssue("LONG", "110", "90", at), false);
@@ -347,6 +407,21 @@ test("each position's cost and stops become lines, saying whose they are only wh
   assert.deepEqual(positionPriceLines([long], [{ ...stop, takeProfitPrice: undefined }], colors).map(line => line.label), ["成本", "止损"]);
   assert.deepEqual(positionPriceLines([long], [{ ...stop, positionId: "3" }], colors).map(line => line.label), ["成本"]);
   assert.deepEqual(positionPriceLines([], [stop], colors), []);
+  // With the contract size, each exit says what it would make on the size it covers; cost says nothing.
+  const covered = { ...stop, vol: 10 }, size = 0.01;
+  assert.deepEqual(positionPriceLines([long], [covered], colors, size).map(line => Math.round((line.profit ?? NaN) * 100) / 100), [NaN, (720 - 690) * 10 * size, (680 - 690) * 10 * size]);
+  assert.equal("profit" in positionPriceLines([long], [covered], colors)[1], false);
+});
+
+test("a level's estimate reads as a signed amount after the price", () => {
+  assert.equal(lineProfitText(12.3), " +12.30");
+  assert.equal(lineProfitText(-6.666), " -6.67");
+  assert.equal(lineProfitText(0), " 0.00");
+  // Too small to show has no sign, rather than a "-0.00".
+  assert.equal(lineProfitText(-0.001), " 0.00");
+  assert.equal(lineProfitText(0.001), " 0.00");
+  assert.equal(lineProfitText(undefined), "");
+  assert.equal(lineProfitText(NaN), "");
 });
 
 test("the floating chart gets the last stretch of good candles and only what it draws", () => {

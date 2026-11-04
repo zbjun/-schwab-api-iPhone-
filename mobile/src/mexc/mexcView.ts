@@ -101,14 +101,17 @@ export const ticketBlocked = (gates: TicketGates) =>
   gates.locked || gates.entryBlocked || !!gates.draftIssue || gates.reviewing || !gates.hasContract ||
   gates.limitsMissing || gates.leverageEmpty || gates.sending;
 
+const bestQuote = (buying: boolean, ticker: MexcTicker | undefined): number | undefined => {
+  const best = buying ? ticker?.ask1 : ticker?.bid1;
+  const reference = best !== undefined && best > 0 ? best : ticker?.lastPrice;
+  return reference !== undefined && Number.isFinite(reference) && reference > 0 ? reference : undefined;
+};
 /**
  * The price the server values this order at (planMexcOrder): a limit order at the larger of its price and
  * the best quote, a market buy at its protection price, a market sell at the best quote.
  */
 export function valuationPrice(kind: MexcKind, buying: boolean, limitPrice: string, ticker: MexcTicker | undefined, marketProtection: number): number | undefined {
-  const best = buying ? ticker?.ask1 : ticker?.bid1;
-  const reference = best !== undefined && best > 0 ? best : ticker?.lastPrice;
-  const quoted = reference !== undefined && Number.isFinite(reference) && reference > 0 ? reference : undefined;
+  const quoted = bestQuote(buying, ticker);
   if (kind === "LIMIT") {
     const price = limitPrice.trim() === "" ? NaN : Number(limitPrice);
     if (!Number.isFinite(price) || price <= 0) return undefined;
@@ -122,6 +125,36 @@ export function stopEstimate(position: Pick<MexcPosition, "direction" | "average
   const value = price.trim() === "" ? NaN : Number(price);
   if (!Number.isFinite(value) || value <= 0) return undefined;
   return (value - position.averagePrice) * position.holdVol * contractSize * (position.direction === "LONG" ? 1 : -1);
+}
+/**
+ * How far a candle under the crosshair moved: on K-lines from the bar before it, or its own open for the first;
+ * on a line chart from where the line starts, which is how a line reads.
+ */
+export function candleMove(candles: readonly Candle[], selected: Candle, line: boolean): { reference?: number; rate?: number } {
+  const earlier = candles.filter(candle => candle.time < selected.time);
+  const reference = line ? (earlier[0] ?? selected).open : earlier.reduce<Candle | undefined>((best, candle) => (!best || candle.time > best.time ? candle : best), undefined)?.close ?? selected.open;
+  if (!Number.isFinite(reference) || reference <= 0 || !Number.isFinite(selected.close)) return {};
+  return { reference, rate: selected.close / reference - 1 };
+}
+/** The same estimate for any size: part of a position, or an order that has not opened one yet. */
+export function closeEstimate(position: Pick<MexcPosition, "direction" | "averagePrice">, contractSize: number, vol: string, price: string | number | undefined): number | undefined {
+  const size = vol.trim() === "" ? NaN : Number(vol);
+  if (price === undefined || !Number.isFinite(size) || size <= 0) return undefined;
+  return stopEstimate({ ...position, holdVol: size }, contractSize, String(price));
+}
+/**
+ * Where an order should fill, for estimating what it makes: the limit, or for a market order the best quote on its side.
+ * The protection price is only the worst it may reach, and would understate every market close.
+ */
+export function expectedFill(kind: MexcKind, buying: boolean, limitPrice: string, ticker: MexcTicker | undefined): number | undefined {
+  if (kind !== "LIMIT") return bestQuote(buying, ticker);
+  const price = limitPrice.trim() === "" ? NaN : Number(limitPrice);
+  return Number.isFinite(price) && price > 0 ? price : undefined;
+}
+/** The margin behind part of a position, so what it makes can be shown as a return. */
+export function marginFor(position: Pick<MexcPosition, "margin" | "holdVol">, vol: number): number | undefined {
+  if (position.margin === undefined || !(position.margin > 0) || !(position.holdVol > 0) || !Number.isFinite(vol) || vol <= 0) return undefined;
+  return (position.margin * Math.min(vol, position.holdVol)) / position.holdVol;
 }
 /** The side check the server makes, so a price on the wrong side shows before a review is asked for. */
 export function stopSideIssue(direction: "LONG" | "SHORT", takeProfit: string, stopLoss: string, references: { takeProfit?: number; stopLoss?: number }): boolean {
@@ -265,13 +298,15 @@ export function positionPriceLines(
   positions: readonly MexcPosition[],
   stops: readonly MexcStopOrder[],
   colors: { cost: string; takeProfit: string; stopLoss: string },
+  contractSize?: number,
 ): ChartPriceLine[] {
   return positions.flatMap(position => {
     const side = positions.length > 1 ? (position.direction === "LONG" ? "多" : "空") : "";
     const lines: ChartPriceLine[] = [{ id: `${position.id}:cost`, price: position.averagePrice, label: `${side}成本`, color: colors.cost }];
     for (const stop of stops.filter(row => row.positionId === position.id)) {
-      if (stop.takeProfitPrice !== undefined) lines.push({ id: `${stop.id}:tp`, price: stop.takeProfitPrice, label: `${side}止盈`, color: colors.takeProfit });
-      if (stop.stopLossPrice !== undefined) lines.push({ id: `${stop.id}:sl`, price: stop.stopLossPrice, label: `${side}止损`, color: colors.stopLoss });
+      const profit = (price: number) => (contractSize === undefined ? {} : { profit: stopEstimate({ ...position, holdVol: stop.vol }, contractSize, String(price)) });
+      if (stop.takeProfitPrice !== undefined) lines.push({ id: `${stop.id}:tp`, price: stop.takeProfitPrice, label: `${side}止盈`, color: colors.takeProfit, ...profit(stop.takeProfitPrice) });
+      if (stop.stopLossPrice !== undefined) lines.push({ id: `${stop.id}:sl`, price: stop.stopLossPrice, label: `${side}止损`, color: colors.stopLoss, ...profit(stop.stopLossPrice) });
     }
     return lines;
   });

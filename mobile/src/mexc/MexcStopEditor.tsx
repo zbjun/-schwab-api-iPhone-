@@ -5,8 +5,8 @@ import { MEXC_MESSAGES, validateMexcStopDraft } from "../mexcRules.ts";
 import type { MexcContract, MexcPosition, MexcStopDraft, MexcStopOrder, MexcStopPrepared, MexcTicker } from "../mexcRules.ts";
 import { Button, Stepper, signed, styles } from "../ui.tsx";
 import type { MexcState } from "./useMexc.ts";
-import { closableOf, orderEntryBlocked, priceText, stepDecimal, stopDraftKey, stopEstimate, stopSideIssue } from "./mexcView.ts";
-import { Line, Notice } from "./parts.tsx";
+import { closableOf, marginFor, orderEntryBlocked, priceText, stepDecimal, stopDraftKey, stopEstimate, stopSideIssue } from "./mexcView.ts";
+import { Line, Notice, StopEstimates } from "./parts.tsx";
 import MexcWriteReview from "./MexcWriteReview.tsx";
 
 const directionLabel = (direction: "LONG" | "SHORT") => (direction === "LONG" ? "多仓" : "空仓");
@@ -90,10 +90,7 @@ export default function MexcStopEditor({ m, palette: p, contract, position, stop
           onStep={direction => setTakeProfit(step(takeProfit, direction))} />
         <Stepper compact palette={p} label="止损" value={stopLoss} placeholder="不设置" keyboardType="decimal-pad" onChangeText={setStopLoss}
           onStep={direction => setStopLoss(step(stopLoss, direction))} />
-        <View style={styles.spread}>
-          <Text style={[small, styles.number]}>止盈约 {atTakeProfit === undefined ? "—" : `${signed(atTakeProfit)} USDT`}</Text>
-          <Text style={[small, styles.number]}>止损约 {atStopLoss === undefined ? "—" : `${signed(atStopLoss)} USDT`}</Text>
-        </View>
+        <StopEstimates palette={p} takeProfit={atTakeProfit} stopLoss={atStopLoss} margin={marginFor(position, covered)} />
         <Notice palette={p} tone="info" text="按标记价触发，触发后按市价平掉覆盖的张数，不反手。实际成交价可能和触发价不同。盈亏是从均价估算的，不含手续费。" />
         {covered < position.holdVol && <Notice palette={p} tone="info" text={`只覆盖 ${covered} 张，持仓有 ${position.holdVol} 张，没覆盖的部分不受保护。`} />}
         {stops.length > 1 && <Notice palette={p} tone="info" text={`这个持仓在 MEXC 上有 ${stops.length} 个止盈止损，这里只修改第一个，其余请到 MEXC 处理。`} />}

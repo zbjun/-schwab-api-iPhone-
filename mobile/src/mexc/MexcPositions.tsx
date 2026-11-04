@@ -5,7 +5,7 @@ import type { MexcPosition, MexcStopOrder } from "../mexcRules.ts";
 import { DemoNotice } from "../DemoNotice.tsx";
 import { Button, Icon, money, radius, signed, styles } from "../ui.tsx";
 import type { MexcState } from "./useMexc.ts";
-import { closableOf, openTypeLabel, priceText } from "./mexcView.ts";
+import { closableOf, openTypeLabel, priceText, stopEstimate } from "./mexcView.ts";
 import { EmptyState } from "./parts.tsx";
 
 // Same structure as the Schwab accounts page: account card, big equity, three columns, then the position list.
@@ -86,6 +86,17 @@ export default function MexcPositions({ m, palette: p, onClose, onSettings, onTr
             const pnl = position.unrealized;
             const u = unit(position.symbol);
             const stop = stops.find(row => row.positionId === position.id);
+            const contractSize = m.contracts.find(c => c.symbol === position.symbol)?.contractSize;
+            const level = (label: string, price: number | undefined) => {
+              if (!stop || price === undefined) return null;
+              const profit = contractSize === undefined ? undefined : stopEstimate({ ...position, holdVol: stop.vol }, contractSize, String(price));
+              return (
+                <Text numberOfLines={1} style={[styles.number, { color: p.secondary, fontSize: 11, marginTop: 2 }]}>
+                  {label} {priceText(price, u)}
+                  {profit !== undefined && <Text style={{ color: pnlColor(profit) }}> {signed(profit)}</Text>}
+                </Text>
+              );
+            };
             return (
               <Pressable key={position.id} accessibilityRole="button" disabled={m.sending}
                 accessibilityLabel={`${position.symbol} ${long ? "多" : "空"} 平仓`} onPress={() => onClose(position)}
@@ -97,11 +108,8 @@ export default function MexcPositions({ m, palette: p, onClose, onSettings, onTr
                     <Text style={{ color: long ? p.up : p.down, fontWeight: "700" }}>{long ? "多" : "空"}</Text>
                     {` ${openTypeLabel(position.openType)} ${position.leverage}x · 可平 ${closableOf(position)}`}
                   </Text>
-                  {!!stop && (
-                    <Text numberOfLines={1} style={[styles.number, { color: p.secondary, fontSize: 11, marginTop: 2 }]}>
-                      止盈 {priceText(stop.takeProfitPrice, u)} 止损 {priceText(stop.stopLossPrice, u)}
-                    </Text>
-                  )}
+                  {level("止盈", stop?.takeProfitPrice)}
+                  {level("止损", stop?.stopLossPrice)}
                 </View>
                 <View style={{ flex: 1, alignItems: "flex-end" }}>
                   <Text style={[styles.number, { color: p.text, fontSize: 15, fontWeight: "600" }]}>{String(position.holdVol)}</Text>

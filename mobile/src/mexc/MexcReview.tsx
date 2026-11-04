@@ -6,12 +6,12 @@ import { isBuying, isOpening, mexcActionLabels } from "../mexcRules.ts";
 import type { MexcLimits, MexcPrepared } from "../mexcRules.ts";
 import { Button, Glass, money, radius, styles, tabBar, tabClearance } from "../ui.tsx";
 import type { MexcState } from "./useMexc.ts";
-import { CONFIRM_ARM_DELAY, confirmArmed, openTypeLabel, orderEntryBlocked, percent, reviewExpired, reviewRemainingSeconds } from "./mexcView.ts";
-import { Line, Notice } from "./parts.tsx";
+import { CONFIRM_ARM_DELAY, closeEstimate, confirmArmed, findPosition, marginFor, openTypeLabel, orderEntryBlocked, percent, reviewExpired, reviewRemainingSeconds } from "./mexcView.ts";
+import { Line, Notice, profitColor, profitText } from "./parts.tsx";
 
 /**
- * Shows only what the server returned for this review. Confirm can be pressed once:
- * whatever the outcome, the review is spent and a new one is needed. Never retries.
+ * Shows what the server returned for this review, plus profit estimates worked out here and labelled as estimates.
+ * Confirm can be pressed once: whatever the outcome, the review is spent and a new one is needed. Never retries.
  */
 export default function MexcReview({ m, palette: p, prepared, limits, embedded = false, onBack, onRecheck, onPlaced }: {
   m: MexcState; palette: Palette; prepared: MexcPrepared; limits?: MexcLimits;
@@ -51,6 +51,14 @@ export default function MexcReview({ m, palette: p, prepared, limits, embedded =
     setFailure(result.error ?? "操作失败，请稍后重试。");
   };
   const tradeColor = isBuying(draft.action) ? p.up : p.down;
+  // A market order is valued at the quote it was reviewed against, not at its protection price.
+  const fill = market ? prepared.referencePrice : Number(prepared.orderPrice);
+  const contractSize = m.contracts.find(contract => contract.symbol === draft.symbol)?.contractSize;
+  const closing = opening ? undefined : findPosition(m.account?.positions ?? [], draft.symbol, draft.action);
+  const closeProfit = closing && contractSize !== undefined ? closeEstimate(closing, contractSize, draft.vol, fill) : undefined;
+  const entry = { direction: isBuying(draft.action) ? "LONG" as const : "SHORT" as const, averagePrice: fill };
+  const atStop = (price: string | undefined) => (price !== undefined && contractSize !== undefined ? closeEstimate(entry, contractSize, draft.vol, price) : undefined);
+  const atTakeProfit = atStop(draft.takeProfitPrice), atStopLoss = atStop(draft.stopLossPrice);
   return (
     <View style={{ flex: 1 }}>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={[styles.pageContent, { gap: 10, paddingBottom: clearance + floatingHeight + 16 }]}>
@@ -88,9 +96,12 @@ export default function MexcReview({ m, palette: p, prepared, limits, embedded =
               <Line palette={p} label="所需保证金" value={prepared.margin === undefined ? "—" : `${money(prepared.margin)} USDT`} />
               <Line palette={p} label="可用保证金" value={prepared.available === undefined ? "—" : `${money(prepared.available)} USDT`} />
               {draft.takeProfitPrice !== undefined && <Line palette={p} label="止盈价" value={draft.takeProfitPrice} />}
+              {atTakeProfit !== undefined && <Line palette={p} label="止盈时盈亏（估算）" value={profitText(atTakeProfit, prepared.margin)} color={profitColor(p, atTakeProfit)} />}
               {draft.stopLossPrice !== undefined && <Line palette={p} label="止损价" value={draft.stopLossPrice} />}
+              {atStopLoss !== undefined && <Line palette={p} label="止损时盈亏（估算）" value={profitText(atStopLoss, prepared.margin)} color={profitColor(p, atStopLoss)} />}
             </>}
             {!opening && <Line palette={p} label="可平张数" value={prepared.closable === undefined ? "—" : String(prepared.closable)} />}
+            {closeProfit !== undefined && <Line palette={p} label="预计盈亏（估算，未扣手续费）" value={profitText(closeProfit, closing && marginFor(closing, Number(draft.vol)))} color={profitColor(p, closeProfit)} />}
             <Line palette={p} label="吃单 / 挂单手续费率" value={`${percent(prepared.takerFeeRate, 3)} / ${percent(prepared.makerFeeRate, 3)}`} />
             <Line palette={p} label="资金费率" value={percent(prepared.fundingRate, 4)} />
           </View>

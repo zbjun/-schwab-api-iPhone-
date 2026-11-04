@@ -9,7 +9,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "app.personal.ths.expo",
-      "buildNumber": "18",
+      "buildNumber": "19",
       "infoPlist": {
         "UIBackgroundModes": ["audio"]
       }

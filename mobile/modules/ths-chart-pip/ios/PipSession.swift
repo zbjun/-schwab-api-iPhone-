@@ -344,6 +344,11 @@ final class PipSession: NSObject, AVPictureInPictureControllerDelegate, AVPictur
     attributed.draw(at: alignRight ? CGPoint(x: point.x - attributed.size().width, y: point.y) : point)
   }
 
+  private func textWidth(_ string: String, size: CGFloat, weight: UIFont.Weight = .regular) -> CGFloat {
+    let font = UIFont.monospacedDigitSystemFont(ofSize: size, weight: weight)
+    return ceil(NSAttributedString(string: string, attributes: [.font: font]).size().width)
+  }
+
   private func countdown() -> String? {
     guard let period = config.barSeconds, period > 0, let last = bars.last else { return nil }
     let remaining = Int(ceil(last.time / 1000 + period - Date().timeIntervalSince1970))
@@ -379,7 +384,6 @@ final class PipSession: NSObject, AVPictureInPictureControllerDelegate, AVPictur
       text(keyRefused ? "设备密钥失效，请回到 App" : "连接中断，价格不是最新", at: CGPoint(x: width - 24, y: 96), size: 26, color: UIColor.orange, weight: .semibold, alignRight: true)
     }
 
-    let plot = CGRect(x: 16, y: 134, width: width - 16 - 150, height: height - 134 - 16)
     let visible = Array(bars.suffix(shownBars))
     guard !visible.isEmpty else {
       text("正在读取 K 线…", at: CGPoint(x: 24, y: 260), size: 32, color: muted)
@@ -390,6 +394,12 @@ final class PipSession: NSObject, AVPictureInPictureControllerDelegate, AVPictur
     let padding = max((high - low) * 0.06, high * 0.0002)
     low -= padding
     high += padding
+    // The right side is only as wide as its longest text: this window is small, and the rest belongs to the chart.
+    let left = countdown()
+    var longest = [high, (high + low) / 2, low].map { textWidth(priceText($0), size: 22) }.max() ?? 0
+    if let price = lastPrice { longest = max(longest, textWidth(priceText(price), size: 24, weight: .bold)) }
+    if let left { longest = max(longest, textWidth(left, size: 24)) }
+    let plot = CGRect(x: 16, y: 134, width: width - 16 - (longest + 24), height: height - 134 - 16)
     let y = { (price: Double) -> CGFloat in plot.minY + CGFloat((high - price) / (high - low)) * plot.height }
 
     // Axis.
@@ -454,7 +464,6 @@ final class PipSession: NSObject, AVPictureInPictureControllerDelegate, AVPictur
       context.addLine(to: CGPoint(x: plot.maxX, y: position))
       context.strokePath()
       context.setLineDash(phase: 0, lengths: [])
-      let left = countdown()
       let tagHeight: CGFloat = left == nil ? 36 : 66
       let tag = CGRect(x: plot.maxX + 4, y: min(max(plot.minY, position - tagHeight / 2), plot.maxY - tagHeight), width: width - plot.maxX - 12, height: tagHeight)
       context.setFillColor(tint.cgColor)

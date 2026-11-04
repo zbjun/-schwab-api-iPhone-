@@ -7,6 +7,13 @@ import type { Vault } from "./types.ts";
 const KEY = "a".repeat(64), ORIGIN = "https://fixture.example.test", STORED = "mexc.ths.server.connection.v1";
 const source = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 const session = source("../modules/ths-chart-pip/ios/PipSession.swift");
+
+test("the floating chart's price tag fits its text and leaves the rest to the chart", () => {
+  assert.doesNotMatch(session, /width - 16 - 150/);
+  assert.match(session, /let plot = CGRect\(x: 16, y: 134, width: width - 16 - \(longest \+ 24\)/);
+  for (const measured of [/textWidth\(priceText\(\$0\), size: 22\)/, /textWidth\(priceText\(price\), size: 24, weight: \.bold\)/, /textWidth\(left, size: 24\)/])
+    assert.match(session, measured);
+});
 const nativeModule = source("../modules/ths-chart-pip/ios/ThsChartPipModule.swift");
 
 test("the floating chart's connection is absent until set, and a tampered one is refused without showing the key", async () => {

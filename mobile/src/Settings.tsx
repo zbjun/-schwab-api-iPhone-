@@ -4,13 +4,18 @@ import type { TradingState } from "./useTrading.ts";
 import type { Palette } from "./types.ts";
 import { Button, Icon, Input, styles } from "./ui.tsx";
 import Connection from "./Connection.tsx";
+import type { MexcState } from "./mexc/useMexc.ts";
+import { MexcConnectionPage } from "./mexc/MexcConnection.tsx";
 import { readLocalMarketSettings } from "./localMarketPreferences.ts";
 
-export default function Settings({ state: s, palette: p }: { state: TradingState; palette: Palette }) {
+export default function Settings({ state: s, m, palette: p }: { state: TradingState; m: MexcState; palette: Palette }) {
   const [connection, setConnection] = useState(false);
+  const [mexcConnection, setMexcConnection] = useState(false);
+  const writing = s.busy || m.sending;
   let localSettingsIssue = "";
   try { readLocalMarketSettings(s.localMarketPreferences); }
   catch (error) { localSettingsIssue = error instanceof Error ? error.message : "请检查本地市价参数。"; }
+  if (mexcConnection) return <MexcConnectionPage m={m} palette={p} onBack={() => setMexcConnection(false)} />;
   if (connection) return <View style={{ flex: 1 }}>
     <View style={{ alignItems: "flex-start", paddingHorizontal: 12 }}>
       <Button label="返回设置" palette={p} disabled={s.busy} onPress={() => setConnection(false)} />
@@ -19,27 +24,68 @@ export default function Settings({ state: s, palette: p }: { state: TradingState
   </View>;
   return <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled"
     contentContainerStyle={styles.pageContent}>
+    <Pressable accessibilityRole="button" accessibilityLabel="Schwab 连接" disabled={writing}
+      onPress={() => setConnection(true)} style={[styles.card, styles.spread, { backgroundColor: p.surface }]}>
+      <View style={styles.row}>
+        <Icon name="link" color={p.accent} size={22} />
+        <View style={{ gap: 5 }}>
+          <Text style={{ color: p.text, fontSize: 17 }}>Schwab 连接</Text>
+          <Text style={{ color: p.secondary, fontSize: 12 }}>{s.isDemo ? "演示模式" : s.status.authenticated ? "已授权" : "登录授权与个人配置"}</Text>
+        </View>
+      </View>
+      <Text style={{ color: p.secondary, fontSize: 22 }}>›</Text>
+    </Pressable>
+    <Pressable accessibilityRole="button" accessibilityLabel="MEXC 连接" disabled={writing}
+      onPress={() => setMexcConnection(true)} style={[styles.card, styles.spread, { backgroundColor: p.surface }]}>
+      <View style={styles.row}>
+        <Icon name="link" color={p.accent} size={22} />
+        <View style={{ gap: 5 }}>
+          <Text style={{ color: p.text, fontSize: 17 }}>MEXC 连接</Text>
+          <Text style={{ color: p.secondary, fontSize: 12 }}>{m.isDemo ? "演示模式" : m.configured === false ? "服务器地址与设备访问密钥" : m.offline ? "连接中断" : m.account ? "已连接" : "正在读取…"}</Text>
+        </View>
+      </View>
+      <Text style={{ color: p.secondary, fontSize: 22 }}>›</Text>
+    </Pressable>
     <View style={[styles.card, { backgroundColor: p.surface, gap: 12 }]}>
       <View style={styles.spread}>
         <View style={styles.row}>
           <Icon name="trade" color={p.accent} size={22} />
-          <Text style={{ color: p.text, fontSize: 17, fontWeight: "600" }}>快速模式</Text>
+          <Text style={{ color: p.text, fontSize: 17, fontWeight: "600" }}>快速模式 · Schwab</Text>
         </View>
         <Switch accessibilityLabel="快速模式" value={s.quickMode} disabled={s.busy || !s.storageReady}
           trackColor={{ false: p.separator, true: p.accent }} ios_backgroundColor={p.separator}
           onValueChange={(value) => void s.run(() => s.changeQuickMode(value))} />
       </View>
       <Text style={{ color: p.secondary, fontSize: 13, lineHeight: 20 }}>
-        开启后，点买入、卖出或单笔撤单即提交，不再显示二次确认。账户、数量与订单状态仍会自动校验。
+        开启后，点买入、卖出或单笔撤单即提交，不再显示二次确认。账户、数量与订单状态仍会自动校验。只对 Schwab 股票生效，MEXC 的开关在下面。
       </Text>
       <Text style={{ color: s.quickMode ? p.accent : p.secondary, fontSize: 12 }}>
         {s.quickMode ? "已开启 · 真实模式下按钮会直接发送真实委托" : "默认关闭 · 交易前显示订单核对页"}
       </Text>
     </View>
+    {m.configured !== false && (
+      <View style={[styles.card, { backgroundColor: p.surface, gap: 12 }]}>
+        <View style={styles.spread}>
+          <View style={styles.row}>
+            <Icon name="trade" color={p.accent} size={22} />
+            <Text style={{ color: p.text, fontSize: 17, fontWeight: "600" }}>快速模式 · MEXC</Text>
+          </View>
+          <Switch accessibilityLabel="MEXC 快速模式" value={m.quickMode} disabled={m.sending || !m.quickModeReady}
+            trackColor={{ false: p.separator, true: p.accent }} ios_backgroundColor={p.separator}
+            onValueChange={(value) => void m.run(() => m.changeQuickMode(value))} />
+        </View>
+        <Text style={{ color: p.secondary, fontSize: 13, lineHeight: 20 }}>
+          开启后，点开多、开空、平仓或撤单即提交，不再显示核对页。服务器仍会校验杠杆、金额上限和持仓。带止盈止损的开仓、限价离最新价超过 5% 的委托、改杠杆和止盈止损仍要核对。
+        </Text>
+        <Text style={{ color: m.quickMode ? p.accent : p.secondary, fontSize: 12 }}>
+          {m.quickMode ? "已开启 · 真实模式下按钮会直接发送真实委托" : "默认关闭 · 交易前显示核对页"}
+        </Text>
+      </View>
+    )}
     <View style={[styles.card, { backgroundColor: p.surface, gap: 12 }]}>
-      <Text style={{ color: p.text, fontSize: 17, fontWeight: "600" }}>本地市价单 · 价格优先</Text>
+      <Text style={{ color: p.text, fontSize: 17, fontWeight: "600" }}>本地市价单 · 价格优先 · Schwab</Text>
       <Text style={{ color: p.secondary, fontSize: 13, lineHeight: 20 }}>
-        买入从买一向中间价靠近，卖出从卖一向中间价靠近。首次等待后最多让价到中间价，争取更好的价格，可能无法成交。
+        买入从买一向中间价靠近，卖出从卖一向中间价靠近。首次等待后最多让价到中间价，争取更好的价格，可能无法成交。只对 Schwab 股票生效。
       </Text>
       <View style={{ gap: 6 }}>
         <Text style={{ color: p.text, fontSize: 13 }}>起挂位置 · 占买卖价差 %</Text>
@@ -94,16 +140,5 @@ export default function Settings({ state: s, palette: p }: { state: TradingState
           : s.localMarketPreferencesSaving ? "正在保存…" : "参数自动保存在此设备，交易执行期间不可修改。")}
       </Text>
     </View>
-    <Pressable accessibilityRole="button" accessibilityLabel="Schwab 连接" disabled={s.busy}
-      onPress={() => setConnection(true)} style={[styles.card, styles.spread, { backgroundColor: p.surface }]}>
-      <View style={styles.row}>
-        <Icon name="link" color={p.accent} size={22} />
-        <View style={{ gap: 5 }}>
-          <Text style={{ color: p.text, fontSize: 17 }}>Schwab 连接</Text>
-          <Text style={{ color: p.secondary, fontSize: 12 }}>{s.isDemo ? "演示模式" : s.status.authenticated ? "已授权" : "登录授权与个人配置"}</Text>
-        </View>
-      </View>
-      <Text style={{ color: p.secondary, fontSize: 22 }}>›</Text>
-    </Pressable>
   </ScrollView>;
 }

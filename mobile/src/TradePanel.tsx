@@ -35,7 +35,8 @@ import {
   stopModeLabels,
   validateDraft,
 } from "./orderRules.ts";
-import { Button, Chip, elevated, Glass, Input, money, radius, Stepper, styles, tabBar, tabClearance } from "./ui.tsx";
+import { Button, Chip, elevated, Glass, Input, money, orderStamp, radius, Stepper, styles, tabBar, tabClearance } from "./ui.tsx";
+import { PositionSlider } from "./mexc/parts.tsx";
 import { easternClock, easternDate, easternEpoch } from "./easternTime.ts";
 import { submitQuickOrder } from "./quickTrading.ts";
 import { completeQuickOrder, type QuickOrderFeedback } from "./quickOrderFeedback.ts";
@@ -107,6 +108,8 @@ export function TradePanel({
   );
   const [budget, setBudget] = useState("");
   const [byAmount, setByAmount] = useState(false);
+  const [sizeDragging, setSizeDragging] = useState(false);
+  const sizeBeforeDrag = useRef({ quantity: "", byAmount: false });
   const [gtc, setGTC] = useState(replacement?.duration === "GOOD_TILL_CANCEL");
   const [session, setSession] = useState<OrderSession>("NORMAL");
   // Broker-held exits: attached to a buy, or alone as an "EXIT" order on a holding.
@@ -624,17 +627,28 @@ export function TradePanel({
         disabled={s.busy}
         onStep={stepQuantity}
       />
-      <View style={{ flexDirection: "row", gap: 6 }}>
-        {[0.25, 1 / 3, 0.5, 1].map((fraction, i) => (
-          <Chip
-            key={i}
-            label={["1/4", "1/3", "1/2", side === "SELL" ? "全部" : "全仓"][i]}
+      <View style={[styles.row, { gap: 6 }]}>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <PositionSlider
             palette={p}
-            style={{ flex: 1 }}
-            disabled={max === undefined || s.busy}
-            onPress={() => fillMaximum(fraction)}
+            color={tradeColor}
+            value={max && shares !== undefined && Number.isFinite(shares) ? shares / max : 0}
+            disabled={!max || s.busy}
+            tapToSet={!s.quickMode}
+            onChange={fillMaximum}
+            onDragStart={() => {
+              sizeBeforeDrag.current = { quantity, byAmount };
+              setSizeDragging(true);
+            }}
+            onDragEnd={(cancelled) => {
+              if (cancelled) {
+                setQuantity(sizeBeforeDrag.current.quantity);
+                setByAmount(sizeBeforeDrag.current.byAmount);
+              }
+              setSizeDragging(false);
+            }}
           />
-        ))}
+        </View>
         {amountAllowed && (
           <Chip
             label="按金额"
@@ -642,7 +656,6 @@ export function TradePanel({
             palette={p}
             active={byAmount}
             color={tradeColor}
-            style={{ flex: 1.3 }}
             disabled={s.busy}
             onPress={() => setByAmount(!byAmount)}
           />
@@ -1118,6 +1131,7 @@ export function TradePanel({
         </View>
         <ScrollView
           style={{ flex: 1 }}
+          scrollEnabled={!sizeDragging}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
           contentContainerStyle={{ paddingHorizontal: 12, paddingTop: 4, paddingBottom: 10, gap: 10 }}
@@ -1136,6 +1150,7 @@ export function TradePanel({
     <View style={{ flex: 1 }}>
       <ScrollView
         style={{ flex: 1 }}
+        scrollEnabled={!sizeDragging}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
         alwaysBounceVertical
@@ -1281,6 +1296,14 @@ function Options({
   );
 }
 
+/** A row from the other venue, merged in by time under the same filters. It brings its own cancel. */
+export interface OrderListExtra {
+  key: string;
+  time: number;
+  group: "待成交" | "已成交" | "已结束";
+  render: (first: boolean) => React.ReactNode;
+}
+
 export function OrderList({
   state: s,
   palette: p,
@@ -1288,6 +1311,11 @@ export function OrderList({
   cancelOnly = false,
   onReplace,
   onStock,
+  extraRows = [],
+  hideOwn = false,
+  quickCancel = true,
+  headline,
+  footnote,
 }: {
   state: TradingState;
   palette: Palette;
@@ -1295,6 +1323,13 @@ export function OrderList({
   cancelOnly?: boolean;
   onReplace?: (order: Order) => void;
   onStock?: (symbol: string) => void;
+  extraRows?: OrderListExtra[];
+  /** Only the extra rows, for the MEXC filter of the merged list. */
+  hideOwn?: boolean;
+  /** The one-press cancel on a row, off where rows from another venue can move the list under a finger. */
+  quickCancel?: boolean;
+  headline?: string;
+  footnote?: string;
 }) {
   const [selected, setSelected] = useState<Order>();
   const [filter, setFilter] = useState("全部");
@@ -1350,6 +1385,12 @@ export function OrderList({
         (filter === "已结束" &&
           ["CANCELED", "REJECTED", "EXPIRED", "REPLACED"].includes(o.status))),
   );
+  const rows: { time: number; order?: Order; extra?: OrderListExtra }[] = [
+    ...(hideOwn ? [] : orders.map((order) => ({ time: order.enteredAt ? new Date(order.enteredAt).getTime() : 0, order }))),
+    ...extraRows.filter((extra) => filter === "全部" || extra.group === filter).map((extra) => ({ time: extra.time, extra })),
+  ];
+  // Only a merged list changes order; the broker's order stands on its own.
+  if (extraRows.length) rows.sort((a, b) => b.time - a.time);
   const statusLabel = (status: string) =>
     ({
       WORKING: "委托中",
@@ -1396,13 +1437,13 @@ export function OrderList({
         <Text style={{ color: p.secondary, fontSize: 12, fontWeight: "600" }}>
           {cancelOnly
             ? `${symbol ?? "当前账户"} · 未完成委托`
-            : `${s.account?.displayNumber ?? "尚未连接账户"} · 最近 30 天`}
+            : headline ?? `${s.account?.displayNumber ?? "尚未连接账户"} · 最近 30 天`}
         </Text>
         <Text style={{ color: p.secondary, fontSize: 12 }}>
-          {s.ordersLoaded ? `${orders.length} 笔` : "待加载"}
+          {s.ordersLoaded || hideOwn ? `${rows.length} 笔` : "待加载"}
         </Text>
       </View>
-      {!s.ordersLoaded && (
+      {!s.ordersLoaded && !hideOwn && (
         <Text style={{ color: p.secondary, fontSize: 13, padding: 12 }}>
           {s.ordersError ||
             (s.status.authenticated
@@ -1410,16 +1451,18 @@ export function OrderList({
               : "请先连接账户，再读取订单。")}
         </Text>
       )}
-      {s.ordersLoaded && orders.length === 0 && (
+      {(s.ordersLoaded || hideOwn) && rows.length === 0 && (
         <View style={{ backgroundColor: listBackground, padding: 20, borderRadius: radius.card }}>
           <Text style={{ color: p.secondary, textAlign: "center" }}>
             {cancelOnly ? "没有未完成委托" : "暂无订单"}
           </Text>
         </View>
       )}
-      {orders.length > 0 && (
+      {rows.length > 0 && (
         <View style={{ backgroundColor: listBackground, borderRadius: radius.card, paddingHorizontal: 12 }}>
-          {orders.map((o, index) => {
+          {rows.map(({ order, extra }, index) => {
+            if (extra) return <React.Fragment key={extra.key}>{extra.render(index === 0)}</React.Fragment>;
+            const o = order!;
             const sideColor = o.side === "BUY" ? p.up : p.down;
             const showDetail = !!onStock && !cancelOnly && validSymbol(o.symbol);
             return (
@@ -1466,15 +1509,7 @@ export function OrderList({
                       <Text style={{ color: p.secondary, fontSize: 11, fontVariant: ["tabular-nums"] }}>
                         {cancelOnly
                           ? `#${o.id}`
-                          : o.enteredAt
-                            ? new Date(o.enteredAt).toLocaleString("zh-CN", {
-                                month: "2-digit",
-                                day: "2-digit",
-                                hour: "2-digit",
-                                minute: "2-digit",
-                                hour12: false,
-                              })
-                            : "时间未知"}
+                          : orderStamp(o.enteredAt)}
                       </Text>
                     </View>
                     <Text numberOfLines={1} style={{ color: p.text, fontSize: 13, fontVariant: ["tabular-nums"] }}>
@@ -1500,7 +1535,7 @@ export function OrderList({
                       </Pressable>
                     ) : (
                       <View style={[styles.row, { gap: 6 }]}>
-                        {s.quickMode && o.cancelable && (
+                        {quickCancel && s.quickMode && o.cancelable && (
                           <Chip
                             label={s.isDemo ? "模拟撤单" : "撤单"}
                             palette={p}
@@ -1649,7 +1684,7 @@ export function OrderList({
       <Text style={{ color: p.secondary, fontSize: 11, lineHeight: 16, paddingHorizontal: 2 }}>
         {cancelOnly
           ? "显示最近 30 天、最多 200 笔订单中的未完成委托。点开可核对撤单状态；更早的委托请在 Schwab 查看。"
-          : "点订单查看股票行情，点订单详情核对或管理委托。订单自动更新，最终状态以券商记录为准。"}
+          : footnote ?? "点订单查看股票行情，点订单详情核对或管理委托。订单自动更新，最终状态以券商记录为准。"}
       </Text>
     </View>
   );

@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { MexcController } from "./mexc/mexcController.ts";
 import { MexcDemo, DEMO_UNKNOWN_VOL } from "./mexc/mexcDemo.ts";
-import { lockUnconfirmed, orderEntryBlocked, orderStateLabel } from "./mexc/mexcView.ts";
+import { lockUnconfirmed, orderEntryBlocked, orderStateLabel, parseQuickMode, tradingLocked } from "./mexc/mexcView.ts";
+import { MexcClient } from "./MexcClient.ts";
 import type { MexcApi, MexcStatus } from "./MexcClient.ts";
 import type { MexcAccount, MexcPrepared } from "./mexcRules.ts";
 import { TradingError } from "./orderRules.ts";
@@ -35,6 +36,336 @@ function wrap(demo: MexcDemo, over: Record<string, Override> = {}) {
 const reviewOf = (demo: MexcDemo, vol = "5"): Promise<MexcPrepared> =>
   demo.review({ symbol: "QQQSTOCK_USDT", action: "OPEN_LONG", kind: "LIMIT", vol, price: "1.00", leverage: 5 });
 const ok = (status: Partial<MexcStatus> = {}): MexcStatus => ({ configured: true, authenticated: true, unresolvedOperation: false, ...status });
+
+test("a phone with no saved connection reads no account and shows no outage, until one is saved", async () => {
+  const { api, calls } = wrap(new MexcDemo(() => T0));
+  let saved: { origin: string } | null = null;
+  const c = new MexcController(new Proxy(api, {
+    get: (target, key) => (key === "configuration" ? async () => saved : Reflect.get(target, key)),
+  }));
+  await c.refresh();
+  assert.equal(c.getSnapshot().configured, false);
+  assert.equal(c.getSnapshot().offline, false);
+  assert.equal(c.getSnapshot().message, "");
+  assert.equal(calls.account, undefined);
+  saved = { origin: "https://gateway.test" };
+  await c.refresh();
+  assert.equal(c.getSnapshot().configured, true);
+  assert.equal(calls.account, 1);
+  assert.ok(c.getSnapshot().account);
+  assert.ok(c.getSnapshot().updatedAt);
+});
+
+const OPERATION = "mexc.ths.server.operation.v1", CONNECTION = "mexc.ths.server.connection.v1";
+const fakeVault = (entries: Record<string, string>) => {
+  const data = new Map(Object.entries(entries));
+  return { get: async (key: string) => data.get(key) ?? null, set: async (key: string, value: string) => { data.set(key, value); }, remove: async (key: string) => { data.delete(key); } };
+};
+const offlineClient = (entries: Record<string, string>) =>
+  new MexcClient(fakeVault(entries) as never, { fetch: (async () => { throw new Error("no network in this test"); }) as never });
+const MARKER = JSON.stringify({ method: "submit", time: 1 });
+
+test("an unknown outcome still locks and shows on a phone with no connection", async () => {
+  const c = new MexcController(offlineClient({ [OPERATION]: MARKER }));
+  await c.refresh();
+  const { status, sawUnknown, sending, configured, offline } = c.getSnapshot();
+  assert.equal(configured, false);
+  assert.equal(offline, false);
+  assert.equal(tradingLocked(status, sawUnknown), true);
+  assert.equal(lockUnconfirmed(status, sawUnknown, sending), true);
+});
+
+test("an unknown outcome still locks and shows when the saved connection cannot be read", async () => {
+  const c = new MexcController(offlineClient({ [OPERATION]: MARKER, [CONNECTION]: "{bad" }));
+  await c.refresh();
+  const { status, sawUnknown, sending } = c.getSnapshot();
+  assert.equal(tradingLocked(status, sawUnknown), true);
+  assert.equal(lockUnconfirmed(status, sawUnknown, sending), true);
+});
+
+test("forgetting the connection does not clear an unknown outcome", async () => {
+  const client = offlineClient({ [OPERATION]: MARKER });
+  const c = new MexcController(client);
+  await c.refresh();
+  await client.disconnect();
+  c.reset();
+  await c.refresh();
+  const { status, sawUnknown, sending } = c.getSnapshot();
+  assert.equal(tradingLocked(status, sawUnknown), true);
+  assert.equal(lockUnconfirmed(status, sawUnknown, sending), true);
+});
+
+test("no connection and no unknown outcome is not a lock, an outage or a message", async () => {
+  const c = new MexcController(offlineClient({}));
+  await c.refresh();
+  const { status, sawUnknown, sending, configured, offline, message } = c.getSnapshot();
+  assert.equal(configured, false);
+  assert.equal(offline, false);
+  assert.equal(message, "");
+  assert.equal(tradingLocked(status, sawUnknown), false);
+  assert.equal(lockUnconfirmed(status, sawUnknown, sending), false);
+});
+
+test("the demo has no connection to save and counts as configured", async () => {
+  const c = new MexcController(new MexcDemo(() => T0));
+  await c.refresh();
+  assert.equal(c.getSnapshot().configured, true);
+});
+
+const QUICK_DRAFT = { symbol: "QQQSTOCK_USDT", action: "OPEN_LONG", kind: "LIMIT", vol: "5", price: "1.00", leverage: 5 } as const;
+const current = () => true;
+
+test("quick mode reviews and sends once, through the same send as a confirmed order", async () => {
+  const { api, calls } = wrap(new MexcDemo());
+  const c = new MexcController(api);
+  const result = await c.quickPlace(QUICK_DRAFT, current);
+  assert.ok(result.orderID);
+  assert.equal(calls.review, 1);
+  assert.equal(calls.place, 1);
+  assert.equal(c.getSnapshot().sending, false);
+});
+
+test("two quick presses at once send one order", async () => {
+  const { api, calls } = wrap(new MexcDemo());
+  const c = new MexcController(api);
+  const [first, second] = await Promise.all([c.quickPlace(QUICK_DRAFT, current), c.quickPlace(QUICK_DRAFT, current)]);
+  assert.ok(first.orderID);
+  assert.ok(second.error);
+  assert.equal(calls.review, 1);
+  assert.equal(calls.place, 1);
+});
+
+test("quick mode stays marked as sending from the first press, so the screen cannot be left", async () => {
+  const gate = later<MexcPrepared>();
+  const demo = new MexcDemo();
+  const { api } = wrap(demo, { review: () => gate.promise });
+  const c = new MexcController(api);
+  const pending = c.quickPlace(QUICK_DRAFT, current);
+  assert.equal(c.getSnapshot().sending, true);
+  gate.resolve(await demo.review(QUICK_DRAFT));
+  await pending;
+  assert.equal(c.getSnapshot().sending, false);
+});
+
+test("quick mode sends nothing when locked or closed, and does not even ask for a review", async () => {
+  const locked = wrap(new MexcDemo(), { status: () => Promise.resolve(ok({ unresolvedOperation: true })) });
+  const a = new MexcController(locked.api);
+  await a.refresh();
+  assert.ok((await a.quickPlace(QUICK_DRAFT, current)).error);
+  assert.equal(locked.calls.review, undefined);
+  assert.equal(locked.calls.place, undefined);
+  const closed = wrap(new MexcDemo(), { status: () => Promise.resolve(ok({ tradingBlocked: "keyHasWithdraw" })) });
+  const b = new MexcController(closed.api);
+  await b.refresh();
+  assert.ok((await b.quickPlace(QUICK_DRAFT, current)).error);
+  assert.equal(closed.calls.place, undefined);
+});
+
+test("a refused quick review sends nothing and is not tried again", async () => {
+  const { api, calls } = wrap(new MexcDemo(), { review: () => Promise.reject(new TradingError("serverUnavailable", "服务器没有响应")) });
+  const c = new MexcController(api);
+  const result = await c.quickPlace(QUICK_DRAFT, current);
+  assert.equal(result.error, "服务器没有响应");
+  assert.equal(calls.review, 1);
+  assert.equal(calls.place, undefined);
+  assert.equal(c.getSnapshot().sending, false);
+  assert.equal(c.getSnapshot().message, "服务器没有响应");
+});
+
+test("a form changed while the quick review was on its way sends nothing", async () => {
+  const { api, calls } = wrap(new MexcDemo());
+  const c = new MexcController(api);
+  const result = await c.quickPlace(QUICK_DRAFT, () => false);
+  assert.ok(result.error?.includes("没有发送"));
+  assert.equal(calls.place, undefined);
+  assert.equal(c.getSnapshot().sending, false);
+});
+
+test("a lock that arrives during the quick review sends nothing", async () => {
+  const gate = later<MexcPrepared>();
+  const demo = new MexcDemo();
+  let status = ok();
+  const { api, calls } = wrap(demo, { review: () => gate.promise, status: () => Promise.resolve(status) });
+  const c = new MexcController(api);
+  await c.refresh();
+  const pending = c.quickPlace(QUICK_DRAFT, current);
+  status = ok({ unresolvedOperation: true });
+  await c.refresh();
+  gate.resolve(await demo.review(QUICK_DRAFT));
+  assert.ok((await pending).error?.includes("没有发送"));
+  assert.equal(calls.place, undefined);
+});
+
+test("a quick review too old to use sends nothing", async () => {
+  const demo = new MexcDemo();
+  const old = { ...(await demo.review(QUICK_DRAFT)), preparedAt: Date.now() - 120_000 };
+  const { api, calls } = wrap(demo, { review: () => Promise.resolve(old) });
+  const c = new MexcController(api);
+  assert.ok((await c.quickPlace(QUICK_DRAFT, current)).error?.includes("没有发送"));
+  assert.equal(calls.place, undefined);
+});
+
+test("an unknown outcome from a quick send locks trading and is not sent again", async () => {
+  const { api, calls } = wrap(new MexcDemo(), { place: () => Promise.reject(unknown()) });
+  const c = new MexcController(api);
+  const result = await c.quickPlace(QUICK_DRAFT, current);
+  assert.equal(result.unknown, true);
+  assert.equal(calls.place, 1);
+  assert.equal(c.getSnapshot().sawUnknown, true);
+  assert.ok((await c.quickPlace(QUICK_DRAFT, current)).error);
+  assert.equal(calls.place, 1);
+  assert.equal(calls.review, 1);
+});
+
+test("an unknown outcome from the quick review locks trading and sends nothing", async () => {
+  const { api, calls } = wrap(new MexcDemo(), { review: () => Promise.reject(unknown()) });
+  const c = new MexcController(api);
+  const result = await c.quickPlace(QUICK_DRAFT, current);
+  assert.equal(result.unknown, true);
+  assert.equal(calls.place, undefined);
+  assert.equal(c.getSnapshot().sawUnknown, true);
+  assert.equal(c.getSnapshot().sending, false);
+});
+
+test("order entry closing during the quick review sends nothing", async () => {
+  const gate = later<MexcPrepared>();
+  const demo = new MexcDemo();
+  let status = ok();
+  const { api, calls } = wrap(demo, { review: () => gate.promise, status: () => Promise.resolve(status) });
+  const c = new MexcController(api);
+  await c.refresh();
+  const pending = c.quickPlace(QUICK_DRAFT, current);
+  status = ok({ tradingBlocked: "keyHasWithdraw" });
+  await c.refresh();
+  gate.resolve(await demo.review(QUICK_DRAFT));
+  assert.ok((await pending).error?.includes("没有发送"));
+  assert.equal(calls.place, undefined);
+});
+
+test("a form that changes only while the quick review is away sends nothing", async () => {
+  const gate = later<MexcPrepared>();
+  const demo = new MexcDemo();
+  const { api, calls } = wrap(demo, { review: () => gate.promise });
+  const c = new MexcController(api);
+  let same = true;
+  const pending = c.quickPlace(QUICK_DRAFT, () => same);
+  same = false;
+  gate.resolve(await demo.review(QUICK_DRAFT));
+  assert.ok((await pending).error?.includes("没有发送"));
+  assert.equal(calls.place, undefined);
+});
+
+test("a failed key check still lets quick mode close and stops it opening", async () => {
+  const demo = new MexcDemo();
+  const closing = { symbol: "QQQSTOCK_USDT", action: "CLOSE_LONG", kind: "LIMIT", vol: "1", price: "700.00" } as const;
+  const { api, calls } = wrap(demo, { status: () => Promise.resolve(ok({ tradingBlocked: "keyCheckFailed" })) });
+  const c = new MexcController(api);
+  await c.refresh();
+  assert.ok((await c.quickPlace(QUICK_DRAFT, current)).error);
+  assert.equal(calls.review, undefined);
+  assert.ok((await c.quickPlace(closing, current)).orderID);
+  assert.equal(calls.place, 1);
+});
+
+test("a second press after an accepted cancel is not a second write, until the wait is over", async (t) => {
+  const demo = new MexcDemo();
+  const open = await demo.openOrders();
+  // The list keeps showing the order, as it does for a moment after a cancel and for good if it never catches up.
+  const { api, calls } = wrap(demo, { openOrders: () => Promise.resolve(open), cancelOrder: () => Promise.resolve() });
+  const c = new MexcController(api);
+  await c.refresh();
+  const id = open[0].id;
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  assert.equal(await c.cancel(id), true);
+  await c.refresh();
+  assert.equal(c.cancelSent(id), true);
+  assert.equal(await c.cancel(id), false);
+  assert.equal(calls.cancelOrder, 1);
+  t.mock.timers.tick(10_001);
+  assert.equal(c.cancelSent(id), false);
+  assert.equal(await c.cancel(id), true);
+  assert.equal(calls.cancelOrder, 2);
+});
+
+test("the list catching up ends the wait after a cancel at once", async () => {
+  const demo = new MexcDemo();
+  const open = await demo.openOrders();
+  let shown = open;
+  const { api } = wrap(demo, { openOrders: () => Promise.resolve(shown), cancelOrder: () => Promise.resolve() });
+  const c = new MexcController(api);
+  await c.refresh();
+  const id = open[0].id;
+  assert.equal(await c.cancel(id), true);
+  await c.refresh();
+  assert.equal(c.cancelSent(id), true);
+  shown = [];
+  await c.refresh();
+  assert.equal(c.cancelSent(id), false);
+});
+
+test("a cancel that failed can be pressed again", async () => {
+  let attempts = 0;
+  const { api, calls } = wrap(new MexcDemo(), {
+    cancelOrder: () => (++attempts === 1 ? Promise.reject(new TradingError("serverUnavailable", "服务器没有响应")) : Promise.resolve()),
+  });
+  const c = new MexcController(api);
+  await c.refresh();
+  const id = c.getSnapshot().openOrders[0].id;
+  assert.equal(await c.cancel(id), false);
+  assert.equal(c.cancelSent(id), false);
+  assert.equal(await c.cancel(id), true);
+  assert.equal(calls.cancelOrder, 2);
+});
+
+const CONNECTED = JSON.stringify({ origin: "https://gateway.test", deviceKey: "k".repeat(43) });
+/** The real client over a fake gateway: what the phone writes down and when, for quick mode as for a confirmed order. */
+function gatewayClient(submit: () => Response | Promise<Response>) {
+  const vault = fakeVault({ [CONNECTION]: CONNECTED });
+  const seen: { method: string; marked: boolean }[] = [];
+  const reply = (result: unknown) => new Response(JSON.stringify({ result }), { status: 200 });
+  const fetch = async (_: string, init: { body?: string }) => {
+    const { method, args } = JSON.parse(init.body ?? "{}");
+    seen.push({ method, marked: !!(await vault.get(OPERATION)) });
+    if (method === "prepare") {
+      const draft = args[1];
+      return reply({ id: "review-1", isDemo: false, draft, orderPrice: draft.price, notional: 7, leverage: draft.leverage, openType: 1, preparedAt: 1 });
+    }
+    if (method === "submit") return submit();
+    if (method === "status") return reply({ configured: true, authenticated: true, unresolvedOperation: false });
+    return new Response(JSON.stringify({ error: { code: "serverUnavailable" } }), { status: 200 });
+  };
+  return { client: new MexcClient(vault as never, { fetch: fetch as never }), vault, seen };
+}
+
+test("over the real client, quick mode marks the phone only around the send and clears it after", async () => {
+  const { client, vault, seen } = gatewayClient(() => new Response(JSON.stringify({ result: { orderID: "8000000000001" } }), { status: 200 }));
+  const c = new MexcController(client);
+  const result = await c.quickPlace(QUICK_DRAFT, current);
+  assert.equal(result.orderID, "8000000000001");
+  assert.deepEqual(seen.filter(row => row.method === "prepare" || row.method === "submit"), [
+    { method: "prepare", marked: false },
+    { method: "submit", marked: true },
+  ]);
+  assert.equal(await vault.get(OPERATION), null);
+});
+
+test("over the real client, a lost reply to a quick send keeps the mark, locks trading and is not sent again", async () => {
+  const { client, vault, seen } = gatewayClient(() => { throw new Error("connection lost"); });
+  const c = new MexcController(client);
+  const result = await c.quickPlace(QUICK_DRAFT, current);
+  assert.equal(result.unknown, true);
+  assert.ok(await vault.get(OPERATION));
+  assert.equal(seen.filter(row => row.method === "submit").length, 1);
+  assert.equal(c.getSnapshot().sawUnknown, true);
+  assert.ok((await c.quickPlace(QUICK_DRAFT, current)).error);
+  assert.equal(seen.filter(row => row.method === "submit").length, 1);
+  assert.equal(seen.filter(row => row.method === "prepare").length, 1);
+});
+
+test("quick mode is off unless it was plainly turned on", () => {
+  assert.equal(parseQuickMode("true"), true);
+  for (const raw of ["false", "1", "TRUE", "", null, undefined]) assert.equal(parseQuickMode(raw), false);
+});
 
 test("two simultaneous places send once, and a failed place is not sent again", async () => {
   const demo = new MexcDemo(() => T0);

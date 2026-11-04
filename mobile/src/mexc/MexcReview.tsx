@@ -118,7 +118,7 @@ export default function MexcReview({ m, palette: p, prepared, limits, embedded =
               <View style={{ flex: 2 }}>
                 {expired || failure
                   ? <Button label="重新核对" palette={p} variant="filled" disabled={sending || m.locked || entryBlocked} onPress={onRecheck} />
-                  : <Button label={sending ? "发送中…" : "确认下单"} palette={p} variant="filled" color={tradeColor} disabled={disabled} onPress={() => void confirm()} />}
+                  : <Button label={sending ? "发送中…" : `确认${mexcActionLabels[draft.action]}`} palette={p} variant="filled" color={tradeColor} disabled={disabled} onPress={() => void confirm()} />}
               </View>
             )}
           </View>

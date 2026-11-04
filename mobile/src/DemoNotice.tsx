@@ -5,9 +5,11 @@ import { Icon } from "./Icon.tsx";
 export function DemoNotice({
   palette: p,
   card = false,
+  text = "演示模式 · 所有交易均为模拟",
 }: {
   palette: Palette;
   card?: boolean;
+  text?: string;
 }) {
   return (
     <View
@@ -22,8 +24,8 @@ export function DemoNotice({
       }}
     >
       <Icon name="sparkles" size={16} color="#FF8A16" />
-      <Text style={{ color: "#FF8A16", fontSize: 12, fontWeight: "600" }}>
-        演示模式 · 所有交易均为模拟
+      <Text style={{ color: "#FF8A16", fontSize: 12, fontWeight: "600", flexShrink: 1 }}>
+        {text}
       </Text>
     </View>
   );

@@ -36,5 +36,24 @@ export function placeLineLabels(wanted: readonly number[], top: number, bottom: 
   return placed.map(value => Math.max(top, value));
 }
 
+/** Height of the live price tag on the axis with its countdown under the price, the tallest it gets. */
+export const LIVE_TAG_HEIGHT = 25;
+export const AXIS_TAG_HEIGHT = 14;
+
+/**
+ * Top of the crosshair's price on the axis. It sits level with its line, and moves to whichever side of the
+ * live price tag is nearer and has room when the two prices are too close for both to be read.
+ */
+export function crosshairTagTop(y: number, liveY: number | undefined, top: number, bottom: number): number {
+  const fit = (value: number, height: number) => Math.min(Math.max(value, top), Math.max(top, bottom - height));
+  const level = fit(y - AXIS_TAG_HEIGHT / 2, AXIS_TAG_HEIGHT);
+  if (liveY === undefined) return level;
+  const liveTop = fit(liveY - LIVE_TAG_HEIGHT / 2, LIVE_TAG_HEIGHT), liveBottom = liveTop + LIVE_TAG_HEIGHT;
+  if (level + AXIS_TAG_HEIGHT <= liveTop || level >= liveBottom) return level;
+  const above = liveTop - AXIS_TAG_HEIGHT, fitsAbove = above >= top, fitsBelow = liveBottom + AXIS_TAG_HEIGHT <= bottom;
+  if (fitsAbove && (y <= liveY || !fitsBelow)) return above;
+  return fitsBelow ? liveBottom : level;
+}
+
 /** Rough width of a label at font size 11: wide enough for the background, with no text measuring on a chart redraw. */
 export const lineLabelWidth = (text: string) => [...text].reduce((sum, char) => sum + (char.charCodeAt(0) > 255 ? 11 : 6.4), 10);

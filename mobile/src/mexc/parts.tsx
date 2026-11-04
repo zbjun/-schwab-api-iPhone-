@@ -1,9 +1,23 @@
 import React, { useEffect, useRef } from "react";
-import { PanResponder, Pressable, Text, View, type StyleProp, type TextStyle } from "react-native";
+import { PanResponder, Platform, Pressable, Text, View, type StyleProp, type TextStyle } from "react-native";
 import { tick } from "../haptics.ts";
 import type { Palette } from "../types.ts";
 import { Glass, Icon, Stepper, elevated, radius, signed, styles } from "../ui.tsx";
 import { signedPercent } from "./mexcView.ts";
+
+/** Above the send button in quick mode: whether this press sends at once, or this one order still gets its review. */
+export function QuickNote({ palette: p, quick }: { palette: Palette; quick: boolean }) {
+  return (
+    <Text style={{ color: quick ? p.accent : p.secondary, fontSize: 12, fontWeight: quick ? "600" : "400", textAlign: "center" }}>
+      {quick ? "快速模式：点一下就发送，没有核对页" : "这笔要先核对：带止盈止损、限价离最新价超过 5%，或还没读到最新价"}
+    </Text>
+  );
+}
+
+/** Around the send button: sees every touch, even on a disabled button, so tapping on does not count as a fresh press. */
+export function QuickPressArea({ onTouch, children }: { onTouch: () => void; children: React.ReactNode }) {
+  return <View onTouchStart={onTouch} {...(Platform.OS === "web" ? { onMouseDown: onTouch } : {})}>{children}</View>;
+}
 
 /** One label and value line, as in the Schwab order review (`SummaryRow`). */
 export function Line({ label, value, palette: p, color, strong }: {
@@ -41,11 +55,11 @@ export function StopEstimates({ palette: p, takeProfit, stopLoss, margin }: {
 }
 
 /** Same mark as the Schwab header for a simulated account. */
-export function DemoBadge(_: { palette: Palette }) {
+export function DemoBadge({ label = "模拟" }: { palette: Palette; label?: string }) {
   return (
     <Text style={{ color: "#ff8a19", fontSize: 11, fontWeight: "600", borderWidth: 1, borderColor: "#ff8a1966",
       borderRadius: radius.control, paddingHorizontal: 6, paddingVertical: 2 }}>
-      模拟
+      {label}
     </Text>
   );
 }
@@ -105,8 +119,10 @@ const THUMB = 18;
  * Drag or tap to choose how much of the available size to use. `value` comes from the order size,
  * so the thumb always shows what would really be sent, including rounding to whole contracts.
  */
-export function PositionSlider({ value, onChange, onDragStart, onDragEnd, palette: p, color, disabled = false }: {
+export function PositionSlider({ value, onChange, onDragStart, onDragEnd, palette: p, color, disabled = false, tapToSet = true }: {
   value: number; onChange: (fraction: number) => void; palette: Palette; color: string; disabled?: boolean;
+  /** Off where a press sends the order at once, so only a real drag can change the size. */
+  tapToSet?: boolean;
   onDragStart?: () => void;
   /** `cancelled` when something else took the gesture over, and the size should go back to what it was. */
   onDragEnd?: (cancelled: boolean) => void;
@@ -114,8 +130,8 @@ export function PositionSlider({ value, onChange, onDragStart, onDragEnd, palett
   const width = useRef(0), origin = useRef(0);
   // A press alone changes nothing: sideways is a drag, up or down is a scroll passing over, and a tap counts on release.
   const gesture = useRef<"pressed" | "drag" | "scroll">("pressed");
-  const latest = useRef({ onChange, onDragStart, onDragEnd, disabled });
-  latest.current = { onChange, onDragStart, onDragEnd, disabled };
+  const latest = useRef({ onChange, onDragStart, onDragEnd, disabled, tapToSet });
+  latest.current = { onChange, onDragStart, onDragEnd, disabled, tapToSet };
   const responder = useRef((() => {
     const pick = (x: number) => {
       const span = width.current - THUMB;
@@ -138,7 +154,7 @@ export function PositionSlider({ value, onChange, onDragStart, onDragEnd, palett
       },
       onPanResponderRelease: () => {
         if (gesture.current === "drag") latest.current.onDragEnd?.(false);
-        else if (gesture.current === "pressed") { pick(origin.current); tick(); }
+        else if (gesture.current === "pressed" && latest.current.tapToSet) { pick(origin.current); tick(); }
         gesture.current = "pressed";
       },
       onPanResponderTerminate: () => {

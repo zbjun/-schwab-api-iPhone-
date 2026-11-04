@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { barMilliseconds, candleCountdown, chartHeightFor, priceAxisWidth } from "./chartCountdown.ts";
-import { lineLabelWidth, placeLineLabels } from "./chartLines.ts";
+import { AXIS_TAG_HEIGHT, crosshairTagTop, LIVE_TAG_HEIGHT, lineLabelWidth, placeLineLabels } from "./chartLines.ts";
 
 const start = 1_700_000_000_000;
 
@@ -71,6 +71,33 @@ test("line labels stay on the plot and never cover each other", () => {
   assert.deepEqual(placeLineLabels([500, 400], 0, 100, 17), [83, 66]);
   // More than fit: they share the top edge rather than leave the plot.
   for (const top of placeLineLabels([0, 0, 0, 0], 0, 34, 17)) assert.ok(top >= 0 && top <= 17);
+});
+
+test("the crosshair's price sits level with its line and never covers the live price", () => {
+  const top = 0, bottom = 400;
+  const covers = (crosshair: number, liveY: number) => {
+    const liveTop = Math.min(Math.max(liveY - LIVE_TAG_HEIGHT / 2, top), bottom - LIVE_TAG_HEIGHT);
+    return crosshair < liveTop + LIVE_TAG_HEIGHT && crosshair + AXIS_TAG_HEIGHT > liveTop;
+  };
+  // Far apart, or no live price: level with the line.
+  assert.equal(crosshairTagTop(100, 300, top, bottom), 93);
+  assert.equal(crosshairTagTop(100, undefined, top, bottom), 93);
+  // Off either end of the plot: held inside it.
+  assert.equal(crosshairTagTop(-50, 300, top, bottom), 0);
+  assert.equal(crosshairTagTop(500, 100, top, bottom), 386);
+  // Close together: to the side of the live tag it was already on.
+  assert.equal(crosshairTagTop(195, 200, top, bottom), 173.5);
+  assert.equal(crosshairTagTop(205, 200, top, bottom), 212.5);
+  // No room on that side: the other one.
+  assert.equal(crosshairTagTop(2, 5, top, bottom), 25);
+  assert.equal(crosshairTagTop(398, 395, top, bottom), 361);
+  for (let liveY = 0; liveY <= 400; liveY += 7) {
+    for (let y = 0; y <= 400; y += 3) {
+      const placed = crosshairTagTop(y, liveY, top, bottom);
+      assert.equal(covers(placed, liveY), false, `${y} beside ${liveY}`);
+      assert.ok(placed >= top && placed + AXIS_TAG_HEIGHT <= bottom);
+    }
+  }
 });
 
 test("line label width leaves room for its text", () => {

@@ -35,7 +35,7 @@ import type {
   TradeExecution,
 } from "./types";
 import { tradeMarkers } from "./tradeMarkers.ts";
-import { lineLabelWidth, lineProfitText, placeLineLabels, type ChartPriceLine } from "./chartLines.ts";
+import { AXIS_TAG_HEIGHT, crosshairTagTop, lineLabelWidth, lineProfitText, LIVE_TAG_HEIGHT, placeLineLabels, type ChartPriceLine } from "./chartLines.ts";
 import {
   candlePriceDomain,
   chartSessionWindow,
@@ -204,7 +204,7 @@ function LastPriceTag({
     const timer = setInterval(tick, 1000);
     return () => clearInterval(timer);
   }, [candleTime, range]);
-  const tagHeight = countdown ? 25 : 14;
+  const tagHeight = countdown ? LIVE_TAG_HEIGHT : AXIS_TAG_HEIGHT;
   return (
     <View
       pointerEvents="none"
@@ -762,10 +762,10 @@ function MarketChart({
     onSelectionChange?.(selected ? active : undefined);
   }, [selected, active, onSelectionChange]);
   useEffect(() => () => onSelectionChange?.(undefined), [onSelectionChange]);
-  // Last-price label: hidden while the crosshair is active so it never covers
-  // the crosshair readout.
+  // Last-price label: stays while the crosshair is active, so the axis shows
+  // the selected price and the current one together.
   const lastCandle = candles.at(-1);
-  const tagCandle = !compact && !selected && width > 0 ? lastCandle : undefined;
+  const tagCandle = !compact && width > 0 ? lastCandle : undefined;
   const tagY = tagCandle
     ? clamp(y(tagCandle.close), plotTop, Math.max(plotTop, priceBottom))
     : 0;
@@ -1342,6 +1342,32 @@ function MarketChart({
             left={plotRight}
             width={Math.max(1, width - plotRight)}
           />
+        )}
+        {!compact && selected && active && width > 0 && (
+          <View
+            pointerEvents="none"
+            testID="chart.crosshairPrice"
+            style={{
+              position: "absolute",
+              left: plotRight,
+              width: Math.max(1, width - plotRight),
+              top: crosshairTagTop(y(active.close), tagCandle ? tagY : undefined, plotTop, priceBottom),
+              height: AXIS_TAG_HEIGHT,
+              borderRadius: 3,
+              backgroundColor: palette.text,
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <Text
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.7}
+              style={{ color: palette.background, fontSize: 9, fontWeight: "600", fontVariant: ["tabular-nums"] }}
+            >
+              {price(active.close)}
+            </Text>
+          </View>
         )}
         {!compact && candles.length > 0 && width > 0 && (
           <View

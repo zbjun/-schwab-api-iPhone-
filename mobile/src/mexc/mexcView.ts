@@ -95,11 +95,13 @@ export function draftIssueOf(draft: MexcDraft, closable: string): string {
 export interface TicketGates {
   locked: boolean; entryBlocked: boolean; draftIssue: string; reviewing: boolean; hasContract: boolean;
   limitsMissing: boolean; leverageEmpty: boolean; sending: boolean;
+  /** Quick mode only: the form has only just appeared, so this press was meant for whatever was here before. */
+  notArmed?: boolean;
 }
 /** Whether the form's review button is off. Any one of these is enough, and the server still decides afterwards. */
 export const ticketBlocked = (gates: TicketGates) =>
   gates.locked || gates.entryBlocked || !!gates.draftIssue || gates.reviewing || !gates.hasContract ||
-  gates.limitsMissing || gates.leverageEmpty || gates.sending;
+  gates.limitsMissing || gates.leverageEmpty || gates.sending || gates.notArmed === true;
 
 const bestQuote = (buying: boolean, ticker: MexcTicker | undefined): number | undefined => {
   const best = buying ? ticker?.ask1 : ticker?.bid1;
@@ -259,7 +261,74 @@ export function blockMessage(blocked: string | undefined): string | undefined {
   return MEXC_MESSAGES[blocked] ?? "交易已被服务器关闭。";
 }
 
-export const LOCK_BANNER = "有一笔操作结果未确认，交易已锁定，请先在 MEXC 核实";
+export const FAVORITE_COLOR = "#F5B400";
+
+export const QUICK_MODE_KEY = "ths.expo.mexc.quickMode.v1";
+/** Off unless it was plainly turned on: anything unreadable keeps the review. */
+export const parseQuickMode = (raw: string | null | undefined) => raw === "true";
+/** How far a limit price may sit from the last trade before quick mode asks for the review after all. */
+export const QUICK_PRICE_BAND = 0.05;
+/**
+ * Whether one press may send this form. Quick mode has no review page to catch a slip, so what a person would most
+ * want to look at still goes to the review: take-profit and stop-loss, and a limit price far from the market, such as
+ * one typed halfway. With no quote to compare against, a limit price cannot be judged, so it gets the review too.
+ */
+export function quickSendAllowed(kind: MexcKind, price: string, lastPrice: number | undefined, carriesStops: boolean): boolean {
+  if (carriesStops) return false;
+  if (kind !== "LIMIT") return true;
+  const value = Number(price);
+  if (!Number.isFinite(value) || value <= 0 || lastPrice === undefined || !Number.isFinite(lastPrice) || lastPrice <= 0) return false;
+  return Math.abs(value - lastPrice) <= lastPrice * QUICK_PRICE_BAND;
+}
+/**
+ * Whether a press on the button that sends at once was meant for it. A press counts only after the form has been on
+ * screen for a moment and the finger has been still for a moment, so tapping on at any pace, on a button that has
+ * just opened this form or was just pressed, sends nothing. A press with no touch before it, from an assistive
+ * tool, only waits for the form.
+ */
+export function createQuickGate(now: () => number = Date.now) {
+  let shownAt = now(), lastTouch = 0, quiet = true;
+  return {
+    shown() { shownAt = now(); quiet = true; },
+    touched() {
+      const at = now();
+      quiet = confirmArmed(Math.max(shownAt, lastTouch), at);
+      lastTouch = at;
+    },
+    /** For drawing the button. */
+    armed: () => confirmArmed(shownAt, now()),
+    mayPress: () => quiet && confirmArmed(shownAt, now()),
+  };
+}
+/** After an order that went out, or might have, the size goes, so a later press cannot repeat it. */
+export const quickSendClearsSize = (sent: { orderID?: string; unknown?: boolean }) => !!sent.orderID || !!sent.unknown;
+
+/**
+ * The notice on a page showing both venues. When only one is simulated it says which, so a real account never
+ * reads as practice.
+ */
+export function demoNotice(schwabDemo: boolean, mexcDemo: boolean, mexcShown: boolean): string | undefined {
+  if (schwabDemo && mexcShown && !mexcDemo) return "Schwab 是演示账户，股票交易是模拟的；MEXC 合约是真实账户。";
+  if (!schwabDemo && mexcShown && mexcDemo) return "MEXC 是演示账户，合约交易是模拟的；Schwab 股票是真实账户。";
+  return schwabDemo || (mexcShown && mexcDemo) ? "演示模式 · 所有交易均为模拟" : undefined;
+}
+/** For a page showing one venue, which says so: "all trades" would also take in a real account on the other. */
+export const venueDemoNotice = (venue: Venue) => (venue === "mexc" ? "MEXC 演示 · 合约交易均为模拟" : "Schwab 演示 · 股票交易均为模拟");
+/** The same rule for the mark beside a page title. */
+export function demoBadge(schwabDemo: boolean, mexcDemo: boolean, mexcShown: boolean): string | undefined {
+  if (schwabDemo && mexcShown && !mexcDemo) return "Schwab 模拟";
+  if (!schwabDemo && mexcShown && mexcDemo) return "MEXC 模拟";
+  return schwabDemo || (mexcShown && mexcDemo) ? "模拟" : undefined;
+}
+
+/** "SOXL_USDT PERPETUAL" reads as "SOXL 永续" beside stock names. */
+export function contractTitle(contract: Pick<MexcContract, "displayName" | "symbol">): string {
+  return `${(contract.displayName || contract.symbol).split(/[_\s]/)[0]} 永续`;
+}
+/** "SOXL_USDT" reads as "SOXL" where the row already says it is a contract. */
+export const contractShort = (symbol: string) => symbol.replace(/_USDT$/, "");
+
+export const LOCK_BANNER = "有一笔 MEXC 操作结果未确认，MEXC 交易已锁定，请先在 MEXC 核实";
 export const STOCK_NOTE = "美股类合约为永续合约，不是股票本身。";
 
 export function percent(value: number | undefined, digits = 2): string {
@@ -315,6 +384,36 @@ export function positionPriceLines(
 export const chartFillWindow = (now: number) => ({ from: now - 90 * 86_400_000, to: now });
 export const CLOSED_ORDER_DAYS = 7;
 export const closedOrderWindow = (now: number) => ({ from: now - CLOSED_ORDER_DAYS * 86_400_000, to: now });
+
+export const RECENT_CONTRACTS_KEY = "ths.expo.mexc.recentContracts.v1";
+export interface RecentContract { symbol: string; at: number }
+/** Anything unreadable counts as none; only well-formed entries survive. */
+export function parseRecentContracts(raw: string | null | undefined): RecentContract[] {
+  if (!raw) return [];
+  try {
+    const list: unknown = JSON.parse(raw);
+    return Array.isArray(list)
+      ? list.filter((row): row is RecentContract => validMexcSymbol(row?.symbol) && Number.isFinite(row?.at))
+      : [];
+  } catch { return []; }
+}
+/** Contracts seen held or working, kept for as long as their closed orders can still be listed. Newest first. */
+export function noteRecentContracts(previous: readonly RecentContract[], symbols: readonly string[], now: number): RecentContract[] {
+  const seen = new Set(symbols);
+  const oldest = closedOrderWindow(now).from;
+  return [...[...seen].map(symbol => ({ symbol, at: now })), ...previous.filter(row => !seen.has(row.symbol) && row.at >= oldest)];
+}
+export const CLOSED_SYMBOL_LIMIT = 20;
+/**
+ * The gateway lists closed orders one contract at a time, so these are the contracts worth asking about: what is
+ * held or working, then what was recently, then favourites. An order on anything else does not appear in the list.
+ */
+export function closedOrderSymbols(current: readonly string[], recent: readonly RecentContract[], favorites: readonly string[]): string[] {
+  return [...new Set([...current, ...recent.map(row => row.symbol), ...favorites])].slice(0, CLOSED_SYMBOL_LIMIT);
+}
+/** Which order filter a MEXC order falls under, using the same names as the Schwab list. */
+export const orderGroup = (order: Pick<MexcOrder, "state">): "待成交" | "已成交" | "已结束" =>
+  order.state === 3 ? "已成交" : order.state === 4 || order.state === 5 ? "已结束" : "待成交";
 /** The tickers endpoint takes at most 100 symbols per call. */
 export const TICKER_BATCH = 100;
 export function batches<T>(list: readonly T[], size = TICKER_BATCH): T[][] {

@@ -1,9 +1,10 @@
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
   mergeLiveCandles, batches, blockMessage, clampLeverage, closableOf, closedOrderWindow, closeActionFor, confirmArmed, draftIssueOf, leverageChoice, marginOf,
   notionalOf, parseVenue, reviewExpired, reviewRemainingSeconds, snapToTick, sortContracts, stepDecimal, tradingLocked,
-  MAX_FAVORITES, candleMove, chartFillWindow, closeEstimate, expectedFill, marginFor, pipCandles, priceDecimals, favoriteContracts, fractionOfCapacity, mexcExecutions, openCapacity, positionPriceLines, parseFavorites, stopDraftKey, stopEstimate, stopSideIssue, stopsDropped, ticketBlocked, toggleFavorite, valuationPrice, volForFraction,
+  CONFIRM_ARM_DELAY, MAX_FAVORITES, candleMove, createQuickGate, quickSendAllowed, quickSendClearsSize, chartFillWindow, closeEstimate, expectedFill, marginFor, pipCandles, priceDecimals, favoriteContracts, fractionOfCapacity, mexcExecutions, openCapacity, positionPriceLines, parseFavorites, stopDraftKey, stopEstimate, stopSideIssue, stopsDropped, ticketBlocked, toggleFavorite, valuationPrice, volForFraction,
 } from "./mexc/mexcView.ts";
 import { lineProfitText } from "./chartLines.ts";
 import { planMexcOrder, validateMexcDraft } from "./mexcRules.ts";
@@ -238,8 +239,84 @@ test("every gate alone turns the review button off", () => {
     locked: false, entryBlocked: false, draftIssue: "", reviewing: false, hasContract: true, limitsMissing: false, leverageEmpty: false, sending: false,
   };
   assert.equal(ticketBlocked(open), false);
-  for (const change of [{ locked: true }, { entryBlocked: true }, { draftIssue: "x" }, { reviewing: true }, { hasContract: false }, { limitsMissing: true }, { leverageEmpty: true }, { sending: true }])
+  for (const change of [{ locked: true }, { entryBlocked: true }, { draftIssue: "x" }, { reviewing: true }, { hasContract: false }, { limitsMissing: true }, { leverageEmpty: true }, { sending: true }, { notArmed: true }])
     assert.equal(ticketBlocked({ ...open, ...change }), true, JSON.stringify(change));
+});
+
+test("one press only sends what a person would not want to look at first", () => {
+  // Market orders have their protection price on the server; a limit near the market is what was meant.
+  assert.equal(quickSendAllowed("MARKET", "", undefined, false), true);
+  assert.equal(quickSendAllowed("LIMIT", "100", 100, false), true);
+  assert.equal(quickSendAllowed("LIMIT", "105", 100, false), true);
+  assert.equal(quickSendAllowed("LIMIT", "95", 100, false), true);
+  // A price typed halfway, or too far off to be sure of.
+  assert.equal(quickSendAllowed("LIMIT", "1", 123.45, false), false);
+  assert.equal(quickSendAllowed("LIMIT", "106", 100, false), false);
+  assert.equal(quickSendAllowed("LIMIT", "94", 100, false), false);
+  // Nothing to compare against, or nothing typed.
+  assert.equal(quickSendAllowed("LIMIT", "100", undefined, false), false);
+  assert.equal(quickSendAllowed("LIMIT", "100", 0, false), false);
+  assert.equal(quickSendAllowed("LIMIT", "", 100, false), false);
+  // Take-profit and stop-loss always get the review.
+  assert.equal(quickSendAllowed("MARKET", "", 100, true), false);
+  assert.equal(quickSendAllowed("LIMIT", "100", 100, true), false);
+});
+
+test("a press on the quick button only counts after the form has settled and the finger has been still", () => {
+  let now = 1_000_000;
+  const gate = createQuickGate(() => now);
+  const tap = (after: number) => { now += after; gate.touched(); return gate.mayPress(); };
+  // A double tap: the first opened this form, the second lands on the button.
+  assert.equal(tap(150), false);
+  // Tapping on past the delay, each tap soon after the last, on any pace faster than the delay.
+  assert.equal(tap(600), false);
+  assert.equal(tap(600), false);
+  assert.equal(tap(CONFIRM_ARM_DELAY - 1), false);
+  // A pause, then one press.
+  assert.equal(tap(CONFIRM_ARM_DELAY), true);
+  // Straight after a press that counted, the next does not.
+  assert.equal(tap(100), false);
+  // The form coming back from a review, or changing side, starts over.
+  now += 5_000;
+  gate.touched();
+  gate.shown();
+  assert.equal(gate.armed(), false);
+  assert.equal(tap(100), false);
+  assert.equal(tap(CONFIRM_ARM_DELAY), true);
+  // A press with no touch before it, from an assistive tool, only waits for the form.
+  const quiet = createQuickGate(() => now);
+  assert.equal(quiet.mayPress(), false);
+  now += CONFIRM_ARM_DELAY;
+  assert.equal(quiet.armed(), true);
+  assert.equal(quiet.mayPress(), true);
+  // A clock that moved back keeps it off.
+  now -= 60_000;
+  assert.equal(quiet.mayPress(), false);
+});
+
+test("the order forms ask the gate, and a review stays a review", () => {
+  const read = (file: string) => readFileSync(new URL(`./mexc/${file}`, import.meta.url), "utf8");
+  const ticket = read("useOrderTicket.ts");
+  assert.match(ticket, /notArmed: quick && !gate\.armed\(\)/);
+  assert.match(ticket, /if \(direct && !gate\.mayPress\(\)\) return;/);
+  assert.match(ticket, /if \(submitting\.current \|\| submitDisabled\) return;/);
+  assert.match(ticket, /if \(quickSendClearsSize\(sent\)\) setVol\(""\);/);
+  assert.match(ticket, /void submit\(true\);/);
+  assert.match(ticket, /\[gate, symbol, action, m\.quickMode, !!prepared\]/);
+  for (const form of ["MexcTrade.tsx", "MexcOrderPanel.tsx"]) {
+    const source = read(form);
+    assert.match(source, /<QuickPressArea onTouch=\{t\.noteTouch\}>/, form);
+    assert.match(source, /label=\{t\.submitLabel\}/, form);
+    assert.match(source, /tapToSet=\{!m\.quickMode\}/, form);
+    assert.match(source, /onBack=\{t\.backFromReview\}/, form);
+  }
+});
+
+test("an order that went out, or might have, leaves no size for a later press to repeat", () => {
+  assert.equal(quickSendClearsSize({ orderID: "1" }), true);
+  assert.equal(quickSendClearsSize({ unknown: true, error: "结果未确认" } as { unknown: boolean }), true);
+  // Refused: nothing went out, so the form stays as it was for a corrected try.
+  assert.equal(quickSendClearsSize({}), false);
 });
 
 test("a form with a problem says so", () => {

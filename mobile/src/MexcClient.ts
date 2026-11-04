@@ -17,6 +17,8 @@ export type MexcStatus = SessionStatus & {
 /** Everything the MEXC screens need. The real client and the demo both implement it. */
 export interface MexcApi {
   readonly isDemo: boolean;
+  /** The saved connection, or null when this phone has none. The demo has no such thing. */
+  configuration?(): Promise<{ origin: string } | null>;
   status(): Promise<MexcStatus>;
   account(): Promise<MexcAccount>;
   contracts(): Promise<MexcContract[]>;

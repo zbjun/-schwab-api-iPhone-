@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Modal,
   PanResponder,
@@ -8,9 +8,27 @@ import {
   Text,
   View,
 } from "react-native";
-import type { History, Palette, Quote } from "./types.ts";
+import type { History, HistoryRange, Palette } from "./types.ts";
 import type { TradingState } from "./useTrading.ts";
-import { Button, elevated, Icon, Input, money, signed, styles } from "./ui.tsx";
+import { Button, Chip, elevated, Icon, Input, money, signed, styles } from "./ui.tsx";
+import type { MexcContract, MexcTicker } from "./mexcRules.ts";
+import type { MexcState } from "./mexc/useMexc.ts";
+import { useTickers } from "./mexc/useMexc.ts";
+import { contractTitle, demoNotice, FAVORITE_COLOR, priceText, signedPercent } from "./mexc/mexcView.ts";
+import {
+  allContractItems,
+  contractChange,
+  contractsAvailable,
+  createLimiter,
+  filterItems,
+  heldContracts,
+  itemCounts,
+  itemKey,
+  searchContracts,
+  trendOf,
+  watchlistItems,
+  type WatchFilter,
+} from "./watchlistItems.ts";
 import { DemoNotice } from "./DemoNotice.tsx";
 import { PageRefreshControl } from "./PageRefreshControl.tsx";
 import { validSymbol } from "./orderRules.ts";
@@ -21,6 +39,12 @@ import {
   OVERNIGHT_CHECKED_ON,
   OVERNIGHT_HOLDINGS_AS_OF,
 } from "./overnightEligibility.ts";
+
+const PAGE = 30;
+const STAR_WIDTH = 26;
+
+// The gateway's IP also places orders, so a chart for every contract must not arrive all at once. Read once per view.
+const contractCharts = createLimiter(4);
 
 export default function Watchlist({
   state: s,
@@ -33,7 +57,15 @@ export default function Watchlist({
   charts,
   setCharts,
   onCloseAdd,
+  m,
+  favorites,
+  onToggleFavorite,
+  onContract,
 }: {
+  m: MexcState;
+  favorites: string[];
+  onToggleFavorite: (symbol: string) => void;
+  onContract: (symbol: string) => void;
   state: TradingState;
   palette: Palette;
   onStock: (symbol: string) => void;
@@ -47,7 +79,34 @@ export default function Watchlist({
 }) {
   const [newSymbol, setNewSymbol] = useState("");
   const [showLegend, setShowLegend] = useState(false);
+  const [filter, setFilter] = useState<WatchFilter>("all");
+  const [shown, setShown] = useState(PAGE);
   const blockedUntil = useRef(0);
+  const hasContracts = contractsAvailable(m.configured);
+  const demo = demoNotice(s.isDemo, m.isDemo, hasContracts || m.unconfirmed);
+  const items = useMemo(
+    () => watchlistItems(s.watchlist, favorites, m.contracts, m.configured),
+    [s.watchlist, favorites, m.contracts, m.configured],
+  );
+  const counts = itemCounts(items);
+  const activeFilter: WatchFilter = hasContracts ? filter : "all";
+  const everything = useMemo(() => allContractItems(m.contracts, m.configured), [m.contracts, m.configured]);
+  const listed = activeFilter === "allContracts" ? [] : filterItems(items, activeFilter);
+  const allVisible = everything.slice(0, shown);
+  const found = useMemo(() => searchContracts(m.contracts, search, m.configured), [m.contracts, search, m.configured]);
+  const held = useMemo(() => heldContracts(m.account?.positions), [m.account]);
+  // Quotes are requested only for the contract rows on screen.
+  const symbols = useMemo(() => {
+    const list = [
+      ...found.map((c) => c.symbol),
+      ...(activeFilter === "allContracts"
+        ? allVisible.map((c) => c.symbol)
+        : listed.flatMap((item) => (item.kind === "contract" ? [item.contract.symbol] : []))),
+    ];
+    return [...new Set(list)];
+  }, [found, activeFilter, allVisible, listed]);
+  const tickers = useTickers(m, symbols);
+  useEffect(() => setShown(PAGE), [activeFilter]);
   const pan = useRef(
     PanResponder.create({
       onMoveShouldSetPanResponder: (_, g) =>
@@ -87,6 +146,36 @@ export default function Watchlist({
     setNewSymbol("");
     onCloseAdd();
   }
+  function contractRow(c: MexcContract, star: boolean) {
+    const t: MexcTicker | undefined = tickers[c.symbol];
+    const change = contractChange(t);
+    const favorite = favorites.includes(c.symbol);
+    return (
+      <Row
+        key={`${star ? "star" : "list"}-${itemKey({ kind: "contract", contract: c })}`}
+        palette={p}
+        id={c.symbol}
+        title={contractTitle(c)}
+        code={c.symbol}
+        badge="合约"
+        held={held.has(c.symbol)}
+        trend={trendOf(t?.riseFallRate)}
+        last={priceText(t?.lastPrice, c.priceUnit)}
+        percent={signedPercent(t?.riseFallRate)}
+        change={change === undefined ? "—" : `${change > 0 ? "+" : change < 0 ? "-" : ""}${priceText(Math.abs(change), c.priceUnit)}`}
+        charts={charts}
+        range="intraday"
+        load={(wanted) => contractCharts(() => (wanted() ? m.api.chart(c.symbol, "intraday") : Promise.reject(new Error("no longer on screen"))))}
+        reload={0}
+        editing={editing && !star}
+        onRemove={() => onToggleFavorite(c.symbol)}
+        star={star ? { on: favorite, onPress: () => onToggleFavorite(c.symbol) } : undefined}
+        onPress={() => {
+          if (Date.now() > blockedUntil.current) onContract(c.symbol);
+        }}
+      />
+    );
+  }
   return (
     <View style={{ flex: 1 }}>
       <ScrollView
@@ -113,7 +202,7 @@ export default function Watchlist({
             <Input
               palette={p}
               accessibilityLabel="添加自选代码"
-              placeholder="输入股票 / ETF 代码"
+              placeholder={hasContracts ? "股票或合约，例如 QQQ" : "输入股票 / ETF 代码"}
               value={search}
               autoCapitalize="characters"
               onChangeText={setSearch}
@@ -133,13 +222,27 @@ export default function Watchlist({
               onPress={lookup}
             />
           </View>
+          {hasContracts && (
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, paddingTop: 10 }}>
+              {(
+                [
+                  ["all", `全部 ${counts.all}`],
+                  ["stock", `股票 ${counts.stock}`],
+                  ["contract", `合约 ${counts.contract}`],
+                  ["allContracts", "所有合约"],
+                ] as [WatchFilter, string][]
+              ).map(([id, label]) => (
+                <Chip key={id} label={label} palette={p} active={activeFilter === id} onPress={() => setFilter(id)} />
+              ))}
+            </View>
+          )}
           <View style={[styles.spread, { paddingTop: 10, paddingBottom: 8 }]}>
             <View style={[styles.row, { gap: 8 }]}>
               <Text style={{ color: p.text, fontSize: 15, fontWeight: "700" }}>
                 自选股
               </Text>
               <Text style={{ color: p.secondary, fontSize: 14 }}>
-                {s.watchlist.length}
+                {counts.all}
               </Text>
             </View>
             <View style={{ flexDirection: "row", gap: 3 }}>
@@ -169,8 +272,8 @@ export default function Watchlist({
               ))}
             </View>
           </View>
-          {s.isDemo ? (
-            <DemoNotice palette={p} />
+          {demo ? (
+            <DemoNotice palette={p} text={demo} />
           ) : (
             <Text
               style={{ color: p.secondary, fontSize: 12, paddingVertical: 10 }}
@@ -191,88 +294,81 @@ export default function Watchlist({
             <Icon name="info" color={p.secondary} size={13} />
           </Pressable>
         </View>
-        <View style={{ backgroundColor: p.surface, borderRadius: 10, paddingHorizontal: 12 }}>
-          <View
-            style={{
-              flexDirection: "row",
-              height: 34,
-              alignItems: "center",
-              borderBottomWidth: StyleSheet.hairlineWidth,
-              borderColor: p.separator,
-            }}
-          >
-            <Text style={{ width: "30%", color: p.secondary, fontSize: 11 }}>
-              名称 / 代码
-            </Text>
-            {charts ? (
-              <>
-                <Text
-                  style={{
-                    width: "43%",
-                    textAlign: "center",
-                    color: p.secondary,
-                    fontSize: 11,
-                  }}
-                >
-                  多股同列
-                </Text>
-                <Text
-                  style={{
-                    width: "27%",
-                    textAlign: "right",
-                    color: p.secondary,
-                    fontSize: 11,
-                  }}
-                >
-                  涨幅 / 最新
-                </Text>
-              </>
-            ) : (
-              <>
-                {[
-                  ["最新", "25%"],
-                  ["涨幅", "24%"],
-                  ["涨跌", "21%"],
-                ].map(([label, width]) => (
-                  <Text
-                    key={label}
-                    style={{
-                      width: width as `${number}%`,
-                      textAlign: "right",
-                      color: p.secondary,
-                      fontSize: 11,
-                    }}
-                  >
-                    {label}
-                  </Text>
-                ))}
-              </>
-            )}
+        {found.length > 0 && (
+          <View style={{ paddingBottom: 12 }}>
+            <Text style={{ color: p.text, fontSize: 15, fontWeight: "700", paddingBottom: 8 }}>匹配的合约</Text>
+            <View style={{ backgroundColor: p.surface, borderRadius: 10, paddingHorizontal: 12 }}>
+              <ListHeader palette={p} charts={charts} inset={STAR_WIDTH} />
+              {found.map((c) => contractRow(c, true))}
+            </View>
           </View>
-          {s.watchlist.map((symbol) => (
-            <WatchRow
-              key={`${s.isDemo}-${symbol}`}
-              state={s}
+        )}
+        {activeFilter === "allContracts" && !m.contracts.length ? (
+          <Text style={{ color: p.secondary, fontSize: 13, padding: 16 }}>
+            {m.offline ? "还没有连上 MEXC 网关，无法读取合约。" : "正在读取合约…"}
+          </Text>
+        ) : activeFilter === "contract" && !counts.contract ? (
+          <Text style={{ color: p.secondary, fontSize: 13, padding: 16 }}>
+            还没有收藏的合约。在‘所有合约’里点星标添加。
+          </Text>
+        ) : (
+          <View style={{ backgroundColor: p.surface, borderRadius: 10, paddingHorizontal: 12 }}>
+            <ListHeader palette={p} charts={charts} inset={activeFilter === "allContracts" ? STAR_WIDTH : 0} />
+            {activeFilter === "allContracts"
+              ? allVisible.map((c) => contractRow(c, true))
+              : listed.map((item) =>
+                  item.kind === "stock" ? (
+                    <Row
+                      key={`${s.isDemo}-${itemKey(item)}`}
+                      palette={p}
+                      id={item.symbol}
+                      title={s.quotes[item.symbol]?.description ?? item.symbol}
+                      code={item.symbol}
+                      badge="US"
+                      held={stockHeld(s, item.symbol)}
+                      overnight={!!overnightReference(item.symbol)}
+                      trend={trendOf(s.quotes[item.symbol]?.netChange)}
+                      last={money(s.quotes[item.symbol]?.lastPrice)}
+                      percent={signed(s.quotes[item.symbol]?.netPercentChange, "%")}
+                      change={signed(s.quotes[item.symbol]?.netChange)}
+                      charts={charts}
+                      range="intraday"
+                      load={s.status.authenticated ? () => s.broker.history(item.symbol, "intraday") : undefined}
+                      reload={s.revision}
+                      editing={editing}
+                      onRemove={() => s.setWatchlist(s.watchlist.filter((v) => v !== item.symbol))}
+                      onPress={() => {
+                        if (Date.now() > blockedUntil.current && !s.busy) onStock(item.symbol);
+                      }}
+                    />
+                  ) : (
+                    contractRow(item.contract, false)
+                  ),
+                )}
+          </View>
+        )}
+        {activeFilter === "allContracts" && everything.length > shown && (
+          <View style={{ paddingTop: 10 }}>
+            <Button
+              label={`显示更多（还有 ${everything.length - shown} 个）`}
               palette={p}
-              symbol={symbol}
-              quote={s.quotes[symbol]}
-              charts={charts}
-              editing={editing}
-              onPress={() => {
-                if (Date.now() > blockedUntil.current && !s.busy)
-                  onStock(symbol);
-              }}
+              variant="tinted"
+              onPress={() => setShown(shown + PAGE)}
             />
-          ))}
-        </View>
+          </View>
+        )}
         <View style={{ padding: 16, gap: 5 }}>
           <Text style={{ color: p.secondary, fontSize: 11 }}>
             {charts ? "右滑返回行情列表 · 分时走势" : "左滑查看多股同列走势"}
           </Text>
           <Text style={{ color: p.secondary, fontSize: 11 }}>
-            {s.isDemo
-              ? "演示数据 · 不连接真实账户"
-              : "报价以券商返回时间为准，点击右上角刷新"}
+            {!demo
+              ? "报价以券商返回时间为准，点击右上角刷新"
+              : s.isDemo && (m.isDemo || m.configured === false)
+                ? "演示数据 · 不连接真实账户"
+                : s.isDemo
+                  ? "股票是演示数据，合约是真实行情"
+                  : "合约是演示数据，股票是真实行情"}
           </Text>
         </View>
       </ScrollView>
@@ -335,6 +431,11 @@ export default function Watchlist({
               autoCapitalize="characters"
               onSubmitEditing={add}
             />
+            {hasContracts && (
+              <Text style={{ color: p.secondary, fontSize: 12, marginTop: -8 }}>
+                合约在搜索结果或‘所有合约’里点星标添加
+              </Text>
+            )}
             <View
               style={{
                 flexDirection: "row",
@@ -351,29 +452,103 @@ export default function Watchlist({
     </View>
   );
 }
-function WatchRow({
-  state: s,
+function stockHeld(s: TradingState, symbol: string) {
+  return (
+    s.account?.positions.some(
+      (position) =>
+        position.symbol.trim().toUpperCase() === symbol.trim().toUpperCase() &&
+        Number.isFinite(position.quantity) &&
+        position.quantity !== 0,
+    ) ?? false
+  );
+}
+
+function ListHeader({ palette: p, charts, inset }: { palette: Palette; charts: boolean; inset: number }) {
+  const cell = (label: string, width: string, align: "right" | "center" = "right") => (
+    <Text key={label} style={{ width: width as `${number}%`, textAlign: align, color: p.secondary, fontSize: 11 }}>
+      {label}
+    </Text>
+  );
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        height: 34,
+        alignItems: "center",
+        paddingLeft: inset,
+        borderBottomWidth: StyleSheet.hairlineWidth,
+        borderColor: p.separator,
+      }}
+    >
+      <Text style={{ width: "30%", color: p.secondary, fontSize: 11 }}>名称 / 代码</Text>
+      {charts ? (
+        <>
+          {cell("多股同列", "43%", "center")}
+          {cell("涨幅 / 最新", "27%")}
+        </>
+      ) : (
+        <>
+          {cell("最新", "25%")}
+          {cell("涨幅", "24%")}
+          {cell("涨跌", "21%")}
+        </>
+      )}
+    </View>
+  );
+}
+
+/** One row for a stock or a contract: same columns, sizes and heights. */
+function Row({
   palette: p,
-  symbol,
-  quote: q,
+  id,
+  title,
+  code,
+  badge,
+  held,
+  overnight,
+  trend,
+  last,
+  percent,
+  change,
   charts,
+  range,
+  load,
+  reload,
   editing,
+  onRemove,
+  star,
   onPress,
 }: {
-  state: TradingState;
   palette: Palette;
-  symbol: string;
-  quote?: Quote;
+  id: string;
+  title: string;
+  code: string;
+  badge: string;
+  held: boolean;
+  overnight?: boolean;
+  trend: "up" | "down" | "flat";
+  last: string;
+  percent: string;
+  change: string;
   charts: boolean;
+  range: HistoryRange;
+  /** `wanted` says whether the row is still on screen, for a read that had to wait its turn. */
+  load?: (wanted: () => boolean) => Promise<History>;
+  reload: number;
   editing: boolean;
+  onRemove: () => void;
+  star?: { on: boolean; onPress: () => void };
   onPress: () => void;
 }) {
   const [history, setHistory] = useState<History>();
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  const canLoad = !!load;
   useEffect(() => {
     let active = true;
-    if (charts && s.status.authenticated)
-      void s.broker
-        .history(symbol, "intraday")
+    const fetch = loadRef.current;
+    if (charts && fetch)
+      void fetch(() => active)
         .then((value) => {
           if (active) setHistory(value);
         })
@@ -383,19 +558,8 @@ function WatchRow({
     return () => {
       active = false;
     };
-  }, [s.broker, s.status.authenticated, s.revision, symbol, charts]);
-  const held = s.account?.positions.some(
-    (position) =>
-      position.symbol.trim().toUpperCase() === symbol.trim().toUpperCase() &&
-      Number.isFinite(position.quantity) && position.quantity !== 0,
-  ) ?? false;
-  const overnight = overnightReference(symbol);
-  const color =
-    q?.netChange === undefined || q.netChange === 0
-      ? p.secondary
-      : q.netChange > 0
-        ? p.up
-        : p.down;
+  }, [charts, canLoad, id, reload]);
+  const color = trend === "flat" ? p.secondary : trend === "up" ? p.up : p.down;
   return (
     <View
       style={{
@@ -409,10 +573,8 @@ function WatchRow({
       {editing && (
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`移除 ${symbol}`}
-          onPress={() =>
-            s.setWatchlist(s.watchlist.filter((v) => v !== symbol))
-          }
+          accessibilityLabel={`移除 ${code}`}
+          onPress={onRemove}
           style={{ width: 30 }}
         >
           <View
@@ -429,9 +591,20 @@ function WatchRow({
           </View>
         </Pressable>
       )}
+      {star && (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`${star.on ? "取消收藏" : "收藏"} ${code}`}
+          accessibilityState={{ selected: star.on }}
+          onPress={star.onPress}
+          style={{ width: STAR_WIDTH, alignSelf: "stretch", justifyContent: "center" }}
+        >
+          <Icon name={star.on ? "star" : "star-outline"} color={star.on ? FAVORITE_COLOR : p.secondary} size={17} />
+        </Pressable>
+      )}
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`行情 ${symbol}`}
+        accessibilityLabel={`行情 ${code}`}
         accessibilityHint={[held && "当前账户持仓", overnight && "24小时交易参考标记"].filter(Boolean).join("，") || undefined}
         onPress={onPress}
         style={{
@@ -446,7 +619,7 @@ function WatchRow({
             numberOfLines={1}
             style={{ color: held ? p.accent : p.text, fontSize: 15, fontWeight: held ? "600" : "500" }}
           >
-            {q?.description ?? symbol}
+            {title}
           </Text>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
             <Text
@@ -458,9 +631,9 @@ function WatchRow({
                 paddingHorizontal: 3,
               }}
             >
-              US
+              {badge}
             </Text>
-            <Text style={{ color: held ? p.accent : p.secondary, fontSize: 11 }}>{symbol}</Text>
+            <Text style={{ color: held ? p.accent : p.secondary, fontSize: 11, flexShrink: 1 }}>{code}</Text>
             {overnight && (
               <Text
                 accessibilityLabel="24小时交易参考标记"
@@ -474,17 +647,9 @@ function WatchRow({
           <>
             <View style={{ width: "43%", paddingHorizontal: 5 }}>
               {history ? (
-                <MarketChart
-                  history={history}
-                  range="intraday"
-                  palette={p}
-                  compact
-                  height={45}
-                />
+                <MarketChart history={history} range={range} palette={p} compact height={45} />
               ) : (
-                <Text style={{ color: p.secondary, fontSize: 11 }}>
-                  暂无走势
-                </Text>
+                <Text style={{ color: p.secondary, fontSize: 11 }}>暂无走势</Text>
               )}
             </View>
             <View style={{ width: "27%", alignItems: "flex-end", gap: 4 }}>
@@ -501,19 +666,17 @@ function WatchRow({
                   },
                 ]}
               >
-                {signed(q?.netPercentChange, "%")}
+                {percent}
               </Text>
-              <Text style={{ color: p.secondary, fontSize: 11 }}>
-                {money(q?.lastPrice)}
-              </Text>
+              <Text style={{ color: p.secondary, fontSize: 11 }}>{last}</Text>
             </View>
           </>
         ) : (
           <>
             {[
-              [money(q?.lastPrice), "25%"],
-              [signed(q?.netPercentChange, "%"), "24%"],
-              [signed(q?.netChange), "21%"],
+              [last, "25%"],
+              [percent, "24%"],
+              [change, "21%"],
             ].map(([text, width], i) => (
               <Text
                 key={i}

@@ -1,18 +1,19 @@
-import { useEffect, useRef, useState } from "react";
-import { MEXC_MESSAGES, isBuying, isOpening, orderStopReferences } from "../mexcRules.ts";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { MEXC_MESSAGES, isBuying, isOpening, mexcActionLabels, orderStopReferences } from "../mexcRules.ts";
 import type { MexcAction, MexcDraft, MexcKind, MexcPrepared, MexcTicker } from "../mexcRules.ts";
 import type { MexcState } from "./useMexc.ts";
 import {
-  clampLeverage, closableOf, closeEstimate, draftIssueOf, expectedFill, findPosition, fractionOfCapacity, hasClosable, leverageChoice, marginFor, marginOf, notionalOf, openCapacity,
-  orderEntryBlocked, snapToTick, stepDecimal, stopSideIssue, stopsDropped, ticketBlocked, valuationPrice, volForFraction,
+  CONFIRM_ARM_DELAY, clampLeverage, closableOf, closeEstimate, createQuickGate, draftIssueOf, expectedFill, findPosition, fractionOfCapacity, hasClosable, leverageChoice, marginFor, marginOf, notionalOf, openCapacity,
+  orderEntryBlocked, quickSendAllowed, quickSendClearsSize, snapToTick, stepDecimal, stopSideIssue, stopsDropped, ticketBlocked, valuationPrice, volForFraction,
 } from "./mexcView.ts";
 
 /**
  * The state and checks of one order form, shared by the trade page and the panel on the contract page.
  * Only the user changes the size: a moving quote moves the slider, never what would be sent.
  * `resetKey` re-seeds the form when something outside asks for a fresh ticket.
+ * `onQuickPlaced` runs after quick mode sent an order, which has no review page to come back from.
  */
-export function useOrderTicket(m: MexcState, symbol: string, action: MexcAction, ticker: MexcTicker | undefined, resetKey = 0) {
+export function useOrderTicket(m: MexcState, symbol: string, action: MexcAction, ticker: MexcTicker | undefined, resetKey = 0, onQuickPlaced?: () => void) {
   const [kind, setKind] = useState<MexcKind>("LIMIT");
   const [vol, setVol] = useState("");
   const [price, setPrice] = useState("");
@@ -64,6 +65,25 @@ export function useOrderTicket(m: MexcState, symbol: string, action: MexcAction,
   const draftKey = JSON.stringify(draft);
   const latestDraftKey = useRef(draftKey);
   latestDraftKey.current = draftKey;
+  const onScreen = useRef(true);
+  useEffect(() => {
+    onScreen.current = true;
+    return () => { onScreen.current = false; };
+  }, []);
+  const quick = m.quickMode && quickSendAllowed(kind, price, ticker?.lastPrice, draft.takeProfitPrice !== undefined || draft.stopLossPrice !== undefined);
+  // The review page ignores a press for its first moments, because one meant for the button that was just there must
+  // not land on "confirm". Quick mode has no such page, so the form does the same whenever it appears, changes side
+  // or comes back from a review.
+  const gate = useMemo(() => createQuickGate(), []);
+  const [, rearmed] = useState(0);
+  useEffect(() => {
+    gate.shown();
+    if (!m.quickMode) return;
+    const timer = setTimeout(() => rearmed(count => count + 1), CONFIRM_ARM_DELAY);
+    return () => clearTimeout(timer);
+  }, [gate, symbol, action, m.quickMode, !!prepared]);
+  const submitting = useRef(false);
+  const [sendingDirectly, setSendingDirectly] = useState(false);
   // As the server measures them.
   const stopReferences = orderStopReferences(kind, buying ? "LONG" : "SHORT", kind === "LIMIT" ? Number(price) : undefined, (buying ? ticker?.ask1 : ticker?.bid1) ?? ticker?.lastPrice, ticker?.fairPrice);
   const dropped = stopsDropped(opening, stopsOn, !!held, takeProfit, stopLoss);
@@ -87,6 +107,7 @@ export function useOrderTicket(m: MexcState, symbol: string, action: MexcAction,
   const entryBlocked = orderEntryBlocked(m.blockedCode, action);
   const submitDisabled = ticketBlocked({
     locked: m.locked, entryBlocked, draftIssue, reviewing, hasContract: !!contract, limitsMissing, leverageEmpty, sending: m.sending,
+    notArmed: quick && !gate.armed(),
   });
 
   const capacity = !contract
@@ -99,24 +120,47 @@ export function useOrderTicket(m: MexcState, symbol: string, action: MexcAction,
   const sizeFraction = fractionOfCapacity(vol, capacity);
   const sliderDisabled = !contract || capacity === undefined || capacity < contract.minVol || reviewing || m.sending;
 
-  const submit = async () => {
-    if (submitDisabled) return;
+  const submit = async (forceReview = false) => {
+    if (submitting.current || submitDisabled) return;
+    const direct = quick && !forceReview;
+    // Asked again at the moment of the press: what was drawn can be a moment old.
+    if (direct && !gate.mayPress()) return;
+    submitting.current = true; // The ref stops a double tap within one frame.
+    setSendingDirectly(direct);
     setReviewing(true);
     try {
+      if (direct) {
+        // Only what the form says right now goes out.
+        const sent = await m.quickPlace(draft, () => onScreen.current && latestDraftKey.current === draftKey);
+        if (quickSendClearsSize(sent)) setVol("");
+        if (sent.orderID) onQuickPlaced?.();
+        return;
+      }
       const result = await m.run(() => m.api.review(draft));
       // Changed while the review was on its way: that review is not what the form now says. It expires unused.
       if (result && latestDraftKey.current === draftKey) setPrepared(result);
     } finally {
+      submitting.current = false;
       setReviewing(false);
     }
   };
 
+  // A button that sends says everything it will send.
+  const submitLabel = m.locked ? "交易已锁定"
+    : reviewing ? (sendingDirectly ? "正在核对并提交…" : "正在核对…")
+      : quick ? `${m.isDemo ? "模拟" : ""}${mexcActionLabels[action]}${vol.trim() ? ` ${vol.trim()} 张` : ""} · ${kind === "MARKET" ? "市价" : `限价 ${price.trim()}`}`
+        : `核对${mexcActionLabels[action]}`;
+
   return {
-    contract, kind, setKind, vol, setVol, price, leverage, setLeverage, prepared, setPrepared, reviewing,
+    quick, noteTouch: gate.touched, submitLabel, contract, kind, setKind, vol, setVol, price, leverage, setLeverage, prepared, setPrepared, reviewing,
     opening, buying, held, closable, choice, effectiveLeverage, notional, margin, closeProfit, closeMargin, atTakeProfit, atStopLoss, entryBlocked, draftIssue, submitDisabled, capacity, sizeFraction, sliderDisabled, sizeDragging, stopsOn, setStopsOn, takeProfit, setTakeProfit, stopLoss, setStopLoss, stopsWereDropped: dropped,
     clearStops: () => { setStopsOn(false); setTakeProfit(""); setStopLoss(""); },
     submit,
-    recheck: () => { setPrepared(undefined); void submit(); },
+    // With quick mode on, an order that went out from a review, or might have, leaves no size for one press to repeat.
+    placedFromReview: () => { setPrepared(undefined); if (m.quickMode) setVol(""); },
+    backFromReview: () => { setPrepared(undefined); if (m.quickMode && m.locked) setVol(""); },
+    // Coming from a review page, this goes to a review page, whatever quick mode says.
+    recheck: () => { setPrepared(undefined); void submit(true); },
     typePrice: (value: string) => { priceSettled.current = true; setPrice(value); },
     fillPrice: (value: number) => { if (!contract) return; priceSettled.current = true; setPrice(snapToTick(value, contract.priceUnit)); },
     stepPrice: (direction: 1 | -1) => {

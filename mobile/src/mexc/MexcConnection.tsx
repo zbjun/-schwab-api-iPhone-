@@ -1,14 +1,13 @@
 import React, { useEffect, useState } from "react";
-import { Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { Platform, ScrollView, Text, View } from "react-native";
 import type { Palette } from "../types.ts";
 import type { MexcClient } from "../MexcClient.ts";
 import { Button, Icon, Input, radius, styles } from "../ui.tsx";
 import type { MexcState } from "./useMexc.ts";
 import { Notice } from "./parts.tsx";
 
-/** Server address and device key for the MEXC gateway. */
-export default function MexcConnection({ m, palette: p }: { m: MexcState; palette: Palette }) {
-  const [open, setOpen] = useState(false);
+/** Server address and device key for the MEXC gateway: the sub-page with its back button. */
+export function MexcConnectionPage({ m, palette: p, onBack }: { m: MexcState; palette: Palette; onBack: () => void }) {
   const client = m.api.isDemo ? undefined : (m.api as MexcClient);
   const [origin, setOrigin] = useState("");
   const [deviceKey, setDeviceKey] = useState("");
@@ -22,27 +21,10 @@ export default function MexcConnection({ m, palette: p }: { m: MexcState; palett
     return () => { active = false; };
   }, [client]);
   const disabled = Platform.OS === "web" || !client;
-  // The settings tab: one row per setting group, like the Schwab settings page.
-  if (!open)
-    return (
-      <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.pageContent}>
-        <Pressable accessibilityRole="button" accessibilityLabel="MEXC 连接" disabled={m.sending} onPress={() => setOpen(true)}
-          style={[styles.card, styles.spread, { backgroundColor: p.surface }]}>
-          <View style={styles.row}>
-            <Icon name="link" color={p.accent} size={22} />
-            <View style={{ gap: 5 }}>
-              <Text style={{ color: p.text, fontSize: 17 }}>MEXC 连接</Text>
-              <Text style={{ color: p.secondary, fontSize: 12 }}>{m.isDemo ? "演示模式" : m.offline ? "连接中断" : m.account ? "已连接" : "服务器地址与设备访问密钥"}</Text>
-            </View>
-          </View>
-          <Text style={{ color: p.secondary, fontSize: 22 }}>›</Text>
-        </Pressable>
-      </ScrollView>
-    );
   return (
     <View style={{ flex: 1 }}>
     <View style={{ alignItems: "flex-start", paddingHorizontal: 12 }}>
-      <Button label="返回设置" palette={p} disabled={m.sending} onPress={() => setOpen(false)} />
+      <Button label="返回设置" palette={p} disabled={m.sending} onPress={() => onBack()} />
     </View>
     <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.pageContent, { gap: 12 }]}>
       {m.isDemo
@@ -73,6 +55,9 @@ export default function MexcConnection({ m, palette: p }: { m: MexcState; palett
               setConfigured(false); setOrigin(""); setDeviceKey("");
               m.clear();
               await m.refresh();
+              // Last, so a failure to save this cannot leave the old account on screen. A connection saved later
+              // starts with the review on, not with a setting nobody could see while there was no connection.
+              await m.changeQuickMode(false);
             })} />
         </View>}
     </ScrollView>

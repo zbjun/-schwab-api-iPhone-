@@ -2,102 +2,31 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, AppState, Pressable, ScrollView, Text, useWindowDimensions, View } from "react-native";
 import { chartHeightFor } from "../chartCountdown.ts";
 import { isLineRange } from "../chartData.ts";
-import { DemoNotice } from "../DemoNotice.tsx";
 import type { Candle, History, HistoryRange, Palette } from "../types.ts";
 import { mexcActionLabels } from "../mexcRules.ts";
 import type { MexcAction, MexcContract, MexcOrder, MexcPosition, MexcStopOrder, MexcTicker } from "../mexcRules.ts";
 import MarketChart, { ChartControls, dateTime, type ChartControlHandle } from "../MarketChart.tsx";
-import { Button, Chip, Icon, Input, compactNumber, elevated, radius, styles } from "../ui.tsx";
+import { Chip, compactNumber, elevated, radius, styles } from "../ui.tsx";
 import { useTickers, type MexcState } from "./useMexc.ts";
 import {
-  candleMove, chartFillWindow, closableOf, closeActionFor, favoriteContracts, hasClosable, isStockContract, mergeLiveCandles, mexcExecutions, percent, positionPriceLines, priceText, signedPercent, sortContracts, STOCK_NOTE,
+  candleMove, chartFillWindow, closableOf, closeActionFor, hasClosable, isStockContract, mergeLiveCandles, mexcExecutions, percent, positionPriceLines, priceText, signedPercent, STOCK_NOTE,
 } from "./mexcView.ts";
 import MexcOrderPanel from "./MexcOrderPanel.tsx";
 import MexcStopEditor from "./MexcStopEditor.tsx";
 import { useChartPip } from "./useChartPip.ts";
-import { EmptyState, Notice, Segmented } from "./parts.tsx";
+import { EmptyState, Notice } from "./parts.tsx";
 
-const PAGE = 30;
-const STAR_WIDTH = 26;
-export const FAVORITE_COLOR = "#F5B400";
 const RANGES: [HistoryRange, string][] = [
-  ["minute1", "1分"], ["minute5", "5分"], ["minute15", "15分"], ["minute60", "1时"], ["daily", "日"],
+  ["minute1", "1分"], ["minute5", "5分"], ["minute15", "15分"], ["minute60", "1时"], ["daily", "日K"],
 ];
 
-export default function MexcMarkets({ m, palette: p, detail, setDetail, favorites, onToggleFavorite }: {
-  m: MexcState; palette: Palette; detail?: string; setDetail: (symbol?: string) => void;
-  favorites: string[]; onToggleFavorite: (symbol: string) => void;
-}) {
-  const [query, setQuery] = useState("");
-  const [shown, setShown] = useState(PAGE);
-  const [picked, setPicked] = useState<"favorites" | "all">();
-  // Opens on the favourites once there are any; a search always looks through everything.
-  const view = picked ?? (favorites.length ? "favorites" : "all");
-  const searching = query.trim() !== "";
-  const sorted = useMemo(() => sortContracts(m.contracts, query), [m.contracts, query]);
-  const list = useMemo(() => (searching || view === "all" ? sorted : favoriteContracts(favorites, m.contracts)), [searching, view, sorted, favorites, m.contracts]);
-  useEffect(() => setShown(PAGE), [query, view]);
-  const visible = list.slice(0, shown);
-  // Quotes are requested only for the rows on screen (plus the open detail).
-  const symbols = useMemo(() => detail ? [detail] : visible.map(c => c.symbol), [detail, visible]);
-  const tickers = useTickers(m, symbols);
-  const selected = detail ? m.contracts.find(c => c.symbol === detail) : undefined;
-  if (detail && selected)
-    return <Detail m={m} palette={p} contract={selected} ticker={tickers[detail]} />;
-  const rateColor = (rate?: number) => (rate ?? 0) > 0 ? p.up : (rate ?? 0) < 0 ? p.down : p.secondary;
-  return (
-    <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.pageContent, { gap: 10 }]}>
-      {m.isDemo && <DemoNotice palette={p} />}
-      <View style={[styles.row, { backgroundColor: elevated(p), borderRadius: 10, paddingHorizontal: 12, height: 44, gap: 8 }]}>
-        <Icon name="search" color={p.secondary} size={18} />
-        <Input palette={p} accessibilityLabel="搜索合约" placeholder="搜索合约，例如 QQQ" autoCapitalize="characters"
-          value={query} onChangeText={setQuery} style={{ flex: 1, backgroundColor: "transparent", paddingHorizontal: 0 }} />
-      </View>
-      {!m.contracts.length && <EmptyState palette={p} text={m.offline ? "还没有连上 MEXC 网关，无法读取合约。" : "正在读取合约…"} />}
-      {!!m.contracts.length && !searching && (
-        <Segmented<"favorites" | "all"> palette={p} value={view} onChange={setPicked}
-          options={[{ id: "favorites", label: `收藏 ${favorites.length}` }, { id: "all", label: "全部" }]} />
-      )}
-      {!!m.contracts.length && searching && !sorted.length && <EmptyState palette={p} text="没有匹配的合约。" />}
-      {!!m.contracts.length && !searching && view === "favorites" && !list.length && <EmptyState palette={p} text="还没有收藏的合约。点列表左边的星标，或合约详情页右上角的星标。" />}
-      {!!list.length && (
-        <View style={{ borderRadius: radius.card, backgroundColor: p.surface, paddingHorizontal: 12, overflow: "hidden" }}>
-          <View style={{ flexDirection: "row", alignItems: "center", height: 34, paddingLeft: STAR_WIDTH }}>
-            <Text style={{ width: "42%", color: p.secondary, fontSize: 11 }}>合约 {list.length}</Text>
-            <Text style={{ width: "30%", color: p.secondary, fontSize: 11, textAlign: "right" }}>最新</Text>
-            <Text style={{ width: "28%", color: p.secondary, fontSize: 11, textAlign: "right" }}>涨幅</Text>
-          </View>
-          {visible.map(c => {
-            const t = tickers[c.symbol], rate = t?.riseFallRate, favorite = favorites.includes(c.symbol);
-            return (
-              <View key={c.symbol} style={{ flexDirection: "row", alignItems: "center", minHeight: 65, borderTopWidth: 1, borderTopColor: p.separator }}>
-                <Pressable accessibilityRole="button" accessibilityLabel={`${favorite ? "取消收藏" : "收藏"} ${c.symbol}`} accessibilityState={{ selected: favorite }}
-                  onPress={() => { setPicked(view); onToggleFavorite(c.symbol); }} style={{ width: STAR_WIDTH, alignSelf: "stretch", justifyContent: "center" }}>
-                  <Icon name={favorite ? "star" : "star-outline"} color={favorite ? FAVORITE_COLOR : p.secondary} size={17} />
-                </Pressable>
-                <Pressable accessibilityRole="button" accessibilityLabel={`${c.symbol} 详情`} onPress={() => setDetail(c.symbol)}
-                  style={{ flex: 1, flexDirection: "row", alignItems: "center", alignSelf: "stretch" }}>
-                <View style={{ width: "42%", paddingRight: 6 }}>
-                  <Text numberOfLines={1} style={{ color: p.text, fontSize: 15, fontWeight: "500" }}>{c.symbol}</Text>
-                  <Text numberOfLines={1} style={{ color: p.secondary, fontSize: 11, marginTop: 2 }}>
-                    {isStockContract(c) ? "美股类" : "加密"} · 最高 {c.maxLeverage}x
-                  </Text>
-                </View>
-                <Text adjustsFontSizeToFit numberOfLines={1} style={[styles.number, { width: "30%", color: p.text, fontSize: 16, fontWeight: "600", textAlign: "right" }]}>
-                  {priceText(t?.lastPrice, c.priceUnit)}
-                </Text>
-                <Text adjustsFontSizeToFit numberOfLines={1} style={[styles.number, { width: "28%", color: rateColor(rate), fontSize: 14, fontWeight: "600", textAlign: "right" }]}>
-                  {signedPercent(rate)}
-                </Text>
-                </Pressable>
-              </View>
-            );
-          })}
-        </View>
-      )}
-      {list.length > shown && <Button label={`显示更多（还有 ${list.length - shown} 个）`} palette={p} variant="tinted" onPress={() => setShown(shown + PAGE)} />}
-    </ScrollView>
-  );
+/** A contract's page: its quote, chart and trading. Reads its own quote, since no list is on screen behind it. */
+export function ContractDetail({ m, palette: p, symbol }: { m: MexcState; palette: Palette; symbol: string }) {
+  const contract = m.contracts.find(c => c.symbol === symbol);
+  const tickers = useTickers(m, [symbol]);
+  if (!contract)
+    return <EmptyState palette={p} text={m.offline ? "还没有连上 MEXC 网关，无法读取合约。" : "正在读取合约…"} />;
+  return <Detail key={symbol} m={m} palette={p} contract={contract} ticker={tickers[symbol]} />;
 }
 
 const LIVE_INTERVAL = 1_000;
@@ -126,8 +55,9 @@ function Detail({ m, palette: p, contract, ticker: listTicker }: {
   const [closedOrders, setClosedOrders] = useState<MexcOrder[]>([]);
   const [scrollHeight, setScrollHeight] = useState(0);
   const [chartTop, setChartTop] = useState(0);
-  // With the order panel open the chart fits what is left above it, so the latest candle stays in view.
-  const chartHeight = (ticket || stopTarget) && scrollHeight > 0 ? Math.min(fullChartHeight, Math.max(200, scrollHeight - chartTop - 4)) : fullChartHeight;
+  const [belowChart, setBelowChart] = useState(0);
+  // The chart fits what the page has left, so the page never needs scrolling and the quote above it stays on screen.
+  const chartHeight = scrollHeight > 0 ? Math.min(fullChartHeight, Math.max(200, scrollHeight - chartTop - belowChart - 16)) : fullChartHeight;
   const ticker = liveTicker?.symbol === contract.symbol ? liveTicker : listTicker;
   useEffect(() => {
     let active = true, loading = false, ticking = false, failures = 0;
@@ -249,7 +179,7 @@ function Detail({ m, palette: p, contract, ticker: listTicker }: {
           </View>
         </View>
         <View style={{ height: 28, flexDirection: "row", alignItems: "stretch", zIndex: 10 }}>
-          {([["intraday", "分时"], ["minute60", "1时"], ["daily", "日"]] as [HistoryRange, string][]).map(([id, label]) => (
+          {([["intraday", "分时"], ["minute60", "1时"], ["daily", "日K"]] as [HistoryRange, string][]).map(([id, label]) => (
             <Pressable key={id} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ selected: range === id }}
               onPress={() => { setMore(false); setRange(id); }} style={{ paddingHorizontal: 14, alignItems: "center", justifyContent: "center" }}>
               <Text style={{ color: range === id ? p.text : p.secondary, fontSize: 14, fontWeight: range === id ? "600" : "400" }}>{label}</Text>
@@ -288,8 +218,11 @@ function Detail({ m, palette: p, contract, ticker: listTicker }: {
             </View>
           )}
         </View>
-        {(stale || (!!error && !!history)) && <Notice palette={p} text="行情刷新失败，当前显示的价格和 K 线是旧数据。" style={{ marginHorizontal: 12 }} />}
-        {isStockContract(contract) && <Notice palette={p} tone="info" text={STOCK_NOTE} style={{ marginHorizontal: 12 }} />}
+        <View onLayout={event => setBelowChart(event.nativeEvent.layout.height)} style={{ gap: 4 }}>
+          {(stale || (!!error && !!history)) && <Notice palette={p} text="行情刷新失败，当前显示的价格和 K 线是旧数据。" style={{ marginHorizontal: 12 }} />}
+          {/* The order panel says the same, and needs the room. */}
+          {isStockContract(contract) && !ticket && !stopTarget && <Notice palette={p} tone="info" text={STOCK_NOTE} style={{ marginHorizontal: 12 }} />}
+        </View>
       </ScrollView>
       {stopTarget ? (
         <MexcStopEditor key={`${stopTarget.id}:${stops.find(row => row.positionId === stopTarget.id)?.id ?? "new"}`} m={m} palette={p} contract={contract} ticker={ticker}

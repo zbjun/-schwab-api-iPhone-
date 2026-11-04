@@ -77,7 +77,8 @@ export function AccountSelector({
     </>
   );
 }
-export default function Accounts({
+/** Schwab account card and position list, without a ScrollView. */
+export function SchwabAccountSection({
   state: s,
   palette: p,
   onStock,
@@ -97,13 +98,7 @@ export default function Accounts({
     value === undefined || value === 0 ? p.text : value > 0 ? p.up : p.down;
   const caption = { color: p.secondary, fontSize: 11 } as const;
   return (
-    <ScrollView
-      showsVerticalScrollIndicator={false}
-      alwaysBounceVertical
-      refreshControl={<PageRefreshControl state={s} palette={p} />}
-      contentContainerStyle={[styles.pageContent, { gap: 10 }]}
-    >
-      {s.isDemo && <DemoNotice palette={p} card />}
+    <>
       <View style={{ backgroundColor: p.surface, borderRadius: radius.card, paddingHorizontal: 12, paddingBottom: 12 }}>
         <AccountSelector state={s} palette={p} />
         <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: p.separator, marginBottom: 12 }} />
@@ -197,6 +192,8 @@ export default function Accounts({
           </Text>
         )}
       </View>
-    </ScrollView>
+    </>
   );
 }
+
+/** Legacy single-account page, kept until the unified shell replaces it. */

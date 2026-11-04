@@ -6,7 +6,7 @@ import type { MexcAction, MexcContract, MexcKind, MexcPosition, MexcTicker } fro
 import { Button, Stepper, elevated, money, radius, styles } from "../ui.tsx";
 import type { MexcState } from "./useMexc.ts";
 import { STOCK_NOTE, isStockContract, openTypeLabel, percent } from "./mexcView.ts";
-import { Notice, PositionSlider, Segmented, StopFields, profitColor, profitText } from "./parts.tsx";
+import { Notice, PositionSlider, QuickNote, QuickPressArea, Segmented, StopFields, profitColor, profitText } from "./parts.tsx";
 import MexcLeverageEditor from "./MexcLeverageEditor.tsx";
 import MexcReview from "./MexcReview.tsx";
 import { useOrderTicket } from "./useOrderTicket.ts";
@@ -14,15 +14,15 @@ import { useOrderTicket } from "./useOrderTicket.ts";
 const OPEN_ACTIONS: MexcAction[] = ["OPEN_LONG", "OPEN_SHORT"];
 
 /**
- * The order form inside the contract page. The same one-use review and confirmation as the trade page
- * still follow; this only moves them next to the chart.
+ * The order form inside the contract page. The same one-use review as the trade page still follows, and the same
+ * confirmation unless quick mode is on; this only moves them next to the chart.
  */
 export default function MexcOrderPanel({ m, palette: p, contract, ticker, initialAction, onClose }: {
   m: MexcState; palette: Palette; contract: MexcContract; ticker?: MexcTicker; initialAction: MexcAction; onClose: () => void;
 }) {
   const [action, setAction] = useState(initialAction);
   const [leverageTarget, setLeverageTarget] = useState<MexcPosition>();
-  const t = useOrderTicket(m, contract.symbol, action, ticker);
+  const t = useOrderTicket(m, contract.symbol, action, ticker, 0, onClose);
   const maxHeight = Math.round(useWindowDimensions().height * 0.72);
   const panel = { backgroundColor: p.surface, borderTopWidth: 1, borderTopColor: p.separator } as const;
   if (leverageTarget)
@@ -34,7 +34,7 @@ export default function MexcOrderPanel({ m, palette: p, contract, ticker, initia
     return (
       <View style={[panel, { height: maxHeight }]}>
         <MexcReview embedded m={m} palette={p} prepared={t.prepared} limits={m.limits}
-          onBack={() => t.setPrepared(undefined)} onRecheck={t.recheck} onPlaced={onClose} />
+          onBack={t.backFromReview} onRecheck={t.recheck} onPlaced={onClose} />
       </View>
     );
   // The same rule as Schwab: buying is red and selling is green, so closing a long is green.
@@ -81,7 +81,7 @@ export default function MexcOrderPanel({ m, palette: p, contract, ticker, initia
             onChangeText={t.typeLeverage} onStep={t.stepLeverage} />
         )}
         <Stepper compact palette={p} label="张数" value={t.vol} keyboardType="decimal-pad" onChangeText={t.setVol} onStep={t.stepVol} />
-        <PositionSlider palette={p} color={tradeColor} value={t.sizeFraction} disabled={t.sliderDisabled} onChange={t.chooseFraction}
+        <PositionSlider palette={p} color={tradeColor} value={t.sizeFraction} disabled={t.sliderDisabled} tapToSet={!m.quickMode} onChange={t.chooseFraction}
           onDragStart={t.beginSizeDrag} onDragEnd={t.endSizeDrag} />
         {t.opening && !!t.held && !t.stopsWereDropped && <Text style={{ color: p.secondary, fontSize: 11, lineHeight: 15 }}>这个方向已有持仓，止盈止损请关闭面板后在持仓条上设置。</Text>}
         {t.stopsWereDropped && <Button label="清除价格" palette={p} variant="tinted" color={p.secondary} onPress={t.clearStops} />}
@@ -127,8 +127,11 @@ export default function MexcOrderPanel({ m, palette: p, contract, ticker, initia
         {t.entryBlocked && !!m.blockedText && <Notice palette={p} text={m.blockedText} />}
       </ScrollView>
       {!!t.draftIssue && !m.locked && <Text numberOfLines={2} style={{ color: p.secondary, fontSize: 12, textAlign: "center" }}>{t.draftIssue}</Text>}
-      <Button label={t.reviewing ? "正在核对…" : m.locked ? "交易已锁定" : "核对委托"} palette={p} variant="filled" color={tradeColor}
-        disabled={t.submitDisabled} onPress={() => void t.submit()} />
+      {m.quickMode && !m.locked && <QuickNote palette={p} quick={t.quick} />}
+      <QuickPressArea onTouch={t.noteTouch}>
+        <Button label={t.submitLabel} palette={p} variant="filled" color={tradeColor}
+          disabled={t.submitDisabled} onPress={() => void t.submit()} />
+      </QuickPressArea>
     </View>
   );
 }

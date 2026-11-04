@@ -103,23 +103,23 @@ const STATUS: Record<string, string> = {
   FILLED: "已成交", CANCELED: "已撤销", REJECTED: "已拒绝", EXPIRED: "已过期", REPLACED: "已修改",
 };
 
-function formatter(timeZone: string) {
+export function formatter(timeZone: string) {
   return new Intl.DateTimeFormat("en-US", {
     timeZone, year: "numeric", month: "2-digit", day: "2-digit",
     hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
   });
 }
-function stamp(format: Intl.DateTimeFormat, time: number): string {
+export function stamp(format: Intl.DateTimeFormat, time: number): string {
   const v: Record<string, string> = {};
   for (const part of format.formatToParts(new Date(time))) v[part.type] = part.value;
   return `${v.year}-${v.month}-${v.day} ${v.hour}:${v.minute}:${v.second}`;
 }
 /** Plain decimal without grouping; rounding removes binary noise such as 0.1 + 0.2. */
-function decimal(value: number | undefined, digits = 6): string {
+export function decimal(value: number | undefined, digits = 6): string {
   if (value === undefined || !Number.isFinite(value)) return "";
   return String(Number(value.toFixed(digits)));
 }
-function cell(value: string): string {
+export function cell(value: string): string {
   // Spreadsheet apps execute cells starting with these characters as formulas.
   const safe = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
   return /[",\r\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;

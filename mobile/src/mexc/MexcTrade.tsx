@@ -6,8 +6,8 @@ import { isBuying, mexcActionLabels } from "../mexcRules.ts";
 import type { MexcAction } from "../mexcRules.ts";
 import { Button, Chip, Glass, Input, Stepper, elevated, money, radius, styles, tabBar, tabClearance } from "../ui.tsx";
 import { useTickers, type MexcState } from "./useMexc.ts";
-import { percent, priceText, signedPercent, sortContracts, STOCK_NOTE, isStockContract } from "./mexcView.ts";
-import { Line, Notice, PositionSlider, StopFields, profitColor, profitText } from "./parts.tsx";
+import { contractTitle, percent, priceText, signedPercent, sortContracts, STOCK_NOTE, isStockContract, venueDemoNotice } from "./mexcView.ts";
+import { Line, Notice, PositionSlider, QuickNote, QuickPressArea, StopFields, profitColor, profitText } from "./parts.tsx";
 import MexcReview from "./MexcReview.tsx";
 import { useOrderTicket } from "./useOrderTicket.ts";
 
@@ -24,7 +24,7 @@ export default function MexcTrade({ m, palette: p, seed }: { m: MexcState; palet
   const tickers = useTickers(m, symbol ? [symbol] : [], 2_000);
   const ticker = tickers[symbol];
   const t = useOrderTicket(m, symbol, action, ticker, seed.nonce);
-  const { contract, kind, setKind, vol, setVol, price, leverage, opening, held, closable, choice, effectiveLeverage, notional, margin, entryBlocked, draftIssue, reviewing, submitDisabled } = t;
+  const { contract, kind, setKind, vol, setVol, price, leverage, opening, held, closable, choice, effectiveLeverage, notional, margin, entryBlocked, draftIssue, submitDisabled } = t;
 
   // A tap on a position or "go trade" re-seeds the ticket.
   useEffect(() => {
@@ -36,9 +36,9 @@ export default function MexcTrade({ m, palette: p, seed }: { m: MexcState; palet
   if (t.prepared)
     return (
       <MexcReview m={m} palette={p} prepared={t.prepared} limits={m.limits}
-        onBack={() => t.setPrepared(undefined)}
+        onBack={t.backFromReview}
         onRecheck={t.recheck}
-        onPlaced={() => t.setPrepared(undefined)} />
+        onPlaced={t.placedFromReview} />
     );
   // The same rule as Schwab: buying is red and selling is green, so closing a long is green.
   const tradeColor = isBuying(action) ? p.up : p.down;
@@ -47,7 +47,7 @@ export default function MexcTrade({ m, palette: p, seed }: { m: MexcState; palet
     <View style={{ flex: 1 }}>
       <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" scrollEnabled={!t.sizeDragging}
         contentContainerStyle={[styles.pageContent, { gap: 10, paddingBottom: tabClearance + floatingHeight + 16 }]}>
-        {m.isDemo && <DemoNotice palette={p} card />}
+        {m.isDemo && <DemoNotice palette={p} card text={venueDemoNotice("mexc")} />}
         <View style={[styles.spread, { backgroundColor: p.surface, borderRadius: radius.card, paddingHorizontal: 12, minHeight: 42 }]}>
           <Text style={{ color: p.text, fontSize: 15, fontWeight: "600" }}>账户</Text>
           <Text style={{ color: p.secondary, fontSize: 12 }}>MEXC 合约账户</Text>
@@ -63,7 +63,7 @@ export default function MexcTrade({ m, palette: p, seed }: { m: MexcState; palet
           {!contract && <Text style={{ color: p.secondary, fontSize: 13 }}>{m.offline ? "还没有连上 MEXC 网关。" : "请选择合约。"}</Text>}
           {contract && (
             <View style={styles.spread}>
-              <Text numberOfLines={1} style={{ color: p.secondary, fontSize: 13, flex: 1 }}>{contract.displayName}</Text>
+              <Text numberOfLines={1} style={{ color: p.secondary, fontSize: 13, flex: 1 }}>{contractTitle(contract)} · {contract.symbol}</Text>
               <View style={[styles.row, { gap: 8 }]}>
                 <Text style={[styles.number, { color: p.text, fontSize: 17, fontWeight: "600" }]}>{priceText(ticker?.lastPrice, contract.priceUnit)}</Text>
                 <Text style={[styles.number, { color: (rate ?? 0) > 0 ? p.up : (rate ?? 0) < 0 ? p.down : p.secondary, fontSize: 13, fontWeight: "600" }]}>
@@ -115,9 +115,6 @@ export default function MexcTrade({ m, palette: p, seed }: { m: MexcState; palet
             <Chip label="市价" palette={p} active={kind === "MARKET"} style={{ flex: 1 }} onPress={() => setKind("MARKET")} />
           </View>
           {contract && <>
-            <Stepper palette={p} label="张数" value={vol} keyboardType="decimal-pad" onChangeText={setVol} onStep={t.stepVol} />
-            <PositionSlider palette={p} color={tradeColor} value={t.sizeFraction} disabled={t.sliderDisabled} onChange={t.chooseFraction}
-              onDragStart={t.beginSizeDrag} onDragEnd={t.endSizeDrag} />
             {kind === "LIMIT" && (
               <Stepper palette={p} label="价格" value={price} keyboardType="decimal-pad" onChangeText={t.typePrice} onStep={t.stepPrice} />
             )}
@@ -131,6 +128,9 @@ export default function MexcTrade({ m, palette: p, seed }: { m: MexcState; palet
             {opening && choice && choice.fixed === undefined && (
               <Text style={{ color: p.secondary, fontSize: 12 }}>可选 {choice.min}x–{choice.max}x（取服务器上限和合约上限的较小值）</Text>
             )}
+            <Stepper palette={p} label="张数" value={vol} keyboardType="decimal-pad" onChangeText={setVol} onStep={t.stepVol} />
+            <PositionSlider palette={p} color={tradeColor} value={t.sizeFraction} disabled={t.sliderDisabled} tapToSet={!m.quickMode} onChange={t.chooseFraction}
+              onDragStart={t.beginSizeDrag} onDragEnd={t.endSizeDrag} />
             {opening && !!held && !t.stopsWereDropped && <Text style={{ color: p.secondary, fontSize: 12 }}>这个方向已有持仓，止盈止损请到合约详情页设置。</Text>}
             {t.stopsWereDropped && <Button label="清除价格" palette={p} variant="tinted" color={p.secondary} onPress={t.clearStops} />}
             {opening && !held && (
@@ -162,8 +162,11 @@ export default function MexcTrade({ m, palette: p, seed }: { m: MexcState; palet
       <Glass palette={p} style={{ position: "absolute", left: tabBar.inset, right: tabBar.inset, bottom: tabClearance, borderRadius: 20 }}>
         <View onLayout={event => setFloatingHeight(Math.ceil(event.nativeEvent.layout.height))} style={{ padding: 8, gap: 6 }}>
           {!!draftIssue && !m.locked && <Text numberOfLines={2} style={{ color: p.secondary, fontSize: 12, textAlign: "center" }}>{draftIssue}</Text>}
-          <Button label={reviewing ? "正在核对…" : m.locked ? "交易已锁定" : "核对委托"} palette={p} variant="filled" color={tradeColor}
-            disabled={submitDisabled} onPress={() => void t.submit()} />
+          {m.quickMode && !m.locked && <QuickNote palette={p} quick={t.quick} />}
+          <QuickPressArea onTouch={t.noteTouch}>
+            <Button label={t.submitLabel} palette={p} variant="filled" color={tradeColor}
+              disabled={submitDisabled} onPress={() => void t.submit()} />
+          </QuickPressArea>
         </View>
       </Glass>
     </View>

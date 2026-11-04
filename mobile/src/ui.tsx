@@ -112,6 +112,11 @@ export const money = (value?: number, digits = 2) =>
       });
 export const signed = (value?: number, suffix = "") =>
   value === undefined ? "—" : `${value > 0 ? "+" : ""}${money(value)}${suffix}`;
+/** An order's time in lists, the same on both venues: "11/04 15:06". */
+export const orderStamp = (value?: string | number) =>
+  value
+    ? new Date(value).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false })
+    : "时间未知";
 export const compactNumber = (value?: number) =>
   value === undefined
     ? "—"

@@ -1,7 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { VENUE_KEY, parseVenue, type Venue } from "./mexcView.ts";
 
-/** Which exchange shell the app opens into. A read failure keeps the Schwab app. */
+/** Which venue the trade page last used. A read failure starts on Schwab. */
 export async function readVenue(): Promise<Venue> {
   try { return parseVenue(await AsyncStorage.getItem(VENUE_KEY)); } catch { return "schwab"; }
 }
